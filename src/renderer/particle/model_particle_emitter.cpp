@@ -1,5 +1,6 @@
 #include "renderer/particle/model_particle_emitter.h"
 
+#include "renderer/particle/particle_constants.h"
 #include "renderer/particle/particle_geometry.h"
 #include "whiteout/flakes/util/coordinate_system.h"
 
@@ -27,7 +28,7 @@ Matrix44f RotationOnly(const Matrix44f& m) {
     for (i32 row = 0; row < 3; ++row) {
         Vector3f v{m.data[row][0], m.data[row][1], m.data[row][2]};
         const f32 l2 = v.x * v.x + v.y * v.y + v.z * v.z;
-        if (l2 > 2.3841858e-7f) {
+        if (l2 > kBasisRowEpsilon) {
             const f32 inv = 1.0f / std::sqrt(l2);
             v = {v.x * inv, v.y * inv, v.z * inv};
         }
@@ -47,7 +48,7 @@ void ModelParticleEmitter::OnPoolResized(usize capacity) {
 
 void ModelParticleEmitter::OnParticleBorn(u32 poolIndex) {
     if (poolIndex >= spin_.size())
-        spin_.resize(pool_.Capacity());
+        spin_.resize(Pool().Capacity());
 
     // Runs after Emitter2::CreateParticle and before the base class mints the
     // child handle — the same position the client's own
@@ -58,7 +59,7 @@ void ModelParticleEmitter::OnParticleBorn(u32 poolIndex) {
     // A world-space particle is stamped into the world at birth, orientation
     // included; a model-space one keeps riding the emitter, so its basis is read
     // live at placement instead and this stays identity.
-    s.basis = desc_->modelSpace ? Matrix44f::identity() : RotationOnly(modelToWorld_);
+    s.basis = Desc().modelSpace ? Matrix44f::identity() : RotationOnly(ModelToWorld());
 
     // Three draws, and the client reads the RANGE where the min belongs on Y and
     // Z: `min.x + u*range.x` but `range.y*(1 + u)` and `range.z*(1 + u)`
@@ -67,18 +68,18 @@ void ModelParticleEmitter::OnParticleBorn(u32 poolIndex) {
     // record whose tumble box has a non-zero minimum really does tumble faster
     // than it asked for on two of its three axes, and one with a zero minimum
     // can never be still on them.
-    const f32 ux = CRandom::real_(randSeed_);
-    const f32 uy = CRandom::real_(randSeed_);
-    const f32 uz = CRandom::real_(randSeed_);
-    s.omega = {desc_->tumbleBase.x + ux * desc_->tumbleVary.x, desc_->tumbleVary.y * (1.0f + uy),
-               desc_->tumbleVary.z * (1.0f + uz)};
+    const f32 ux = CRandom::real_(SpawnStream());
+    const f32 uy = CRandom::real_(SpawnStream());
+    const f32 uz = CRandom::real_(SpawnStream());
+    s.omega = {Desc().tumbleBase.x + ux * Desc().tumbleVary.x, Desc().tumbleVary.y * (1.0f + uy),
+               Desc().tumbleVary.z * (1.0f + uz)};
 
     // NegateSpinRandom costs three more draws and flips each component
     // independently on the parity of its own draw.
-    if (desc_->negateSpinRandom) {
-        const f32 sx = (CRandom::next_u32(randSeed_) & 1u) ? 1.0f : -1.0f;
-        const f32 sy = (CRandom::next_u32(randSeed_) & 1u) ? 1.0f : -1.0f;
-        const f32 sz = (CRandom::next_u32(randSeed_) & 1u) ? 1.0f : -1.0f;
+    if (Desc().negateSpinRandom) {
+        const f32 sx = (CRandom::next_u32(SpawnStream()) & 1u) ? 1.0f : -1.0f;
+        const f32 sy = (CRandom::next_u32(SpawnStream()) & 1u) ? 1.0f : -1.0f;
+        const f32 sz = (CRandom::next_u32(SpawnStream()) & 1u) ? 1.0f : -1.0f;
         s.omega = {s.omega.x * sx, s.omega.y * sy, s.omega.z * sz};
     }
 
@@ -86,16 +87,16 @@ void ModelParticleEmitter::OnParticleBorn(u32 poolIndex) {
 }
 
 f32 ModelParticleEmitter::VisibilityFor(u32 poolIndex) const {
-    if (desc_->twinklePercent >= 1.0f)
+    if (Desc().twinklePercent >= 1.0f)
         return 1.0f;
-    const Particle2& p = pool_[poolIndex];
-    const f32 entry = TwinkleTable()[TwinkleIndex(p.RenderSeed(), p.age, desc_->twinkleSpeed)];
-    return (desc_->twinklePercent < entry) ? 0.0f : 1.0f;
+    const Particle2& p = Pool()[poolIndex];
+    const f32 entry = TwinkleTable()[TwinkleIndex(p.RenderSeed(), p.age, Desc().twinkleSpeed)];
+    return (Desc().twinklePercent < entry) ? 0.0f : 1.0f;
 }
 
 Matrix44f ModelParticleEmitter::TransformFor(u32 poolIndex) const {
-    const Particle2& p = pool_[poolIndex];
-    const EmitterDesc& d = *desc_;
+    const Particle2& p = Pool()[poolIndex];
+    const EmitterDesc& d = Desc();
 
     // Size: the scale track at this particle's own normalised age, pulsed by
     // twinkle. No size-variation and no cell draw here — RenderParticle reads
@@ -140,8 +141,8 @@ Matrix44f ModelParticleEmitter::TransformFor(u32 poolIndex) const {
     // both again and the child is scaled to renderer units twice.
     Vector3f pos = p.position;
     if (d.modelSpace) {
-        pos = whiteout::transform_point(pos, modelToWorld_);
-        m = m * RotationOnly(modelToWorld_);
+        pos = whiteout::transform_point(pos, ModelToWorld());
+        m = m * RotationOnly(ModelToWorld());
     } else {
         m = m * s.basis;
     }

@@ -1,10 +1,10 @@
 #include "renderer/particle/d3_emitter.h"
 
+#include "io/d3/d3_sno_cache.h"
 #include "renderer/animation/anim_math.h"
-#include "renderer/particle/particle_service.h"
-
 #include "renderer/particle/d3_orientation.h"
 #include "renderer/particle/particle_geometry.h"
+#include "renderer/particle/particle_output.h"
 #include "whiteout/flakes/model_types.h"
 
 #include <algorithm>
@@ -13,8 +13,6 @@
 namespace whiteout::flakes::renderer::particle::d3 {
 
 namespace {
-
-constexpr f32 kEpsilon = 1e-6f;
 
 /// @brief `ch5 * ch35` as the byte the draw is gated on.
 ///
@@ -29,13 +27,12 @@ constexpr f32 kEpsilon = 1e-6f;
 /// and `arEffectScalePath`'s range never exceeds 1.0 on any of the 21,593 files,
 /// which is an attenuation.
 u8 D3OpacityByte(f32 s) {
-    if (!(s >= 1e-6f))
+    if (!(s >= kEpsilon))
         return 0;
-    if (s >= 0.999999f)
+    if (s >= kNearlyOne)
         return 255;
     return static_cast<u8>(std::ceil(s * 255.0f));
 }
-constexpr f32 kTwoPi = 6.28318530717958647692f;
 constexpr f32 kHalfPi = 1.57079632679489661923f;
 /// @brief The engine's OTHER two-pi, and the one every azimuth is built from.
 ///
@@ -54,50 +51,44 @@ constexpr f32 kAzimuthTwoPi = 6.28318452835083f;
 /// polynomial off by 3e-5. Kept because the clamp changes the result for a large
 /// angle, not just the speed.
 constexpr f32 kAngleClamp = kTwoPi * 8.0f;
-/// `ParticleSystem_TickEmitter`'s hard ceiling on live particles.
-constexpr i32 kMaxLiveParticles = 4096;
-/// `dwPrtFlags` bit that ENABLES the 300 u/s clamp on distance emission.
-constexpr u32 kFlagClampDistanceEmission = 0x10000000u;
-/// @brief `dwPrtFlags` bit 0 — the system runs until it is told to stop.
-///
-/// `ParticleSystem_TickEmitter` @0x71000AEA20 branches its WHOLE timing model
-/// on this. Clear (12,331 files): the emitter channels are sampled at
-/// `elapsed / tmLifetime` in time mode 0 — no wrap, one pass — and the system
-/// is released the moment `elapsed >= tmLifetime`. Set (9,262 files): time mode
-/// 1, so the same quotient WRAPS into the path's loop sub-range, and the
-/// release test is not run at all. `tmLifetime` is 60 frames on 6,884 files, so
-/// reading the bit as "expires anyway" stops a third of every shipped effect
-/// after exactly one second.
-constexpr u32 kFlagPersistent = 0x1u;
-/// @brief `dwPrtFlags` bit 10 — the PARTICLE channels are sampled unwrapped.
-///
-/// `Particle_BuildEvalContext` @0x710037AD70 opens on `sys+13 & 4`, which is
-/// this bit of the same word: set, the particle's channels use time mode 0 and
-/// play their curve once across the particle's life; clear, mode 1 wraps the
-/// quotient into `[loopStart, loopEnd]` and the curve repeats. 18,415 of 21,593
-/// files set it, so mode 1 is the exception and not the rule.
-constexpr u32 kFlagBirthAtEmitter = 0x100u;
-constexpr u32 kFlagParticleUnwrapped = 0x400u;
-/// @brief `dwPrtFlags` bit 8 — birth AT the emitter, not along its path.
-///
-/// Clear (the common case) makes `Particle_InitLifeAndSize` draw a uniform `u`
-/// and place the particle at `lerp(prevPos, pos, u)`: a random point on the
-/// segment the emitter travelled this frame, which is what stops a fast emitter
-/// stamping a whole frame's particles at one spot. Set skips both the lerp AND
-/// THE DRAW. This build gated it on the system type instead, which is neither
-/// the same condition nor the same draw count.
-///
-/// The same bit does a second job `ParticleSystem_SetEmitterTransform` reads
-/// (G-D3P-21): it CARRIES the live particles when the emitter moves. Between the
-/// two the bit means "this system is emitter-local", and reading it as the birth
-/// rule alone leaves an attached effect trailing behind the thing it is on.
-
-/// @brief `dwPrtFlags` bit 29 — carry by translation only, never by rotation.
-///
-/// Only consulted when bit 8 is set. With it clear a turning emitter rotates
-/// every live particle's offset by `newQ * conj(oldQ)`; with it set the offsets
-/// are translated and the rotation is dropped.
-constexpr u32 kFlagCarryWithoutRotation = 0x20000000u;
+// The five `dwPrtFlags` bits (`PrtFlag`), and what each one does here:
+//
+// `Persistent` (bit 0) — the system runs until it is told to stop.
+// `ParticleSystem_TickEmitter` @0x71000AEA20 branches its WHOLE timing model on
+// this. Clear (12,331 files): the emitter channels are sampled at
+// `elapsed / tmLifetime` in time mode 0 — no wrap, one pass — and the system is
+// released the moment `elapsed >= tmLifetime`. Set (9,262 files): time mode 1,
+// so the same quotient WRAPS into the path's loop sub-range, and the release
+// test is not run at all. `tmLifetime` is 60 frames on 6,884 files, so reading
+// the bit as "expires anyway" stops a third of every shipped effect after
+// exactly one second.
+//
+// `BirthAtEmitter` (bit 8) — birth AT the emitter, not along its path. Clear
+// (the common case) makes `Particle_InitLifeAndSize` draw a uniform `u` and
+// place the particle at `lerp(prevPos, pos, u)`: a random point on the segment
+// the emitter travelled this frame, which is what stops a fast emitter stamping
+// a whole frame's particles at one spot. Set skips both the lerp AND THE DRAW.
+// This build gated it on the system type instead, which is neither the same
+// condition nor the same draw count. The same bit does a second job
+// `ParticleSystem_SetEmitterTransform` reads (G-D3P-21): it CARRIES the live
+// particles when the emitter moves. Between the two the bit means "this system
+// is emitter-local", and reading it as the birth rule alone leaves an attached
+// effect trailing behind the thing it is on.
+//
+// `ParticleUnwrapped` (bit 10) — the PARTICLE channels are sampled unwrapped.
+// `Particle_BuildEvalContext` @0x710037AD70 opens on `sys+13 & 4`, which is this
+// bit of the same word: set, the particle's channels use time mode 0 and play
+// their curve once across the particle's life; clear, mode 1 wraps the quotient
+// into `[loopStart, loopEnd]` and the curve repeats. 18,415 of 21,593 files set
+// it, so mode 1 is the exception and not the rule.
+//
+// `ClampDistanceEmission` (bit 28) ENABLES the 300 u/s clamp on distance
+// emission.
+//
+// `CarryWithoutRotation` (bit 29) — carry by translation only, never by
+// rotation. Only consulted when bit 8 is set. With it clear a turning emitter
+// rotates every live particle's offset by `newQ * conj(oldQ)`; with it set the
+// offsets are translated and the rotation is dropped.
 
 const std::shared_ptr<const EmitterDesc>& DefaultD3Desc() {
     static const std::shared_ptr<const EmitterDesc> d = std::make_shared<EmitterDesc>();
@@ -221,10 +212,9 @@ void EmitterDesc::DeriveCapabilities() {
         caps |= kCapSeek;
     // Rotation is FORCED OFF for the two foliage types, whatever the channels
     // say — the engine skips the whole block for them.
-    if (systemType != 6 && systemType != 8 &&
-        (live(kChRollRate, 0.0f) || live(kChRollAngle, 0.0f)))
+    if (!UsesWindSpring(systemType) && (live(kChRollRate, 0.0f) || live(kChRollAngle, 0.0f)))
         caps |= kCapRoll;
-    if (systemType == 1 || systemType == 3 || systemType == 4)
+    if (EmitsActors(systemType))
         caps |= kCapRibbon;
 }
 
@@ -234,22 +224,6 @@ Emitter::Emitter() : d3desc_(DefaultD3Desc()) {}
 
 void Emitter::SetD3Desc(std::shared_ptr<const EmitterDesc> desc) {
     d3desc_ = desc ? std::move(desc) : DefaultD3Desc();
-    // The base class still owns the draw list's material and priority, so give
-    // it a desc carrying those and nothing else. Everything the WC3/WoW
-    // simulation would read off it stays at its default and is never
-    // consulted, because Update is overridden.
-    auto base = std::make_shared<particle::EmitterDesc>();
-    base->material = d3desc_->material;
-    base->priorityPlane = d3desc_->priorityPlane;
-    // A type 1/3/4 system draws nothing of its own — every emission is a whole
-    // model — so it declares the child-model space and the geometry builder is
-    // never asked for it.
-    base->output = d3desc_->SpawnsChildActors() ? ParticleOutput::ChildModel
-                                                : ParticleOutput::Billboard;
-    base->hasHead = true;
-    base->shape = std::make_shared<PlaneShape>();
-    Emitter2::SetDesc(base);
-
     Restart();
 }
 
@@ -277,19 +251,21 @@ void Emitter::Restart() {
     preSimPending_ = d3desc_->preSimulate > 0.0f;
 }
 
-void Emitter::OnPoolResized(usize capacity) {
-    states_.resize(capacity);
+EmitterDrawHeader Emitter::DrawHeader() const {
+    EmitterDrawHeader h;
+    h.output = d3desc_->SpawnsChildActors() ? ParticleOutput::ChildModel
+                                            : ParticleOutput::Billboard;
+    h.priorityPlane = d3desc_->priorityPlane;
+    h.material = &d3desc_->material;
+    h.materialTimeSec = MaterialTimeSec();
+    return h;
 }
 
-void Emitter::ApplyState(const model::FrameState::ParticleFrameState& st) {
-    // D3 has no per-frame animated emitter parameters of the kind FrameState
-    // carries: everything animated is a channel inside the `.prt`, sampled
-    // against the system's own clock. So this takes only the placement and the
-    // visibility and ignores the rest, rather than mapping fields that would
-    // then fight the channels for the same quantity.
-    SetVisible(st.visibility > 0.0f);
-    SetModelToWorld(st.transform);
-    SetWorldPosition(whiteout::transform_point({0, 0, 0}, st.transform));
+void Emitter::GrowPool(u32 capacity) {
+    const usize before = pool_.Capacity();
+    pool_.Sync(capacity);
+    if (pool_.Capacity() != before)
+        states_.resize(pool_.Capacity());
 }
 
 bool Emitter::EmissionFinished() const {
@@ -297,7 +273,7 @@ bool Emitter::EmissionFinished() const {
     // A persistent system has no expiry at all: the engine's release test sits
     // inside the branch this bit skips, and a viewer never sends the stop that
     // would start the wind-down. See kFlagPersistent.
-    if ((d.prtFlags & kFlagPersistent) != 0)
+    if (d.Has(PrtFlag::Persistent))
         return false;
     if (d.lifetime <= 0.0f)
         return false;
@@ -305,12 +281,12 @@ bool Emitter::EmissionFinished() const {
 }
 
 void Emitter::RunPreSimulate() {
-    constexpr f32 kStep = 1.0f / 60.0f;
+    constexpr f32 kStep = kFrameSeconds;
     // Round rather than truncate: the desc holds `tmPreSimulate * (1/60)` and
     // dividing that back by the same float leaves 0.5 s at 29.999998 steps,
     // one short of the 30 the engine's countdown takes.
-    const f32 secs = std::min(d3desc_->preSimulate, 1000.0f);
-    const i32 steps = static_cast<i32>(std::lround(secs * 60.0f));
+    const f32 secs = std::min(d3desc_->preSimulate, kMaxPreSimulateSeconds);
+    const i32 steps = static_cast<i32>(std::lround(secs * kFramesPerSecond));
     for (i32 i = 0; i < steps; ++i)
         Update(kStep, 1.0f);
 }
@@ -325,7 +301,7 @@ void Emitter::RefreshGroundNormal(ParticleState& st, const Vector3f& pos) const 
     // World up is the engine's own answer when the raycast misses, so it is
     // also the right thing to hold when there is no query at all.
     st.groundNormal = kWorldUp;
-    if (!groundQuery_)
+    if (!surface_.groundQuery)
         return;
 
     // The query answers with a height, not a normal, so take two tangents a
@@ -338,9 +314,9 @@ void Emitter::RefreshGroundNormal(ParticleState& st, const Vector3f& pos) const 
     // lands on the miss default above.
     constexpr f32 kReach = 1000.0f;
     f32 z0 = 0.0f, zx = 0.0f, zy = 0.0f;
-    if (!groundQuery_(pos, kReach, kReach, z0) ||
-        !groundQuery_({pos.x + kStep, pos.y, pos.z}, kReach, kReach, zx) ||
-        !groundQuery_({pos.x, pos.y + kStep, pos.z}, kReach, kReach, zy))
+    if (!surface_.groundQuery(pos, kReach, kReach, z0) ||
+        !surface_.groundQuery({pos.x + kStep, pos.y, pos.z}, kReach, kReach, zx) ||
+        !surface_.groundQuery({pos.x, pos.y + kStep, pos.z}, kReach, kReach, zy))
         return;
     const Vector3f n = FrameCross({kStep, 0.0f, zx - z0}, {0.0f, kStep, zy - z0});
     const f32 len = FrameLength(n);
@@ -375,7 +351,7 @@ EvalCtx Emitter::EmitterCtx() const {
     // request (ParticleSystem_RequestStop sets sys+236 and the emitter fades over it), and
     // normalising against it here made every channel run 1/2 to 1/6 of its
     // authored length.
-    c.timeMode = ((d.prtFlags & kFlagPersistent) != 0) ? 1 : 0;
+    c.timeMode = d.Has(PrtFlag::Persistent) ? TimeMode::Looped : TimeMode::Raw;
     c.time = systemAge_;
     // A zero period divides by zero in NormalisedTime; the engine's own guard
     // is the `period == 0` early-out, which yields t = 0. The randomiser scales
@@ -390,9 +366,9 @@ EvalCtx Emitter::ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 a
     EvalCtx c;
     // Mode 0 plays the curve once across the particle's life; mode 1 wraps it
     // into the path's own loop sub-range, so a channel whose `loopEnd` is 0.5
-    // runs twice. See kFlagParticleUnwrapped — the bit picks between them and
-    // 85% of shipped files ask for mode 0.
-    c.timeMode = ((d.prtFlags & kFlagParticleUnwrapped) != 0) ? 0 : 1;
+    // runs twice. See `PrtFlag::ParticleUnwrapped` — the bit picks between them
+    // and 85% of shipped files ask for mode 0.
+    c.timeMode = d.Has(PrtFlag::ParticleUnwrapped) ? TimeMode::Raw : TimeMode::Looped;
     c.time = age;
     c.period = st.lifetime;
 
@@ -461,7 +437,7 @@ Emitter::EmitContext Emitter::BuildEmitContext() const {
 // and is converted on the way out. See SetUnitScale.
 Vector3f Emitter::SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const {
     const Vector3f& rest = m.rest[vertex];
-    if (m.bones.empty() || emitPose_.empty() || emitInvBind_.empty())
+    if (m.bones.empty() || surface_.pose.empty() || surface_.invBind.empty())
         return rest;
 
     const auto& b = m.bones[vertex];
@@ -472,11 +448,11 @@ Vector3f Emitter::SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const {
     // fourth, and the weight test below is what makes that free rather than
     // a behaviour change.
     for (usize k = 0; k < kEmitMeshBones; ++k) {
-        if (!(lane[k] > 0.0f) || b[k] < 0 || b[k] >= static_cast<i32>(emitPose_.size()) ||
-            b[k] >= static_cast<i32>(emitInvBind_.size()))
+        if (!(lane[k] > 0.0f) || b[k] < 0 || b[k] >= static_cast<i32>(surface_.pose.size()) ||
+            b[k] >= static_cast<i32>(surface_.invBind.size()))
             continue;
         const Vector3f p = whiteout::transform_point(
-            rest, emitInvBind_[static_cast<usize>(b[k])] * emitPose_[static_cast<usize>(b[k])]);
+            rest, surface_.invBind[static_cast<usize>(b[k])] * surface_.pose[static_cast<usize>(b[k])]);
         acc = {acc.x + p.x * lane[k], acc.y + p.y * lane[k], acc.z + p.z * lane[k]};
         sum += lane[k];
     }
@@ -487,9 +463,9 @@ Vector3f Emitter::SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const {
 }
 
 bool Emitter::SampleEmitMeshPoint(bool sequential, u32 sequence, Vector3f& out) {
-    if (!emitMesh_ || emitMesh_->Empty())
+    if (!surface_.mesh || surface_.mesh->Empty())
         return false;
-    const EmitMesh& m = *emitMesh_;
+    const EmitMesh& m = *surface_.mesh;
 
     // Which sub-object. The engine reads the system's own index and draws
     // uniformly when it is -1, with the modulo shortcut it uses everywhere a
@@ -540,7 +516,7 @@ bool Emitter::SampleEmitMeshPoint(bool sequential, u32 sequence, Vector3f& out) 
     const f32 w0 = (1.0f - w1) - b;
     const Vector3f local{p0.x * w0 + p1.x * w1 + p2.x * b, p0.y * w0 + p1.y * w1 + p2.y * b,
                          p0.z * w0 + p1.z * w1 + p2.z * b};
-    out = whiteout::transform_point(local, emitMeshToWorld_);
+    out = whiteout::transform_point(local, surface_.toWorld);
     return true;
 }
 
@@ -630,7 +606,7 @@ Vector3f Emitter::BirthVelocity(u32 seed, const EvalCtx& ectx) {
         return {0, 0, 0};
 
     Vector3f v = d.Channel(kChInitialVelocity).EvalVector(seed, kChInitialVelocity, ectx);
-    v = {v.x * 60.0f, v.y * 60.0f, v.z * 60.0f};
+    v = {v.x * kFramesPerSecond, v.y * kFramesPerSecond, v.z * kFramesPerSecond};
     if (d.Has(kChSpreadAngle)) {
         // Seeded from the SYSTEM, not the particle: channel 39 is drawn once
         // per system, so every particle of one emitter shares its cone angle
@@ -646,7 +622,8 @@ Vector3f Emitter::BirthVelocity(u32 seed, const EvalCtx& ectx) {
     v = emitterQuat_.rotate_vector(v);
     if (d.Has(kChWorldVelocity)) {
         const Vector3f w = d.Channel(kChWorldVelocity).EvalVector(seed, kChWorldVelocity, ectx);
-        v = {v.x + w.x * 60.0f, v.y + w.y * 60.0f, v.z + w.z * 60.0f};
+        v = {v.x + w.x * kFramesPerSecond, v.y + w.y * kFramesPerSecond,
+             v.z + w.z * kFramesPerSecond};
     }
     return v;
 }
@@ -656,7 +633,7 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
 
     if (Pool().DeadEmpty()) {
         const u32 want = static_cast<u32>(
-            std::min<usize>(kMaxLiveParticles, std::max<usize>(64, Pool().Capacity() * 2)));
+            std::min<usize>(kMaxLiveParticles, std::max<usize>(kMinPoolGrowth, Pool().Capacity() * 2)));
         if (want <= Pool().Capacity())
             return false;
         GrowPool(want);
@@ -671,7 +648,7 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
     // two values that would collide with its own sentinels; reproduce it so a
     // seed-for-seed trace matches.
     const u32 raw = sysRng_.Next();
-    st.seed = (raw >= 0xFFFFFFFEu) ? (raw + 2u) : raw;
+    st.seed = (raw >= kFirstSentinelSeed) ? (raw + 2u) : raw;
 
     // Sub-frame emission interpolation: the base is a random point on the
     // segment the emitter travelled this frame, not its current position. One
@@ -679,14 +656,14 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
     // frame's particles at one spot.
     const Vector3f now = WorldPosition();
     Vector3f base = now;
-    if ((d.prtFlags & kFlagBirthAtEmitter) == 0) {
-        const Vector3f prev = prevWorldPos_;
+    if (!d.Has(PrtFlag::BirthAtEmitter)) {
+        const Vector3f prev = placement_.prevWorldPos;
         const f32 u = sysRng_.NextUnit();
         base = {prev.x + u * (now.x - prev.x), prev.y + u * (now.y - prev.y),
                 prev.z + u * (now.z - prev.z)};
     }
     // System type 10 overrides whichever of the two it just computed.
-    if (d.systemType == static_cast<i32>(SystemType::WorldAnchored))
+    if (d.systemType == SystemType::WorldAnchored)
         base = {0, 0, 0};
 
     p.position = SampleShape(ec, base);
@@ -700,10 +677,10 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
     // ONE FRAME, not one second — `Particle_InitLifeAndSize` writes the literal
     // 1/60 — and a system whose lifetime path is missing is meant to be a
     // one-frame flash rather than a second of particles.
-    st.lifetime = 1.0f / 60.0f;
+    st.lifetime = kFrameSeconds;
     if (d.Has(kChParticleLife)) {
         const i32 frames = d.Channel(kChParticleLife).EvalInt(st.seed, kChParticleLife, ectx);
-        st.lifetime = static_cast<f32>(frames) * (1.0f / 60.0f);
+        st.lifetime = static_cast<f32>(frames) * kFrameSeconds;
     }
     if (st.lifetime <= 0.0f) {
         Pool().PushDead(idx);
@@ -735,7 +712,6 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
     SeedUvStates(st);
 
     Pool().PushAlive(idx);
-    OnParticleBorn(idx);
 
     // Newborns are advanced by the REMAINDER of the frame, not a whole one, so
     // a particle created mid-frame is not a frame behind. This is also what
@@ -763,7 +739,7 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
 /// ones after it.
 void Emitter::SeedUvStates(ParticleState& st) const {
     const MaterialDesc& m = d3desc_->d3mat;
-    MwcRng rng = MwcRng::Seed(st.seed ^ 0x2D32u);
+    MwcRng rng = MwcRng::Seed(st.seed ^ kUvSeedSalt);
     for (u32 s = 0; s < MaterialDesc::kMaxLayers; ++s) {
         if (m.setLayer[s] < 0)
             continue;
@@ -825,7 +801,7 @@ void Emitter::StepUvStates(ParticleState& st, f32 dt) const {
             // `fabsf(rate) < 1e-6`, not `!= 0`: the engine's early-out is on the
             // magnitude, so a NEGATIVE rate plays the sheet backwards. One
             // shipped entry authors -30 fps.
-            if (!L.atlas || std::fabs(u.cursorRate) < 1e-6f)
+            if (!L.atlas || std::fabs(u.cursorRate) < kEpsilon)
                 continue;
             const f32 length = static_cast<f32>(L.atlas->frames.size()) - 0.0001f;
             if (length <= 0.0f)
@@ -859,14 +835,15 @@ void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
     // `ParticleSystem_TickEmitter` returns before the accumulator for these
     // two: `if (eSystemType - 7 < 2) return 0`. Static clutter and the wind
     // foliage that carries it place their instances at load, not per frame.
-    if (d.systemType == 7 || d.systemType == 8)
+    if (SkipsEmission(d.systemType))
         return;
     const EvalCtx ectx = EmitterCtx();
 
     // The three drivers, combined into one accumulator.
     f32 rate = 0.0f;
     if (d.Has(kChEmissionRate))
-        rate = d.Channel(kChEmissionRate).EvalScalar(emitterSeed_, kChEmissionRate, ectx) * 60.0f;
+        rate = d.Channel(kChEmissionRate).EvalScalar(emitterSeed_, kChEmissionRate, ectx) *
+               kFramesPerSecond;
     emitAccum_ += rate * dt * emissionScaler;
 
     if (d.Has(kChDistanceRate)) {
@@ -878,7 +855,7 @@ void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
         // walking hero.
         const f32 inv = 1.0f / UnitScale();
         const Vector3f now = WorldPosition();
-        const Vector3f prev = prevWorldPos_;
+        const Vector3f prev = placement_.prevWorldPos;
         const Vector3f delta{(now.x - prev.x) * inv, (now.y - prev.y) * inv,
                              (now.z - prev.z) * inv};
         const f32 speed =
@@ -886,10 +863,11 @@ void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
                 ? std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z) / dt
                 : 0.0f;
         const bool clamped =
-            (speed >= 300.0f) && ((d.prtFlags & kFlagClampDistanceEmission) != 0);
+            (speed >= kDistanceEmissionMaxSpeed) && d.Has(PrtFlag::ClampDistanceEmission);
         if (speed > kEpsilon && !clamped) {
             const f32 perUnit =
-                d.Channel(kChDistanceRate).EvalScalar(emitterSeed_, kChDistanceRate, ectx) * 60.0f;
+                d.Channel(kChDistanceRate).EvalScalar(emitterSeed_, kChDistanceRate, ectx) *
+                kFramesPerSecond;
             // The dt^2 is the engine's, and it is dimensionally odd: the term
             // is `speed * (rate*dt) * dt`, so a trail's density is frame-rate
             // coupled by design. Reproduced as measured.
@@ -958,15 +936,15 @@ bool Emitter::SpawnChildActor(EmitContext& ec) {
         return false;
 
     const u32 raw = sysRng_.Next();
-    const u32 seed = (raw >= 0xFFFFFFFEu) ? (raw + 2u) : raw;
+    const u32 seed = (raw >= kFirstSentinelSeed) ? (raw + 2u) : raw;
 
     // The same sub-frame interpolation an ordinary birth uses: the emitter may
     // have moved this frame and a burst must not stamp every model on one spot.
     const Vector3f now = WorldPosition();
     const f32 u = sysRng_.NextUnit();
-    const Vector3f base{prevWorldPos_.x + u * (now.x - prevWorldPos_.x),
-                        prevWorldPos_.y + u * (now.y - prevWorldPos_.y),
-                        prevWorldPos_.z + u * (now.z - prevWorldPos_.z)};
+    const Vector3f base{placement_.prevWorldPos.x + u * (now.x - placement_.prevWorldPos.x),
+                        placement_.prevWorldPos.y + u * (now.y - placement_.prevWorldPos.y),
+                        placement_.prevWorldPos.z + u * (now.z - placement_.prevWorldPos.z)};
     const Vector3f pos = SampleShape(ec, base);
 
     // `Particle_InitLifeAndSize` still runs, and still rejects: a non-positive
@@ -974,7 +952,7 @@ bool Emitter::SpawnChildActor(EmitContext& ec) {
     const EvalCtx ectx = EmitterCtx();
     if (d.Has(kChParticleLife)) {
         const f32 frames = d.Channel(kChParticleLife).EvalScalar(seed, kChParticleLife, ectx);
-        if (std::round(frames) * (1.0f / 60.0f) <= 0.0f)
+        if (std::round(frames) * kFrameSeconds <= 0.0f)
             return false;
     }
     const f32 size = d.Has(kChBirthSize)
@@ -1005,7 +983,7 @@ bool Emitter::SpawnChildActor(EmitContext& ec) {
     const Vector3f sysPos = WorldPosition();
     fi.fromSystem = {pos.x - sysPos.x, pos.y - sysPos.y, pos.z - sysPos.z};
     fi.emitterQuat = emitterQuat_;
-    if (d.renderMode == 9 || d.renderMode == 10) {
+    if (ConformsToGround(d.renderMode)) {
         ParticleState ground;
         RefreshGroundNormal(ground, pos);
         fi.groundNormal = ground.groundNormal;
@@ -1020,6 +998,8 @@ bool Emitter::SpawnChildActor(EmitContext& ec) {
     ev.owner = childOwner_;
     ev.emitterId = childEmitterId_;
     ev.childHandle = handle;
+    ev.route = ChildModelEvent::Route::D3Actor;
+    ev.snoActor = d.snoActor;
     ev.transform = renderer::animation::ComposePivotSRT(pos, orient, {size, size, size},
                                                         {0.0f, 0.0f, 0.0f});
     childPending_.push_back(ev);
@@ -1083,7 +1063,8 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         f32 radialSpeed = 0.0f;
         if (d.Has(kChOrbitRadSpeed))
             radialSpeed =
-                d.Channel(kChOrbitRadSpeed).EvalScalar(st.seed, kChOrbitRadSpeed, ctx) * 60.0f;
+                d.Channel(kChOrbitRadSpeed).EvalScalar(st.seed, kChOrbitRadSpeed, ctx) *
+                kFramesPerSecond;
         if (d.Has(kChOrbitRadius)) {
             const f32 now = d.Channel(kChOrbitRadius).EvalScalar(st.seed, kChOrbitRadius, ctx);
             radialSpeed += (now - st.prevOrbitRadius) * invDt;
@@ -1092,7 +1073,8 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         f32 angular = 0.0f;
         if (d.Has(kChOrbitAngSpeed))
             angular =
-                d.Channel(kChOrbitAngSpeed).EvalScalar(st.seed, kChOrbitAngSpeed, ctx) * 60.0f;
+                d.Channel(kChOrbitAngSpeed).EvalScalar(st.seed, kChOrbitAngSpeed, ctx) *
+                kFramesPerSecond;
 
         const f32 a = angular * dt;
         const f32 ca = std::cos(a), sa = std::sin(a);
@@ -1113,7 +1095,8 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
 
         f32 speed = 0.0f;
         if (d.Has(kChRadialSpeed))
-            speed = d.Channel(kChRadialSpeed).EvalScalar(st.seed, kChRadialSpeed, ctx) * 60.0f;
+            speed = d.Channel(kChRadialSpeed).EvalScalar(st.seed, kChRadialSpeed, ctx) *
+                    kFramesPerSecond;
         if (d.Has(kChRadialOffset)) {
             const f32 now = d.Channel(kChRadialOffset).EvalScalar(st.seed, kChRadialOffset, ctx);
             speed += (now - st.prevRadial) * invDt;
@@ -1128,7 +1111,7 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         Vector3f v{0, 0, 0};
         if (d.Has(kChVelocityA)) {
             const Vector3f s = d.Channel(kChVelocityA).EvalVector(st.seed, kChVelocityA, ctx);
-            v = {s.x * 60.0f, s.y * 60.0f, s.z * 60.0f};
+            v = {s.x * kFramesPerSecond, s.y * kFramesPerSecond, s.z * kFramesPerSecond};
         }
         if (d.Has(kChOffsetA)) {
             const Vector3f now = d.Channel(kChOffsetA).EvalVector(st.seed, kChOffsetA, ctx);
@@ -1139,9 +1122,9 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         }
         if (d.Has(kChAccelA)) {
             const Vector3f a = d.Channel(kChAccelA).EvalVector(st.seed, kChAccelA, ctx);
-            st.accelVelA = {st.accelVelA.x + a.x * 3600.0f * dt,
-                            st.accelVelA.y + a.y * 3600.0f * dt,
-                            st.accelVelA.z + a.z * 3600.0f * dt};
+            st.accelVelA = {st.accelVelA.x + a.x * kFramesPerSecondSq * dt,
+                            st.accelVelA.y + a.y * kFramesPerSecondSq * dt,
+                            st.accelVelA.z + a.z * kFramesPerSecondSq * dt};
         }
         disp = {disp.x + (v.x + st.accelVelA.x) * dt, disp.y + (v.y + st.accelVelA.y) * dt,
                 disp.z + (v.z + st.accelVelA.z) * dt};
@@ -1152,7 +1135,7 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         Vector3f v{0, 0, 0};
         if (d.Has(kChVelocityB)) {
             const Vector3f s = d.Channel(kChVelocityB).EvalVector(st.seed, kChVelocityB, ctx);
-            v = {s.x * 60.0f, s.y * 60.0f, s.z * 60.0f};
+            v = {s.x * kFramesPerSecond, s.y * kFramesPerSecond, s.z * kFramesPerSecond};
         }
         if (d.Has(kChOffsetB)) {
             const Vector3f now = d.Channel(kChOffsetB).EvalVector(st.seed, kChOffsetB, ctx);
@@ -1163,9 +1146,9 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         }
         if (d.Has(kChAccelB)) {
             const Vector3f a = d.Channel(kChAccelB).EvalVector(st.seed, kChAccelB, ctx);
-            st.accelVelB = {st.accelVelB.x + a.x * 3600.0f * dt,
-                            st.accelVelB.y + a.y * 3600.0f * dt,
-                            st.accelVelB.z + a.z * 3600.0f * dt};
+            st.accelVelB = {st.accelVelB.x + a.x * kFramesPerSecondSq * dt,
+                            st.accelVelB.y + a.y * kFramesPerSecondSq * dt,
+                            st.accelVelB.z + a.z * kFramesPerSecondSq * dt};
         }
         // The PER-FRAME delta is what gets rotated and applied; the running
         // total the engine also keeps is not what drives motion.
@@ -1187,7 +1170,7 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
 
         f32 s = 0.0f;
         if (d.Has(kChSeekSpeed))
-            s = d.Channel(kChSeekSpeed).EvalScalar(st.seed, kChSeekSpeed, ctx) * 60.0f;
+            s = d.Channel(kChSeekSpeed).EvalScalar(st.seed, kChSeekSpeed, ctx) * kFramesPerSecond;
         if (d.Has(kChSeekOffset)) {
             const f32 now = d.Channel(kChSeekOffset).EvalScalar(st.seed, kChSeekOffset, ctx);
             const Vector3f toTarget{(seekTarget_.x - sysPos.x) * inv,
@@ -1205,7 +1188,7 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
     // have. Drifting them along their birth velocity is not what the engine
     // does — it is the honest degradation, and it keeps rain falling instead
     // of hanging in the air.
-    if ((d.systemType & ~1) == 2 || d.systemType == static_cast<i32>(SystemType::Weather)) {
+    if (OwnsSolverBody(d.systemType)) {
         disp = {disp.x + p.velocity.x * dt, disp.y + p.velocity.y * dt,
                 disp.z + p.velocity.z * dt};
     }
@@ -1227,14 +1210,14 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
 
     // Render modes 9 and 10 conform the quad to the ground under it. Gated on
     // the mode because it is a query per moved particle and 422 files want it.
-    if (d.renderMode == 9 || d.renderMode == 10)
+    if (ConformsToGround(d.renderMode))
         RefreshGroundNormal(st, p.position);
 
     // ---- orientation -------------------------------------------------------
     if (d.Cap(kCapRoll)) {
         f32 w = 0.0f;
         if (d.Has(kChRollRate))
-            w = d.Channel(kChRollRate).EvalScalar(st.seed, kChRollRate, ctx) * 60.0f;
+            w = d.Channel(kChRollRate).EvalScalar(st.seed, kChRollRate, ctx) * kFramesPerSecond;
         if (d.Has(kChRollAngle)) {
             const f32 now = d.Channel(kChRollAngle).EvalScalar(st.seed, kChRollAngle, ctx);
             w += (now - st.prevRoll) * invDt;
@@ -1253,7 +1236,7 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         }
         f32 w = 0.0f;
         if (d.Has(kChSpinRate))
-            w = d.Channel(kChSpinRate).EvalScalar(st.seed, kChSpinRate, ctx) * 60.0f;
+            w = d.Channel(kChSpinRate).EvalScalar(st.seed, kChSpinRate, ctx) * kFramesPerSecond;
         if (d.Has(kChSpinAngle)) {
             const f32 now = d.Channel(kChSpinAngle).EvalScalar(st.seed, kChSpinAngle, ctx);
             // prev MINUS now. Every other pair in the system is now - prev;
@@ -1304,7 +1287,7 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
             st.opacity *=
                 d.Channel(kChEffectScale).EvalScalar(emitterSeed_, kChEffectScale, ectx);
     }
-    st.size = std::clamp(sizeCh * st.baseSize * emitterSize, 0.0001f, 999.0f);
+    st.size = std::clamp(sizeCh * st.baseSize * emitterSize, kMinParticleSize, kMaxParticleSize);
 
     // ch2 -> `particle+0xF0`, default 1.0 @0x71000BEF98. Only the quad's HEIGHT
     // reads it; a channel named for a size that scales one axis is why this sat
@@ -1356,16 +1339,16 @@ void Emitter::CarryWithEmitter() {
     carryPos_ = now;
     carryQuat_ = emitterQuat_;
 
-    if (d.systemType == static_cast<i32>(SystemType::Weather) ||
-        (d.systemType & ~1) == 2 || d.systemType == 1 ||
-        (d.prtFlags & kFlagBirthAtEmitter) == 0)
+    if (d.systemType == SystemType::Weather || d.systemType == SystemType::Swarm ||
+        d.systemType == SystemType::RibbonPhysics || d.systemType == SystemType::Ribbon ||
+        !d.Has(PrtFlag::BirthAtEmitter))
         return;
     const Vector3f delta{old.x - now.x, old.y - now.y, old.z - now.z};
     const bool moved = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z != 0.0f;
 
     const bool sameQuat = emitterQuat_.x == oldQ.x && emitterQuat_.y == oldQ.y &&
                           emitterQuat_.z == oldQ.z && emitterQuat_.w == oldQ.w;
-    if ((d.prtFlags & kFlagCarryWithoutRotation) != 0 || sameQuat) {
+    if (d.Has(PrtFlag::CarryWithoutRotation) || sameQuat) {
         // The exact `!= 0.0` displacement guard belongs to THIS arm alone. The
         // rotating arm below runs on a turn in place, which is the whole point
         // of it — an emitter that spins without moving still sweeps its
@@ -1431,7 +1414,7 @@ void Emitter::Update(f32 elapsed, f32 emissionScaler) {
                         ? d.Channel(kChTargetCount).EvalInt(emitterSeed_, kChTargetCount,
                                                             EmitterCtx())
                         : 0;
-                const i32 n = std::clamp(target, 0, 256);
+                const i32 n = std::clamp(target, 0, kMaxWindSpringPopulation);
                 ec.emitCount = n;
                 for (i32 i = 0; i < n; ++i) {
                     ec.emitIndex = i;
@@ -1465,7 +1448,6 @@ void Emitter::Update(f32 elapsed, f32 emissionScaler) {
             dead = (dx * dx + dy * dy) > killR2;
         }
         if (dead) {
-            OnParticleDied(idx);
             // Ordered, not swap-with-last: the engine compacts the live list and
             // renumbers the survivors (G-D3P-20), so emission order survives
             // every death. A swap shuffles the list on each one, and for an

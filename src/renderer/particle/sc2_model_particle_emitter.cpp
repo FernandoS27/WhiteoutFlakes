@@ -1,5 +1,7 @@
 #include "renderer/particle/sc2_model_particle_emitter.h"
 
+#include "renderer/particle/sc2_runtime.h"
+
 #include <cmath>
 
 namespace whiteout::flakes::renderer::particle {
@@ -19,10 +21,11 @@ void Sc2ModelParticleEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& 
     for (auto& ev : pending_)
         out.push_back(ev);
     pending_.clear();
-    if (!sc2_)
+    const Sc2Runtime* rt = Sc2State();
+    if (!rt)
         return;
 
-    const Sc2ElementList& list = sc2_->store.list;
+    const Sc2ElementList& list = rt->store.list;
     for (i32 node = list.head; node >= 0; node = list.next[static_cast<usize>(node)]) {
         const u32 idx = static_cast<u32>(node);
         if (idx >= childHandles_.size() || childHandles_[idx] == 0)
@@ -39,9 +42,10 @@ void Sc2ModelParticleEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& 
 }
 
 Matrix44f Sc2ModelParticleEmitter::TransformFor(u32 node) const {
-    if (!sc2_ || node >= sc2_->modelPose.size())
+    const Sc2Runtime* rt = Sc2State();
+    if (!rt || node >= rt->modelPose.size())
         return Matrix44f::identity();
-    const Sc2ModelPose& p = sc2_->modelPose[node];
+    const Sc2ModelPose& p = rt->modelPose[node];
     if (!Placeable(p))
         return Matrix44f::scaling({0.0f, 0.0f, 0.0f});
     // The quaternion's rows are where the model's own axes go, which is
@@ -59,15 +63,17 @@ Matrix44f Sc2ModelParticleEmitter::TransformFor(u32 node) const {
 }
 
 f32 Sc2ModelParticleEmitter::VisibilityFor(u32 node) const {
-    if (!sc2_ || node >= sc2_->modelPose.size())
+    const Sc2Runtime* rt = Sc2State();
+    if (!rt || node >= rt->modelPose.size())
         return 0.0f;
-    return Placeable(sc2_->modelPose[node]) ? 1.0f : 0.0f;
+    return Placeable(rt->modelPose[node]) ? 1.0f : 0.0f;
 }
 
 u32 Sc2ModelParticleEmitter::PathIndexFor(u32 node) const {
-    if (!sc2_ || node >= sc2_->modelPath.size())
+    const Sc2Runtime* rt = Sc2State();
+    if (!rt || node >= rt->modelPath.size())
         return 0;
-    return sc2_->modelPath[node];
+    return rt->modelPath[node];
 }
 
 } // namespace whiteout::flakes::renderer::particle

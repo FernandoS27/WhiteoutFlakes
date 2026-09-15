@@ -1,5 +1,7 @@
 #include "renderer/particle/particle_service.h"
 
+#include "renderer/particle/sc2_runtime.h"
+
 namespace whiteout::flakes::renderer::particle {
 
 namespace {
@@ -15,16 +17,18 @@ ParticleService::ParticleService() : fogSampler_(&DefaultFog) {}
 
 ParticleService::~ParticleService() = default;
 
-void ParticleService::AddEmitter(ModelId model, ParticleOutput output, i32 emitterId,
-                                 std::unique_ptr<Emitter2> emitter) {
+void ParticleService::AddEmitter(ModelId model, i32 emitterId,
+                                 std::unique_ptr<ParticleEmitter> emitter) {
+    const ParticleOutput output =
+        emitter ? emitter->DrawHeader().output : ParticleOutput::Billboard;
     std::lock_guard<std::mutex> lock(mutex_);
     // An emitter registered after the host installed its terrain has to get it
     // too, or an actor spawned mid-scene collides against a different surface
     // from its neighbours.
     if (groundQuery_ && emitter)
         emitter->SetGroundQuery(groundQuery_);
-    if (emitter)
-        emitter->AttachSc2PendingList(&sc2PendingModels_);
+    if (Emitter2* e2 = emitter ? emitter->AsEmitter2() : nullptr)
+        e2->AttachSc2PendingList(&sc2PendingModels_);
     emitters_[{model, output, emitterId}] = std::move(emitter);
 }
 
@@ -53,7 +57,8 @@ void ParticleService::ResetEmitters() {
     }
 }
 
-Emitter2* ParticleService::GetEmitter(ModelId model, ParticleOutput output, i32 emitterId) {
+ParticleEmitter* ParticleService::GetEmitter(ModelId model, ParticleOutput output,
+                                             i32 emitterId) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = emitters_.find({model, output, emitterId});
     return (it != emitters_.end()) ? it->second.get() : nullptr;
@@ -62,8 +67,10 @@ Emitter2* ParticleService::GetEmitter(ModelId model, ParticleOutput output, i32 
 i32 ParticleService::EmitterCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     i32 n = static_cast<i32>(emitters_.size());
-    for (const auto& [k, e] : emitters_)
-        n += static_cast<i32>(e->Trails().size());
+    for (const auto& [k, e] : emitters_) {
+        if (const Emitter2* e2 = e->AsEmitter2())
+            n += static_cast<i32>(e2->Trails().size());
+    }
     return n;
 }
 
@@ -74,8 +81,10 @@ i32 ParticleService::TotalParticleCount() const {
         total += e->TotalAlive();
         // Trails are not in the map — their owner is — so the counter has to
         // walk them or under-report every trail particle on screen.
-        for (const auto& t : e->Trails())
-            total += t->TotalAlive();
+        if (const Emitter2* e2 = e->AsEmitter2()) {
+            for (const auto& t : e2->Trails())
+                total += t->TotalAlive();
+        }
     }
     return total;
 }
@@ -90,14 +99,17 @@ bool ParticleService::HasEmittersForModel(ModelId model) const {
 }
 
 void ParticleService::ForEachEmitter(
-    const std::function<void(const EmitterKey&, const Emitter2&)>& fn) const {
+    const std::function<void(const EmitterKey&, const ParticleEmitter&)>& fn) const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [k, e] : emitters_) {
         fn(k, *e);
+        const Emitter2* e2 = e->AsEmitter2();
+        if (!e2)
+            continue;
         // Under the same key the draw lists use — synthetic id, and always the
         // billboard space, because that is what a trail's particles are.
         i32 childIdx = 0;
-        for (const auto& t : e->Trails())
+        for (const auto& t : e2->Trails())
             fn({k.model, ParticleOutput::Billboard, TrailEmitterId(k.id, childIdx++)}, *t);
     }
 }
@@ -117,6 +129,9 @@ void ParticleService::Simulate(f32 dt) {
     std::vector<RoutedSpawnRequest> routed;
     for (auto& [k, e] : emitters_) {
         e->Update(dt, emissionScaler_);
+        Emitter2* e2 = e->AsEmitter2();
+        if (!e2)
+            continue;
         // An SC2 emitter's requests of its children leave right after its own
         // step, into the child's inbox: a child later in this walk takes them
         // this frame and one earlier takes them next frame, as retail's update
@@ -124,14 +139,14 @@ void ParticleService::Simulate(f32 dt) {
         // requests meet. A child is registered under whichever output it
         // draws, so both id spaces are asked.
         routed.clear();
-        e->DrainSpawnRequests(routed);
+        e2->DrainSpawnRequests(routed);
         for (const RoutedSpawnRequest& r : routed) {
             auto it = emitters_.find(EmitterKey{k.model, ParticleOutput::Billboard, r.targetEmitterId});
             if (it == emitters_.end())
                 it = emitters_.find(
                     EmitterKey{k.model, ParticleOutput::ChildModel, r.targetEmitterId});
-            if (it != emitters_.end())
-                it->second->QueueSpawnRequest(r.req);
+            if (Emitter2* target = it != emitters_.end() ? it->second->AsEmitter2() : nullptr)
+                target->QueueSpawnRequest(r.req);
         }
     }
 
@@ -162,9 +177,12 @@ void ParticleService::DrainChildModelEvents(std::vector<ChildModelEvent>& out) {
 bool ParticleService::HasRefractionEmitters() const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [k, e] : emitters_) {
-        if (e->Desc().refraction)
+        if (e->DrawHeader().refraction)
             return true;
-        for (const auto& t : e->Trails())
+        const Emitter2* e2 = e->AsEmitter2();
+        if (!e2)
+            continue;
+        for (const auto& t : e2->Trails())
             if (t->Desc().refraction)
                 return true;
     }
@@ -221,23 +239,24 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     // the offsets belong to. With nowhere to put them it falls back to the
     // single-texture path: the result is too bright and misses two layers, but
     // an approximate particle beats a missing one.
-    auto build = [&](const Emitter2& e, ModelId model, i32 id, const Vector3f& origin) {
-        if (e.Desc().refraction) {
+    auto build = [&](const ParticleEmitter& e, const EmitterDrawHeader& h, ModelId model, i32 id,
+                     const Vector3f& origin) {
+        if (h.refraction) {
             if (!refraction)
                 return;
             const i32 offset = (i32)refraction->vertices.size();
             const i32 vcount = e.BuildGeometry(refractIn, refraction->vertices);
             if (vcount > 0)
-                refraction->draws.push_back({model, id, offset, vcount, e.PriorityPlane(),
-                                             e.Material(), origin, e.MaterialTimeSec()});
+                refraction->draws.push_back({model, id, offset, vcount, h.priorityPlane,
+                                             *h.material, origin, h.materialTimeSec});
             return;
         }
-        if (e.Desc().multiTexture && multiTex) {
+        if (h.multiTexture && multiTex) {
             const i32 offset = (i32)multiTex->vertices.size();
             const i32 vcount = e.BuildGeometry(multiTexIn, multiTex->vertices);
             if (vcount > 0)
-                outDrawLists.push_back({model, id, offset, vcount, e.PriorityPlane(),
-                                        e.Material(), origin, e.MaterialTimeSec()});
+                outDrawLists.push_back({model, id, offset, vcount, h.priorityPlane, *h.material,
+                                        origin, h.materialTimeSec});
             return;
         }
         // Levelled BEFORE the build, not after: a D3 emitter appends its
@@ -252,8 +271,8 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
         const i32 offset = (i32)outVertices.size();
         const i32 vcount = e.BuildGeometry(in, outVertices);
         if (vcount > 0) {
-            EmitterDrawList dl{model,           id,           offset, vcount, e.PriorityPlane(),
-                               e.Material(), origin, e.MaterialTimeSec()};
+            EmitterDrawList dl{model,        id,     offset,           vcount, h.priorityPlane,
+                               *h.material, origin, h.materialTimeSec};
             // Nothing downstream can shade three layers off this stream, so the
             // draw must not claim it carries them.
             dl.material.multiTexture = false;
@@ -263,15 +282,19 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
 
     for (const auto& [k, e] : emitters_) {
         const Vector3f origin = whiteout::transform_point({0, 0, 0}, e->ModelToWorld());
-        if (e->Output() == ParticleOutput::Billboard)
-            build(*e, k.model, k.id, origin);
+        const EmitterDrawHeader h = e->DrawHeader();
+        if (h.output == ParticleOutput::Billboard)
+            build(*e, h, k.model, k.id, origin);
+        const Emitter2* e2 = e->AsEmitter2();
+        if (!e2)
+            continue;
         // Trails are billboards whatever their owner's output is: a
         // model-particle emitter can carry one, and its trail still draws
         // quads. An emitter index belongs to one output space or the other,
         // never both, so the synthetic ids cannot collide across the two.
         i32 childIdx = 0;
-        for (const auto& t : e->Trails())
-            build(*t, k.model, TrailEmitterId(k.id, childIdx++), origin);
+        for (const auto& t : e2->Trails())
+            build(*t, t->DrawHeader(), k.model, TrailEmitterId(k.id, childIdx++), origin);
     }
     // The last emitter may have been one that writes no texcoords.
     if (d3Uv) {

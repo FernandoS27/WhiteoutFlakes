@@ -1,0 +1,648 @@
+#include "sc2_kernels_build.h"
+
+#include "sc2_emitter_desc.h"
+#include "sc2_kernel_math.h"
+#include "sc2_kernels_move.h"
+
+#include "renderer/sc2/sc2_element.h"
+#include "renderer/sc2/sc2_element_math.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace whiteout::flakes::renderer::particle {
+
+namespace {
+
+using detail::EulerDot;
+using detail::kFreezeSpeedSq;
+using sc2::kRotationQuant;
+using sc2::kSizeQuant;
+
+} // namespace
+
+namespace {
+
+/// The floor and the reciprocal's numerator are two separate globals in the
+/// binary; naming them keeps the comparison's operand honest.
+using sc2::kDragFloor;
+using sc2::kInvDragUnderFloor;
+
+/// What the clamped-tail latch adds to `spawnOrigin.x`: not an epsilon, a
+/// distance no tail reaches, so the particle stays in the long branch.
+constexpr f32 kTailLatchOffset = 10000.0f;
+
+void Store3(f32 (&dst)[3], const Vector3f& v) {
+    dst[0] = v.x;
+    dst[1] = v.y;
+    dst[2] = v.z;
+}
+
+} // namespace
+
+Sc2DragLanes Sc2ComputeDragLanes(f32 drag) {
+    Sc2DragLanes out;
+    out.drag = (std::max)(kDragFloor, drag);
+    // The comparison is against the RAW drag, before the floor.
+    out.invDrag = drag < kDragFloor ? kInvDragUnderFloor : 1.0f / drag;
+    return out;
+}
+
+Vector3f Sc2InstanceVector(const Sc2VertexBodyInputs& in, const Sc2SpawnedElement& e) {
+    switch (static_cast<Sc2InstanceType>(in.instanceType)) {
+    case Sc2InstanceType::Tail:
+    case Sc2InstanceType::Trail:
+        return {in.tailLength, 0.0f, 0.0f};
+    case Sc2InstanceType::FaceTravelDir:
+        return e.velocity;
+    case Sc2InstanceType::FaceWorldDir:
+    case Sc2InstanceType::SingleAxis:
+        return in.instanceAngle;
+    case Sc2InstanceType::EmitterOriented:
+    case Sc2InstanceType::PhysicsOriented:
+        return e.orientVec;
+    case Sc2InstanceType::Pinned:
+        return e.spawnOrigin;
+    default:
+        return {0.0f, 0.0f, 0.0f};
+    }
+}
+
+std::array<Sc2GpuVertex, 4> Sc2VertexBody(const Sc2VertexBodyInputs& in,
+                                          const Sc2SpawnedElement& e) {
+    Sc2GpuVertex v{};
+    Store3(v.position, e.position);
+    // The element's lane, which nothing writes and no shader path reads.
+    v.positionW = 0;
+    for (usize i = 0; i < 4; ++i)
+        v.size[i] = e.size[i];
+    for (usize i = 0; i < 3; ++i)
+        v.color[i] = e.colorNodes[i];
+    for (usize i = 0; i < 3; ++i)
+        v.rotation[i] = e.rotation[i];
+    v.flipbookRand = e.flipbookRand;
+    v.birthTime = e.birthTime;
+    v.deathTime = e.deathTime;
+
+    const Sc2DragLanes drag = Sc2ComputeDragLanes(in.drag);
+    v.drag = drag.drag;
+    v.invDrag = drag.invDrag;
+    v.batchIndex = in.batchIndex;
+
+    // One 16-byte copy in the binary, which is why `invMass` travels with the
+    // velocity instead of staying the 0 the pending-spawn path leaves.
+    Store3(v.velocity, e.velocity);
+    v.invMass = e.invMass;
+
+    Store3(v.instanceVec, Sc2InstanceVector(in, e));
+    v.gravityZ = in.worldGravityScale * in.gravity;
+
+    Store3(v.noise, e.noiseVec);
+    v.flipbookRandStart = e.flipbookRandStart;
+
+    std::array<Sc2GpuVertex, 4> quad{};
+    for (usize k = 0; k < 4; ++k) {
+        quad[k] = v;
+        quad[k].corner[0] = kSc2Corners[k][0];
+        quad[k].corner[1] = kSc2Corners[k][1];
+    }
+    return quad;
+}
+
+void Sc2CpuVertexBody(const Sc2CpuVertexInputs& in, Sc2SpawnedElement& e, Sc2GpuVertex& cache) {
+    // A ONE-byte store: `HIBYTE(*(u32*)(sys+0x34C))` into element `0x80`, and the
+    // four-byte lane then copied — so the upper three bytes are whatever the
+    // element held. OP11's `hole` rows poison them to show it.
+    cache.batchIndex = (cache.batchIndex & 0xFFFFFF00u) | (in.batchIndex & 0xFFu);
+
+    if (in.gpuMotion) {
+        const Sc2DragLanes drag = Sc2ComputeDragLanes(in.drag);
+        cache.drag = drag.drag;
+        cache.invDrag = drag.invDrag;
+        Store3(cache.velocity, e.velocity);
+        cache.invMass = e.invMass;
+        cache.gravityZ = in.gravity * in.gravityScale;
+    }
+
+    const f32 elapsed = in.emitterTime - e.birthTime;
+    const f32 age = whiteout::flakes::renderer::sc2::vs::Saturate(elapsed / (e.deathTime - e.birthTime));
+
+    if (in.noise) {
+        // The ramp HOLDS above the edge: past it the amplitude is simply full.
+        const f32 ramp = age < in.noiseEdge ? age / in.noiseEdge : 1.0f;
+        const f32 amp = in.noiseAmplitude * ramp;
+        f32 s[3];
+        whiteout::flakes::renderer::sc2::GlobalNoiseTable().Sample(
+            elapsed * in.noiseFrequency, age * in.noiseCoherence + e.noisePhase, s);
+        // Into the ELEMENT, then copied: on this path the element's cache is
+        // the shader's input.
+        e.noiseVec = {amp * s[0], amp * s[1], amp * s[2]};
+    }
+
+    // Types 5 and 6 read the terrain's vector field under the particle, and
+    // their gravity lane becomes a has-field flag rather than a gravity.
+    const auto terrainLanes = [&] {
+        if (in.field) {
+            f32 lanes[2];
+            in.field(in.fieldCtx, e.position.x, e.position.y, lanes);
+            cache.instanceVec[0] = lanes[0];
+            cache.instanceVec[1] = lanes[1];
+            cache.instanceVec[2] = e.position.y;
+            cache.gravityZ = 1.0f;
+        } else {
+            cache.instanceVec[0] = 0.0f;
+            cache.instanceVec[1] = 0.0f;
+            cache.instanceVec[2] = 1.0f;
+            cache.gravityZ = 0.0f;
+        }
+        cache.invMass = 1.0f;
+    };
+
+    switch (static_cast<Sc2InstanceType>(in.instanceType)) {
+    case Sc2InstanceType::Tail:
+    case Sc2InstanceType::Trail: {
+        Store3(cache.velocity, e.velocity);
+        // `.x` alone — the list builder leaves `.y/.z` as the cache had them.
+        cache.instanceVec[0] = in.tailLength;
+        if (Sc2Has(in.parFlags, ParticleFlag::ClampTailLength) && !in.gpuMotion) {
+            const Vector3f d{e.position.x - e.spawnOrigin.x, e.position.y - e.spawnOrigin.y,
+                             e.position.z - e.spawnOrigin.z};
+            const f32 dist2 = EulerDot(d, d);
+            const f32 speed = std::sqrt(EulerDot(e.velocity, e.velocity));
+            f32 reach = in.tailLength * speed;
+            if (!Sc2Has(in.parFlags, ParticleFlag::FixTailLengthOnCreation))
+                reach = (std::max)(reach, in.tailLength);
+            if (dist2 >= reach * reach) {
+                // Not an epsilon: nothing writes `spawnOrigin.x` back, so this
+                // pins the particle in the long branch for the rest of its
+                // life — and destroys the spawn origin for anything else.
+                e.spawnOrigin.x = e.position.x + kTailLatchOffset;
+            } else {
+                // A TIME, on the short branch only: the distance over the
+                // speed, in units of the particle's size now — the same
+                // two-segment knee the spawn size uses.
+                const f32 k0 = static_cast<f32>(e.size[0]) / kSizeQuant;
+                const f32 k1 = static_cast<f32>(e.size[1]) / kSizeQuant;
+                const f32 k2 = static_cast<f32>(e.size[2]) / kSizeQuant;
+                const f32 mid = in.sizeMidTime;
+                const f32 sizeNow = age < mid ? k0 + (k1 - k0) * (age / mid)
+                                              : k1 + (k2 - k1) * ((age - mid) / (1.0f - mid));
+                cache.instanceVec[0] = std::sqrt(dist2) / (speed * sizeNow);
+            }
+        }
+        break;
+    }
+    case Sc2InstanceType::FaceTravelDir:
+        Store3(cache.instanceVec, e.velocity);
+        break;
+    case Sc2InstanceType::FaceWorldDir:
+    case Sc2InstanceType::SingleAxis:
+        Store3(cache.instanceVec, in.instanceAngle);
+        break;
+    case Sc2InstanceType::TerrainOriented:
+        terrainLanes();
+        Store3(cache.velocity, in.instanceAngle);
+        break;
+    case Sc2InstanceType::TerrainDirOriented: {
+        terrainLanes();
+        Store3(cache.velocity,
+               EulerDot(e.velocity, e.velocity) < kFreezeSpeedSq ? e.orientVec : e.velocity);
+        // The tail length, not `instanceAngle.x`, and one dword store that zeroes
+        // the other two keys and stops short of `flipbookRand`.
+        e.rotation = {static_cast<u16>(static_cast<i32>(in.tailLength * kRotationQuant)), 0, 0};
+        break;
+    }
+    case Sc2InstanceType::EmitterOriented:
+    case Sc2InstanceType::PhysicsOriented:
+        Store3(cache.instanceVec, e.orientVec);
+        break;
+    case Sc2InstanceType::Pinned:
+        Store3(cache.instanceVec, e.spawnOrigin);
+        break;
+    default:
+        // Type 0 writes nothing: the cache keeps whatever was last there.
+        break;
+    }
+
+    // The one 112-byte run from the element.
+    Store3(cache.position, e.position);
+    for (usize i = 0; i < 4; ++i)
+        cache.size[i] = e.size[i];
+    for (usize i = 0; i < 3; ++i) {
+        cache.color[i] = e.colorNodes[i];
+        cache.rotation[i] = e.rotation[i];
+    }
+    cache.flipbookRand = e.flipbookRand;
+    cache.birthTime = e.birthTime;
+    cache.deathTime = e.deathTime;
+    Store3(cache.noise, e.noiseVec);
+    cache.flipbookRandStart = e.flipbookRandStart;
+}
+
+namespace {
+
+/// `vRotation.w`'s byte pair: split at 256, each byte over 255 — not 256, so a
+/// full byte shifts a whole tile.
+constexpr f32 kUvByteSplit = 256.0f;
+constexpr f32 kUvByteMax = 255.0f;
+
+/// HLSL integer `/`: truncation toward zero, not C++'s — which agrees, but
+/// only since C++11, and the shader's intent is worth spelling out.
+i32 IDiv(i32 a, i32 b) {
+    const i32 q = std::abs(a) / std::abs(b);
+    return (a < 0) != (b < 0) ? -q : q;
+}
+
+i32 IMod(i32 a, i32 b) {
+    return a - IDiv(a, b) * b;
+}
+
+} // namespace
+
+Vector2f Sc2ParticleUv(const Sc2QuadInput& v, const i16 (&corner)[2], f32 age,
+                       const Sc2QuadBatch& b, const Sc2QuadFlags& fl) {
+    f32 u = static_cast<f32>(corner[0]) * 0.5f + 0.5f;
+    // The V axis is flipped, which is why the corner order reads bottom-up.
+    f32 vv = static_cast<f32>(corner[1]) * -0.5f + 0.5f;
+
+    if (fl.flipbookUv) {
+        const f32 mid = b.flipbookMidKeyTime;
+        f32 cellF = 0.0f;
+        // `<=`, as the shader spells it — though nothing can tell it from `<`.
+        // The grid does hit `age == mid` exactly (24 vectors), and both arms
+        // return `flipbookFrames[1]` there: the start run ends on the frame
+        // the end run begins on, and the indices are whole numbers, so
+        // `floor(n + 0.5) == n`. A mutation to `<` stays green. That is an
+        // equivalence, not a gap — widening the grid would never separate
+        // them.
+        if (age <= mid) {
+            const f32 range = b.flipbookFrames[1] - b.flipbookFrames[0];
+            cellF = b.flipbookFrames[0] + std::floor(range * (age / mid) + 0.5f);
+        } else {
+            const f32 range = b.flipbookFrames[2] - b.flipbookFrames[1];
+            cellF = b.flipbookFrames[1] +
+                    std::floor(range * ((age - mid) / (1.0f - mid)) + 0.5f);
+        }
+        i32 cell = static_cast<i32>(std::trunc(cellF));
+        if (fl.randomFlipbookStart) {
+            // The element's `flipbookRandStart` at +108, floored — a whole
+            // number of cells, so two particles never land mid-frame.
+            cell += static_cast<i32>(std::trunc(std::floor(v.flipbookRandStart)));
+        }
+        const f32 colsF = b.flipbookColumns == 0.0f ? 1.0f : b.flipbookColumns;
+        const i32 cols = static_cast<i32>(std::trunc(colsF));
+        const i32 cellX = IMod(cell, cols);
+        const i32 cellY = IDiv(cell, cols);
+        u = u * b.cellSize[0] + static_cast<f32>(cellX) * b.cellSize[0];
+        vv = vv * b.cellSize[1] + static_cast<f32>(cellY) * b.cellSize[1];
+    } else if (fl.uvRandomOffset) {
+        // `vRotation.w` = the element's `flipbookRand` u16, split hi/lo and
+        // divided by 255 — not 256, so a full byte shifts a whole tile.
+        const f32 r = v.rotation[3];
+        const f32 x = std::floor(r / kUvByteSplit);
+        const f32 y = r - x * kUvByteSplit;
+        u = u + x / kUvByteMax;
+        vv = vv + y / kUvByteMax;
+    }
+    return {u, vv};
+}
+
+Sc2QuadResult Sc2ExpandQuad(const Sc2QuadInput& v, const Sc2QuadBatch& b,
+                            const Sc2QuadCamera& cam, const Sc2QuadFlags& fl) {
+    namespace vs = whiteout::flakes::renderer::sc2::vs;
+    Sc2QuadResult out;
+    const auto type = static_cast<Sc2InstanceType>(fl.instanceType);
+    out.supported = fl.instanceType <= static_cast<u32>(Sc2InstanceType::Trail);
+
+    f32 inSize[4];
+    for (usize i = 0; i < 4; ++i)
+        inSize[i] = v.size[i] * sc2::kInvSizeQuant;
+    inSize[3] = vs::Saturate(inSize[3]);
+    f32 inRot[3];
+    for (usize i = 0; i < 3; ++i)
+        inRot[i] = v.rotation[i] * sc2::kInvRotationQuant;
+
+    out.age = vs::Saturate((b.systemTime - v.birthTime) / (v.deathTime - v.birthTime));
+
+    // The SCALAR overload broadcast into .xyz — so the size takes mode 4's
+    // substitution variant, never the float3 plateau.
+    namespace mid = sc2::MidChannel;
+    out.size = vs::InterpolateValue(out.age, inSize[0], inSize[1], inSize[2], b.midKey[mid::Size],
+                                    b.invMidKey[mid::Size], b.hold[mid::Size], fl.sizeInterp);
+
+    // The shader's own copy of `Input`. `CalculatePositionAndVelocity` writes
+    // two of its registers back, and the tail types add the noise into one.
+    Vector3f position = v.position;
+    Vector3f interp1 = v.velocity;
+    Vector3f interp2 = v.instanceVec;
+    if (fl.proceduralPosition) {
+        Sc2AnalyticInputs step;
+        step.position = position;
+        step.velocity0 = v.velocity;
+        step.invMass = v.invMass;
+        step.birthTime = v.birthTime;
+        step.deathTime = v.deathTime;
+        step.drag = v.drag;
+        step.invDrag = v.invDrag;
+        step.gravityZ = v.gravityZ;
+        step.systemTime = b.systemTime;
+        step.instanceType = fl.instanceType;
+        step.tailLength = interp2.x;
+        step.size = out.size;
+        step.fixedTailLength = fl.fixedTailLength;
+        step.clampedTailLength = fl.clampedTailLength;
+        const Sc2AnalyticStep st = Sc2StepAnalytic(step);
+        position = st.position;
+        if (type == Sc2InstanceType::FaceTravelDir) {
+            interp2 = st.velocity;
+        } else if (type == Sc2InstanceType::Tail || type == Sc2InstanceType::Pinned ||
+                   type == Sc2InstanceType::Trail) {
+            interp1 = st.velocity;
+            interp2.x = st.tailLength;
+        }
+    }
+    if (fl.localSpace)
+        position = vs::MulPointMat4(position, b.prWorld);
+    // Noise is added in WORLD space, after the local transform, for every
+    // instance type — so a rotated emitter matrix never turns it.
+    position = vs::Add(position, v.noise);
+
+    const f32 angle =
+        vs::InterpolateValue(out.age, inRot[0], inRot[1], inRot[2], b.midKey[mid::Rotation],
+                             b.invMidKey[mid::Rotation], b.hold[mid::Rotation], fl.rotationInterp);
+    const auto rgbOf = [&](usize k) {
+        return Vector3f{v.color[k][0], v.color[k][1], v.color[k][2]};
+    };
+    const Vector3f rgb = vs::InterpolateValue3(
+        out.age, rgbOf(0), rgbOf(1), rgbOf(2), b.midKey[mid::Color], b.invMidKey[mid::Color],
+        b.hold[mid::Color], fl.colorInterp);
+    out.color[0] = rgb.x;
+    out.color[1] = rgb.y;
+    out.color[2] = rgb.z;
+    // The alpha carries its OWN mid key, not the RGB one.
+    out.color[3] = vs::InterpolateValue(
+        out.age, v.color[0][3], v.color[1][3], v.color[2][3], b.midKey[mid::Alpha],
+        b.invMidKey[mid::Alpha], b.hold[mid::Alpha], fl.colorInterp);
+
+    const f32 scale = b.elementScale;
+
+    // The two camera-facing idioms disagree exactly on the particle's plane:
+    // 5 and 6 negate with a `> 0` ternary, the 2/3/7/8 second pass multiplies
+    // by `sign()` and so ZEROES the frame there (OP12). Both run on the
+    // corner's final position.
+    const auto faceCamera = [&](const Vector3f& p, Sc2QuadCorner& c, bool useSign) {
+        const f32 d = -vs::Dot3(p, c.normal);
+        const f32 dist = ((cam.eye.x * c.normal.x + cam.eye.y * c.normal.y) +
+                          cam.eye.z * c.normal.z) +
+                         1.0f * d;
+        f32 sgn = 1.0f;
+        if (useSign)
+            sgn = dist > 0.0f ? 1.0f : (dist < 0.0f ? -1.0f : 0.0f);
+        else if (!(dist > 0.0f))
+            sgn = -1.0f;
+        c.normal = vs::Scale(c.normal, sgn);
+        c.tangent = vs::Scale(c.tangent, sgn);
+        c.binormal = vs::Scale(c.binormal, sgn);
+    };
+
+    // `UnpackNormals` for 2/3/7/8. Type 7 in local space takes the emitter's
+    // own rows; in world space it unpacks the byte-packed basis spawn wrote.
+    const auto unpackNormals = [&](Vector3f& right, Vector3f& up, Vector3f& forward) {
+        if (type == Sc2InstanceType::EmitterOriented) {
+            if (fl.localSpace) {
+                right = vs::Normalize3({b.prWorld[0], b.prWorld[1], b.prWorld[2]});
+                up = vs::Normalize3({b.prWorld[4], b.prWorld[5], b.prWorld[6]});
+            } else {
+                const f32 ry = std::trunc(interp2.x / sc2::kPackHalf);
+                const f32 rx = interp2.x - ry * sc2::kPackHalf;
+                const f32 rz = std::trunc(interp2.y / sc2::kPackHalf);
+                const f32 ux = interp2.y - rz * sc2::kPackHalf;
+                const f32 uy = std::trunc(interp2.z / sc2::kPackHalf);
+                const f32 uz = interp2.z - uy * sc2::kPackHalf;
+                const auto unit = [](f32 c) { return ((c / kUvByteMax) * 2.0f) - 1.0f; };
+                right = vs::Normalize3({unit(rx), unit(ry), unit(rz)});
+                up = vs::Normalize3({unit(ux), unit(uy), unit(uz)});
+            }
+            forward = vs::Normalize3(vs::Cross3(right, up));
+            return;
+        }
+        forward = vs::Normalize3(vs::Add(interp2, Vector3f{0.0f, sc2::kFacingYGuard, 0.0f}));
+        right = vs::Normalize3(vs::Cross3(Vector3f{0.0f, 0.0f, 1.0f}, forward));
+        up = vs::Normalize3(vs::Cross3(forward, right));
+    };
+
+    for (usize k = 0; k < 4; ++k) {
+        const f32 ox = static_cast<f32>(kSc2Corners[k][0]);
+        const f32 oy = static_cast<f32>(kSc2Corners[k][1]);
+        Sc2QuadCorner& c = out.corner[k];
+        Vector3f p = position;
+
+        switch (type) {
+        case Sc2InstanceType::SingleAxis: {
+            const Vector3f right = vs::Normalize3(vs::Cross3(interp2, cam.direction));
+            const Vector3f forward = vs::Normalize3(vs::Cross3(right, interp2));
+            const vs::Mat3 m = vs::MakeRotation(angle, forward);
+            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(interp2, oy));
+            off = vs::Scale(off, scale);
+            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), m));
+            c.normal = vs::Normalize3(vs::Cross3(right, forward));
+            c.tangent = right;
+            c.binormal = forward;
+            break;
+        }
+        case Sc2InstanceType::FaceTravelDir:
+        case Sc2InstanceType::FaceWorldDir:
+        case Sc2InstanceType::EmitterOriented:
+        case Sc2InstanceType::PhysicsOriented: {
+            Vector3f right, up, direction;
+            unpackNormals(right, up, direction);
+            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(up, oy));
+            off = vs::Scale(off, scale);
+            const vs::Mat3 m = vs::MakeRotation(angle, direction);
+            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), m));
+            // The frame is the SECOND pass's, after the instance transform.
+            break;
+        }
+        case Sc2InstanceType::TerrainOriented: {
+            Vector3f projected =
+                vs::Sub(interp1, vs::Scale(interp2, vs::Dot3(interp1, interp2)));
+            const vs::Mat3 m = vs::MakeRotation(angle, interp2);
+            if (vs::Dot3(projected, projected) < sc2::kTerrainProjectMinSq)
+                projected = {1.0f, 0.0f, 0.0f};
+            projected = vs::Normalize3(projected);
+            Vector3f right = vs::Cross3(projected, interp2);
+            projected = vs::MulVecMat3(projected, m);
+            right = vs::MulVecMat3(right, m);
+            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(projected, oy));
+            off = vs::Scale(off, scale);
+            p = vs::Add(p, vs::Scale(off, out.size));
+            c.normal = vs::Normalize3(vs::Cross3(right, projected));
+            c.tangent = right;
+            c.binormal = projected;
+            faceCamera(p, c, false);
+            break;
+        }
+        case Sc2InstanceType::TerrainDirOriented: {
+            // No rotation at all: `rot.x` is a length SCALE here, which is
+            // what the CPU builder's re-key of `rotation[0]` is for.
+            const f32 mag = vs::Length3(interp1);
+            const Vector3f direction = vs::Normalize3(interp1);
+            Vector3f projected = vs::Normalize3(
+                vs::Sub(direction, vs::Scale(interp2, vs::Dot3(direction, interp2))));
+            const Vector3f right = vs::Cross3(projected, interp2);
+            projected = vs::Scale(projected, (std::max)(inRot[0], mag * inRot[0]));
+            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(projected, oy));
+            off = vs::Scale(off, scale);
+            p = vs::Add(p, vs::Scale(off, out.size));
+            c.normal = vs::Normalize3(vs::Cross3(right, projected));
+            c.tangent = right;
+            c.binormal = projected;
+            faceCamera(p, c, false);
+            break;
+        }
+        case Sc2InstanceType::Tail:
+        case Sc2InstanceType::Trail: {
+            Vector3f velocity = vs::Add(interp1, v.noise);
+            // Taken BEFORE the local-to-world rotation.
+            const f32 mag = vs::Length3(velocity);
+            if (fl.localSpace)
+                velocity = vs::MulVecMat4As3(velocity, b.prWorld);
+            Vector3f direction = vs::Normalize3(velocity);
+            const Vector3f right = vs::Normalize3(vs::Cross3(cam.direction, direction));
+            const f32 tail =
+                fl.fixedTailLength ? interp2.x : (std::max)(interp2.x, mag * interp2.x);
+            direction = vs::Scale(direction, tail);
+            const Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(direction, oy));
+            const f32 vsize = scale * out.size;
+            p = vs::Add(p, vs::Scale(off, vsize));
+            if (type == Sc2InstanceType::Trail)
+                p = vs::Sub(p, vs::Scale(direction, vsize));
+            c.normal = vs::Normalize3(vs::Cross3(right, direction));
+            c.tangent = right;
+            // Scaled by the tail: this binormal is NOT unit (1, 6, 10 only).
+            c.binormal = vs::Scale(direction, -1.0f);
+            break;
+        }
+        case Sc2InstanceType::Pinned: {
+            // The noise moved the head end only, so a noisy Pinned particle
+            // lengthens its streak rather than displacing it.
+            const Vector3f origin =
+                fl.localSpace ? vs::MulPointMat4(interp2, b.prWorld) : interp2;
+            const Vector3f delta = vs::Sub(p, origin);
+            const Vector3f forward = vs::SafeNormalize(delta, Vector3f{1.0f, 0.0f, 0.0f});
+            const Vector3f right = vs::Normalize3(vs::Cross3(cam.direction, forward));
+            const f32 endScale = vs::Lerp(1.0f, inSize[3], oy * 0.5f + 0.5f);
+            const Vector3f centre = vs::Scale(vs::Add(p, origin), 0.5f);
+            // No elementScale on this branch — the one type whose quad does not
+            // follow the emitter's world scale — and the only trapezoid.
+            const Vector3f off = vs::Add(vs::Scale(vs::Scale(right, ox * out.size), endScale),
+                                         vs::Scale(delta, 0.5f * oy));
+            p = vs::Add(centre, off);
+            c.normal = vs::Cross3(right, forward);
+            c.tangent = right;
+            c.binormal = vs::Scale(forward, -1.0f);
+            break;
+        }
+        default: {
+            // The billboard, and the shader's final `else` for anything past
+            // the eleven. Type 0 transforms the position BEFORE building its
+            // quad and skips the common instance transform after.
+            if (fl.modelInstancing)
+                p = vs::MulPointMat4(p, b.instanceTransform);
+            const vs::Mat3 m = vs::MakeRotation(angle, cam.direction);
+            Vector3f off = vs::Add(vs::Scale(cam.billboardRight, ox),
+                                   vs::Scale(cam.billboardUp, oy));
+            off = vs::Scale(off, scale);
+            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), m));
+            const Vector3f right = vs::MulVecMat3(cam.billboardRight, m);
+            const Vector3f up = vs::MulVecMat3(cam.billboardUp, m);
+            c.normal = vs::Normalize3(vs::Cross3(right, up));
+            c.tangent = right;
+            c.binormal = vs::Scale(up, -1.0f);
+            break;
+        }
+        }
+
+        const bool billboard = !out.supported || type == Sc2InstanceType::Billboard;
+        if (fl.modelInstancing && !billboard)
+            p = vs::MulPointMat4(p, b.instanceTransform);
+
+        if (type == Sc2InstanceType::FaceTravelDir || type == Sc2InstanceType::FaceWorldDir ||
+            type == Sc2InstanceType::EmitterOriented ||
+            type == Sc2InstanceType::PhysicsOriented) {
+            Vector3f right, up, direction;
+            unpackNormals(right, up, direction);
+            c.normal = direction;
+            c.tangent = right;
+            c.binormal = up;
+            faceCamera(p, c, true);
+        }
+
+        c.position = p;
+        c.uv = Sc2ParticleUv(v, kSc2Corners[k], out.age, b, fl);
+    }
+    return out;
+}
+
+f32 Sc2ElementScale(const std::array<f32, 16>& m) {
+    // `z*z + (y*y + x*x)`, in that association — the binary adds the z term to
+    // the already-summed pair, and float addition does not reassociate.
+    const auto sq = [](f32 x, f32 y, f32 z) { return z * z + (y * y + x * x); };
+    const f32 r0 = sq(m[0], m[1], m[2]);
+    const f32 r1 = sq(m[4], m[5], m[6]);
+    const f32 r2 = sq(m[8], m[9], m[10]);
+    // Rows 0..2 only: neither the translation row nor the w column takes part,
+    // which is what the `translate` and `wrow` vectors pin.
+    const f32 mx = (std::max)(r2, (std::max)(r0, r1));
+    // The zero guard is retail's, and it is INERT here: it exists because
+    // `rsqrtss(0)` is an infinity that the refinement then multiplies by zero,
+    // and `std::sqrt(0)` is simply 0. Removing it stays green over all 81
+    // vectors and always would. Kept because it is what the binary does, and
+    // because it is the line that would have to come back if this ever used an
+    // estimate. Same for the association above: the two orderings differ by at
+    // most an ulp of the squared sum, which is inside the tolerance the
+    // approximate root already forces on this lane, so no vector can separate
+    // them — it is transcribed from the disassembly, not measured.
+    return mx == 0.0f ? 0.0f : std::sqrt(mx);
+}
+
+void Sc2WriteQuadBatch(Sc2QuadBatch& row, const Sc2BatchDesc& d,
+                       const Sc2BatchFrame& f) {
+    if (!d.worldSpace)
+        row.prWorld = f.world;
+
+    row.instanceTransform = f.hasInstanceNode ? f.instanceTransform : sc2::kIdentityMat16;
+
+    row.midKey = {d.sizeMidTime, d.colorMidTime, d.alphaMidTime, d.rotationMidTime};
+    // A plain division, with no floor and no guard: an authored mid time of 0
+    // uploads an infinity, and the shader then multiplies it by an age of 0.
+    // `invDrag` looked like the same shape in OP11b and was not, which is why
+    // this one is measured rather than assumed. Computing it in double and
+    // narrowing is bit-identical and not a second implementation: binary64 has
+    // 53 bits and 53 >= 2 * 24 + 2, so double rounding a division through it is
+    // provably innocuous. A mutant that does exactly that stays green, and no
+    // widening of the grid would change that.
+    for (usize i = 0; i < 4; ++i)
+        row.invMidKey[i] = 1.0f / row.midKey[i];
+    row.hold = {d.sizeMidHoldTime, d.colorMidHoldTime, d.alphaMidHoldTime,
+                d.rotationMidHoldTime};
+
+    row.systemTime = f.emitterTime;
+    row.elementScale = Sc2ElementScale(f.world);
+
+    if (d.flipbookColumns != 0 && d.flipbookRows != 0) {
+        row.flipbookMidKeyTime = d.flipbookMidTime;
+        row.flipbookColumns = static_cast<f32>(d.flipbookColumns);
+        row.flipbookFrames = {static_cast<f32>(d.flipbookStartInitIndex),
+                              static_cast<f32>(d.flipbookStartStopIndex),
+                              static_cast<f32>(d.flipbookEndInitIndex)};
+        row.cellSize = {d.flipbookColumnFraction, d.flipbookRowFraction};
+    } else {
+        // The shader's own comment calls the 1 a fix for an integer overflow
+        // on the C++ side; the frames and the cell size are simply not written.
+        row.flipbookMidKeyTime = 1.0f;
+        row.flipbookColumns = 1.0f;
+    }
+}
+
+} // namespace whiteout::flakes::renderer::particle

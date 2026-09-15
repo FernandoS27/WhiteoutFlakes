@@ -91,7 +91,7 @@ pd3::Path MakeScalarPath(const wdx_golden::Value& nodes, f32 loopStart, f32 loop
 
 pd3::EvalCtx MakeCtx(const wdx_golden::Value& c) {
     pd3::EvalCtx ctx;
-    ctx.timeMode = c["time_mode"].I();
+    ctx.timeMode = static_cast<pd3::TimeMode>(c["time_mode"].I());
     ctx.period = c["period"].F();
     ctx.blend = c.Has("blend") ? c["blend"].F() : 0.0f;
     ctx.blendT = c.Has("blend_t") ? c["blend_t"].F() : 0.0f;
@@ -215,12 +215,12 @@ TEST_CASE("oracle A2: the period short circuit is 1/60, not 0.016667",
         const auto& in = c["in"];
         pd3::Path p = MakeScalarPath(in["nodes"], 0.0f, 1.0f);
         pd3::EvalCtx ctx;
-        ctx.timeMode = in["time_mode"].I();
+        ctx.timeMode = static_cast<pd3::TimeMode>(in["time_mode"].I());
         ctx.time = in["time"].F();
         ctx.period = in["period"].F();
         const f32 r = in["r"].F();
         const f32 got = pd3::SampleAt(p, {r, r, r, r}, ctx).x;
-        INFO("period " << in["period"].F() << " mode " << ctx.timeMode);
+        INFO("period " << in["period"].F() << " mode " << static_cast<i32>(ctx.timeMode));
         REQUIRE(SameBits(got, c["out"]["v"].F()));
     }
 }
@@ -234,7 +234,7 @@ TEST_CASE("oracle A2: the full-range test is loopEnd > 0.999999", "[d3][oracle][
         const auto& in = c["in"];
         pd3::Path p = MakeScalarPath(in["nodes"], 0.0f, in["loop_end"].F());
         pd3::EvalCtx ctx;
-        ctx.timeMode = in["time_mode"].I();
+        ctx.timeMode = static_cast<pd3::TimeMode>(in["time_mode"].I());
         ctx.period = in["period"].F();
         const f32 r = in["r"].F();
         const auto& vs = c["out"]["v"];
@@ -315,7 +315,7 @@ TEST_CASE("oracle A2: colour is 8-bit fixed point and draws ONE random",
             static_cast<int>(std::lround(got.z * 255.0f)),
             static_cast<int>(std::lround(got.w * 255.0f)),
         };
-        INFO("case " << i << " seed " << in["seed"].U() << " mode " << ctx.timeMode
+        INFO("case " << i << " seed " << in["seed"].U() << " mode " << static_cast<i32>(ctx.timeMode)
                      << " t " << ctx.time);
         for (int k = 0; k < 4; ++k)
             REQUIRE(gb[k] == want[static_cast<std::size_t>(k)].I());
@@ -343,7 +343,7 @@ TEST_CASE("oracle A2: an int channel is integer arithmetic, rounded half-to-even
         pd3::EvalCtx ctx = MakeCtx(in);
         ctx.time = in["time"].F();
         const i32 got = p.EvalInt(in["seed"].U(), in["channel"].I(), ctx);
-        INFO("case " << i << " mode " << ctx.timeMode << " t " << ctx.time);
+        INFO("case " << i << " mode " << static_cast<i32>(ctx.timeMode) << " t " << ctx.time);
         REQUIRE(got == c["out"]["v"].I());
     }
 }

@@ -17,7 +17,7 @@ namespace {
 /// declaration normalises the four bytes; that normalise is not measured by
 /// any gate, so it is spelled out here rather than folded into the expander.
 std::array<f32, 4> UnpackColor(u32 v) {
-    constexpr f32 k = 1.0f / 255.0f;
+    constexpr f32 k = sc2::kInv255;
     return {static_cast<f32>((v >> 16) & 0xFFu) * k,
             static_cast<f32>((v >> 8) & 0xFFu) * k,
             static_cast<f32>(v & 0xFFu) * k,
@@ -99,14 +99,15 @@ Sc2QuadCamera Sc2CameraFromView(const Matrix44f& v) {
 
 Sc2BatchDesc Sc2BatchDescFrom(const Sc2EmitterDesc& d) {
     Sc2BatchDesc b;
-    b.sizeMidTime = d.look.midTime[0];
-    b.colorMidTime = d.look.midTime[1];
-    b.alphaMidTime = d.look.midTime[2];
-    b.rotationMidTime = d.look.midTime[3];
-    b.sizeMidHoldTime = d.look.midHold[0];
-    b.colorMidHoldTime = d.look.midHold[1];
-    b.alphaMidHoldTime = d.look.midHold[2];
-    b.rotationMidHoldTime = d.look.midHold[3];
+    namespace mid = sc2::MidChannel;
+    b.sizeMidTime = d.look.midTime[mid::Size];
+    b.colorMidTime = d.look.midTime[mid::Color];
+    b.alphaMidTime = d.look.midTime[mid::Alpha];
+    b.rotationMidTime = d.look.midTime[mid::Rotation];
+    b.sizeMidHoldTime = d.look.midHold[mid::Size];
+    b.colorMidHoldTime = d.look.midHold[mid::Color];
+    b.alphaMidHoldTime = d.look.midHold[mid::Alpha];
+    b.rotationMidHoldTime = d.look.midHold[mid::Rotation];
     b.flipbookStartInitIndex = d.look.flipbookStartInit;
     b.flipbookStartStopIndex = d.look.flipbookStartStop;
     b.flipbookEndInitIndex = d.look.flipbookEndInit;
@@ -131,14 +132,16 @@ Sc2InitWords Sc2InitRuntimeWords(const Sc2EmitterDesc& d) {
     // two time bits it was just given. Transcribed, not tidied.
     if (d.motion.forcesFallback != 0)
         w.stateFlags = bits::kStateForces;
-    if ((static_cast<u32>(d.additionalFlags) & 8u) != 0)
+    if (d.Has(ParticleAdditionalFlag::WorldSpace))
         w.stateFlags |= bits::kStateWorldSpace;
-    if (d.motion.forces >= 0x10000u)
+    // `local | world << 16`: any world channel puts the pair at or above this.
+    constexpr u32 kFirstWorldForceChannel = 0x10000u;
+    if (d.motion.forces >= kFirstWorldForceChannel)
         w.stateFlags |= bits::kStateWorldForces;
-    // Strictly above the threshold (`0x103BC8C10`, 0.001f): an amplitude of
-    // exactly 0.001 demotes the emitter to Euler — `CanUseGpuMotion` tests
-    // `< 0.001` — and still leaves its noise off.
-    if (d.motion.noiseAmplitude > 0.001f)
+    // Strictly above the threshold: an amplitude of exactly 0.001 demotes the
+    // emitter to Euler — `CanUseGpuMotion` tests `< 0.001` — and still leaves
+    // its noise off.
+    if (d.motion.noiseAmplitude > bits::kNoiseThreshold)
         w.emitFlags |= bits::kEmitNoise;
     if ((flags & static_cast<u32>(ParticleFlag::InheritParentVelocity)) != 0)
         w.stateFlags |= bits::kStateInheritVelocity;

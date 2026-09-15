@@ -54,6 +54,11 @@
 namespace fs = std::filesystem;
 namespace d3n = ::whiteout::sno::d3::native;
 namespace pd3 = ::whiteout::flakes::renderer::particle::d3;
+
+/// The RE numbers the render modes; the tests below are written in its numbers.
+constexpr pd3::PrtRenderMode Mode(int m) {
+    return static_cast<pd3::PrtRenderMode>(m);
+}
 using namespace ::whiteout;
 using whiteout::flakes::renderer::particle::Particle2;
 
@@ -132,7 +137,7 @@ pd3::Path RampPath(f32 a, f32 b) {
 
 pd3::EvalCtx AtTime(f32 t) {
     pd3::EvalCtx c;
-    c.timeMode = 1;
+    c.timeMode = pd3::TimeMode::Looped;
     c.time = t;
     c.period = 1.0f;
     return c;
@@ -431,7 +436,7 @@ namespace {
 /// test of the accumulator must not have mixed in.
 std::shared_ptr<pd3::EmitterDesc> MakeDesc(f32 ratePerFrame, f32 lifeFrames) {
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 0;
+    d->systemType = pd3::SystemType::Standard;
     d->lifetime = 0.0f; // never finishes emitting
     d->emissionPeriod = 10.0f;
     d->maxDistance = 0.0f; // no kill radius, so the count is the accumulator's
@@ -843,7 +848,7 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
         auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
         REQUIRE(desc != nullptr);
 
-        ++systemTypes[desc->systemType];
+        ++systemTypes[static_cast<i32>(desc->systemType)];
         ++shapes[static_cast<i32>(desc->shape)];
         for (u32 b = 0; b < 16; ++b)
             if (desc->caps & (1u << b))
@@ -894,14 +899,14 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
                 ++a6Live;
         }
         ++lifeDriver[desc->lifetimeRandom.mode];
-        ++renderModes[desc->renderMode];
+        ++renderModes[static_cast<i32>(desc->renderMode)];
         // What gates `Particle_BuildOrientationBasis` into its second column
         // order is bit 13 of the system's RUNTIME word at sys+8, and
         // `ParticleSystem_Spawn` @0x71000AC504 sets that for eSystemType 1, 3
         // and 4 — the child-actor types. So the gated arm orients a spawned
         // MODEL and never a quad, which is why `BuildQuadFrame` carries only
         // the ungated arms.
-        if (desc->systemType == 1 || desc->systemType == 3 || desc->systemType == 4)
+        if (pd3::EmitsActors(desc->systemType))
             ++frameGated;
 
         // Slot order. `Particle_BindDrawTextures` @0x71000B7620 asks for the
@@ -1694,10 +1699,10 @@ TEST_CASE("d3 particle P6: eSystemType 1 is a child-actor system, not a ribbon",
         REQUIRE(prt.has_value());
         auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
         const bool actorType =
-            desc->systemType == 1 || desc->systemType == 3 || desc->systemType == 4;
-        ++byType[desc->systemType];
+            pd3::EmitsActors(desc->systemType);
+        ++byType[static_cast<i32>(desc->systemType)];
         if (desc->snoActor >= 0) {
-            ++withActor[desc->systemType];
+            ++withActor[static_cast<i32>(desc->systemType)];
             if (!actorType) {
                 ++strays;
                 if (strayNames.size() < 4)
@@ -1742,7 +1747,7 @@ TEST_CASE("d3 particle P7: a child-actor system emits models and pools nothing",
     // rate at all — 4,189 of 4,795 files author exactly this, which is what
     // makes the count target mean "one model" rather than "one per frame".
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 1;
+    d->systemType = pd3::SystemType::Ribbon;
     d->snoActor = 4242;
     d->emissionPeriod = 1.0f;
     d->lifetime = 1.0f;
@@ -1757,7 +1762,7 @@ TEST_CASE("d3 particle P7: a child-actor system emits models and pools nothing",
     em.SetVisible(true);
     // It declares the child-model space, so the geometry builder is never asked
     // for it — a system that spawns models draws nothing of its own.
-    CHECK(em.Desc().output == ParticleOutput::ChildModel);
+    CHECK(em.DrawHeader().output == ParticleOutput::ChildModel);
 
     u32 next = 100;
     em.SetChildOwner(7, 3, [&next] { return next++; });
@@ -1822,7 +1827,7 @@ TEST_CASE("d3 particle P7: with no handle allocator a child system is inert",
     // emissions it never made — otherwise its target count fills with ghosts
     // and it goes quiet for good.
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 1;
+    d->systemType = pd3::SystemType::Ribbon;
     d->snoActor = 1;
     d->emissionPeriod = 1.0f;
     d->channels[pd3::kChTargetCount] = ConstPath(4.0f);
@@ -1874,7 +1879,7 @@ TEST_CASE("d3 particle: the colour dword is 0xAABBGGRR, red in the LOW byte",
         REQUIRE(d->Has(pd3::kChColor));
 
         pd3::EvalCtx ctx;
-        ctx.timeMode = 1;
+        ctx.timeMode = pd3::TimeMode::Looped;
         ctx.period = 1.0f;
         // Every stop of the path, not just the first: an ember fades, and one
         // sample could sit on a grey node that says nothing either way.
@@ -1903,7 +1908,7 @@ TEST_CASE("d3 particle: the unit scale converts sizes and paths, not positions",
     // that factor about the emitter — no more, and not zero.
     const auto build = [] {
         auto d = std::make_shared<pd3::EmitterDesc>();
-        d->systemType = 0;
+        d->systemType = pd3::SystemType::Standard;
         d->shape = pd3::Shape::SphereShell;
         d->shapeExtent0 = ConstPath(2.0f);
         d->emissionPeriod = 4.0f;
@@ -1984,7 +1989,7 @@ TEST_CASE("d3 particle: mesh shapes emit off the surface, not from the emitter",
     REQUIRE_FALSE(mesh->Empty());
 
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 0;
+    d->systemType = pd3::SystemType::Standard;
     d->shape = pd3::Shape::MeshRandom;
     d->emissionPeriod = 10.0f;
     d->lifetime = 10.0f;
@@ -2077,7 +2082,7 @@ TEST_CASE("d3 particle: dwPrtFlags bit 0 makes the system persistent",
     // is set the same quotient wraps instead.
     const auto build = [](u32 flags) {
         auto d = std::make_shared<pd3::EmitterDesc>();
-        d->systemType = 0;
+        d->systemType = pd3::SystemType::Standard;
         d->prtFlags = flags;
         d->shape = pd3::Shape::Point;
         d->lifetime = 1.0f;        // 60 frames, the modal value
@@ -2113,7 +2118,7 @@ TEST_CASE("d3 particle: the emitter clock's period is tmLifetime", "[d3][particl
     // against SNO+24 instead runs every emitter channel at 1/2 to 1/6 of its
     // authored length.
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 0;
+    d->systemType = pd3::SystemType::Standard;
     d->shape = pd3::Shape::Point;
     d->lifetime = 2.0f;
     d->emissionPeriod = 0.5f;
@@ -2160,7 +2165,7 @@ TEST_CASE("d3 particle: dwPrtFlags bit 10 picks the particle time mode",
     // has to be read against the particle actually sampled.
     const auto oldest = [&](u32 flags, f32& outT) {
         auto d = std::make_shared<pd3::EmitterDesc>();
-        d->systemType = 0;
+        d->systemType = pd3::SystemType::Standard;
         d->prtFlags = flags;
         d->shape = pd3::Shape::Point;
         d->lifetime = 0.0f;
@@ -2219,7 +2224,7 @@ TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
     CHECK(atlas->TileSize().y == Catch::Approx(1.0f));
 
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 0;
+    d->systemType = pd3::SystemType::Standard;
     d->prtFlags = 0x1u; // persistent, so the population survives the run
     d->shape = pd3::Shape::Point;
     d->lifetime = 0.0f;
@@ -2328,7 +2333,7 @@ TEST_CASE("d3 particle: each texture stage runs its OWN uv state",
                                  static_cast<f32>(k + 1) * 0.25f, 1.0f});
 
     auto d = std::make_shared<pd3::EmitterDesc>();
-    d->systemType = 0;
+    d->systemType = pd3::SystemType::Standard;
     d->prtFlags = 0x1u;
     d->shape = pd3::Shape::Point;
     d->lifetime = 0.0f;
@@ -2405,7 +2410,7 @@ TEST_CASE("d3 particle: the emitter effect scale multiplies the particle opacity
     // 1.0 on any of the 21,593 files.
     auto make = [](f32 effectScale, bool withScaleChannel) {
         auto d = std::make_shared<pd3::EmitterDesc>();
-        d->systemType = 0;
+        d->systemType = pd3::SystemType::Standard;
         d->prtFlags = 0x1u;
         d->shape = pd3::Shape::Point;
         d->lifetime = 0.0f;
@@ -2452,7 +2457,7 @@ TEST_CASE("d3 particle: channel 6 rides COLOR1, not the vertex alpha", "[d3][par
     // consumer, `alpha = min(1, pow(alpha, 10 * COLOR1.a))`.
     auto build = [](f32 ch6, f32 ch5) {
         auto d = std::make_shared<pd3::EmitterDesc>();
-        d->systemType = 0;
+        d->systemType = pd3::SystemType::Standard;
         d->prtFlags = 0x1u;
         d->shape = pd3::Shape::Point;
         d->lifetime = 0.0f;
@@ -2510,7 +2515,7 @@ TEST_CASE("d3 particle: channel 2 scales the quad's height and not its width",
     // `(aspect * halfWidth) * drawDesc[2]` @0x71000BC4E4 -- one axis, not both.
     auto extents = [](f32 ratio) {
         auto d = std::make_shared<pd3::EmitterDesc>();
-        d->systemType = 0;
+        d->systemType = pd3::SystemType::Standard;
         d->prtFlags = 0x1u;
         d->shape = pd3::Shape::Point;
         d->lifetime = 0.0f;
@@ -2697,12 +2702,13 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         // quad) and 1 and 8 return immediately. All three must decline rather
         // than invent a frame; the other eleven modes all build one.
         for (i32 mode : {0, 1, 8})
-            CHECK_FALSE(BuildQuadFrame(mode, {camF, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}}, f));
+            CHECK_FALSE(BuildQuadFrame(Mode(mode),
+                                       {camF, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}}, f));
     }
 
     SECTION("mode 13 stands the quad up and yaws it at the camera") {
         QuadFrame f;
-        REQUIRE(BuildQuadFrame(13, {camF}, f));
+        REQUIRE(BuildQuadFrame(pd3::PrtRenderMode::Vertical, {camF}, f));
         // This is the whole bug: the quad's up is WORLD Z, not world Y. A
         // ground-plane basis -- right (1,0,0), up (0,1,0) -- lays every bolt
         // flat, which is what this build drew.
@@ -2715,11 +2721,11 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         CHECK(dot(f.right, camF) == Approx(0.0f).margin(1e-6));
         // ...and it tracks: turn the camera 90 degrees and the quad turns with it.
         QuadFrame g;
-        REQUIRE(BuildQuadFrame(13, {{1.0f, 0.0f, 0.0f}}, g));
+        REQUIRE(BuildQuadFrame(Mode(13), {{1.0f, 0.0f, 0.0f}}, g));
         CHECK(dot(g.right, f.right) == Approx(0.0f).margin(1e-6));
         CHECK(g.up.z == Approx(1.0f));
         // A camera looking straight down has no XY to flatten; the engine bails.
-        CHECK_FALSE(BuildQuadFrame(13, {{0.0f, 0.0f, -1.0f}}, g));
+        CHECK_FALSE(BuildQuadFrame(Mode(13), {{0.0f, 0.0f, -1.0f}}, g));
     }
 
     SECTION("mode 6 reaches mode 13's frame by the other route") {
@@ -2731,8 +2737,8 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         for (const Vector3f& cam :
              {Vector3f{0, 1, 0}, Vector3f{1, 0, 0}, Vector3f{0.6f, -0.8f, 0.3f}}) {
             QuadFrame a, b;
-            REQUIRE(BuildQuadFrame(6, {cam}, a));
-            REQUIRE(BuildQuadFrame(13, {cam}, b));
+            REQUIRE(BuildQuadFrame(Mode(6), {cam}, a));
+            REQUIRE(BuildQuadFrame(Mode(13), {cam}, b));
             CHECK(a.right.x == Approx(b.right.x));
             CHECK(a.right.y == Approx(b.right.y));
             CHECK(a.right.z == Approx(b.right.z).margin(1e-6));
@@ -2745,7 +2751,7 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
     SECTION("modes 2 and 12 stretch the quad along the particle's own axis") {
         const Vector3f vel{0.0f, 0.0f, 0.5f};
         QuadFrame f2, f12;
-        REQUIRE(BuildQuadFrame(2, {camF, vel, {0, 0, 1}}, f2));
+        REQUIRE(BuildQuadFrame(Mode(2), {camF, vel, {0, 0, 1}}, f2));
         // Up IS the direction of travel, normalised -- a bolt runs along itself.
         CHECK(f2.up.z == Approx(1.0f));
         CHECK(unit(f2.up) == Approx(1.0f));
@@ -2755,9 +2761,9 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
 
         // ...and mode 12 against world up, which for a vertical bolt is the
         // degenerate case the engine walks into and we decline.
-        CHECK_FALSE(BuildQuadFrame(12, {camF, vel, {0, 0, 1}}, f12));
+        CHECK_FALSE(BuildQuadFrame(Mode(12), {camF, vel, {0, 0, 1}}, f12));
         const Vector3f lateral{0.3f, 0.4f, 0.0f};
-        REQUIRE(BuildQuadFrame(12, {camF, lateral, {0.6f, 0.8f, 0.0f}}, f12));
+        REQUIRE(BuildQuadFrame(Mode(12), {camF, lateral, {0.6f, 0.8f, 0.0f}}, f12));
         CHECK(f12.up.x == Approx(0.6f));
         CHECK(f12.up.y == Approx(0.8f));
         CHECK(dot(f12.right, up) == Approx(0.0f).margin(1e-6));
@@ -2768,12 +2774,12 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         QuadFrame f;
         // Mode 4 is the direction from the system to the particle, flattened --
         // an outward-facing wall, which is what an expanding ring of beams is.
-        REQUIRE(BuildQuadFrame(4, {camF, none, {1, 0, 0}, {3.0f, 0.0f, 9.0f}}, f));
+        REQUIRE(BuildQuadFrame(Mode(4), {camF, none, {1, 0, 0}, {3.0f, 0.0f, 9.0f}}, f));
         CHECK(std::fabs(f.up.z) == Approx(1.0f).margin(1e-6));  // stands upright
         CHECK(dot(f.right, Vector3f{1, 0, 0}) == Approx(0.0f).margin(1e-6));
         // Mode 5 keeps the Z, so the same offset tilts the wall back.
         QuadFrame g;
-        REQUIRE(BuildQuadFrame(5, {camF, none, {1, 0, 0}, {3.0f, 0.0f, 9.0f}}, g));
+        REQUIRE(BuildQuadFrame(Mode(5), {camF, none, {1, 0, 0}, {3.0f, 0.0f, 9.0f}}, g));
         CHECK(std::fabs(g.up.z) != Approx(1.0f));
     }
 
@@ -2781,13 +2787,13 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         QuadFrame f;
         // Columns (q*Y, q*Z, q*X). An unrotated emitter therefore stands the
         // quad in the world YZ plane facing +X -- vertical, not flat.
-        REQUIRE(BuildQuadFrame(7, {camF}, f));
+        REQUIRE(BuildQuadFrame(Mode(7), {camF}, f));
         CHECK(f.right.y == Approx(1.0f));
         CHECK(f.up.z == Approx(1.0f));
         CHECK(dot(f.right, f.up) == Approx(0.0f).margin(1e-6));
         // It ignores the camera entirely: turn the camera and nothing moves.
         QuadFrame g;
-        REQUIRE(BuildQuadFrame(7, {{1.0f, 0.0f, 0.0f}}, g));
+        REQUIRE(BuildQuadFrame(Mode(7), {{1.0f, 0.0f, 0.0f}}, g));
         CHECK(g.right.y == Approx(f.right.y));
         CHECK(g.up.z == Approx(f.up.z));
         // Turn the EMITTER a quarter turn about Z and the frame goes with it.
@@ -2795,7 +2801,7 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         in.camForward = camF;
         in.emitterQuat = Quaternion::from_axis_angle({0.0f, 0.0f, 1.0f}, 1.57079633f);
         QuadFrame h;
-        REQUIRE(BuildQuadFrame(7, in, h));
+        REQUIRE(BuildQuadFrame(Mode(7), in, h));
         CHECK(h.right.x == Approx(-1.0f).margin(1e-5));  // q * worldY
         CHECK(h.up.z == Approx(1.0f).margin(1e-5));      // q * worldUp, unmoved
     }
@@ -2808,7 +2814,7 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         // which is vertical -- the two were swapped.
         for (i32 mode : {9, 10}) {
             QuadFrame f;
-            REQUIRE(BuildQuadFrame(mode, in, f));
+            REQUIRE(BuildQuadFrame(Mode(mode), in, f));
             CHECK(f.right.x == Approx(1.0f));
             CHECK(f.up.y == Approx(1.0f));
             CHECK(f.up.z == Approx(0.0f).margin(1e-6));
@@ -2817,7 +2823,7 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         // normal, which is what "ground-conforming" means.
         in.groundNormal = {0.0f, 0.6f, 0.8f};
         QuadFrame s;
-        REQUIRE(BuildQuadFrame(9, in, s));
+        REQUIRE(BuildQuadFrame(Mode(9), in, s));
         const Vector3f n{s.right.y * s.up.z - s.right.z * s.up.y,
                          s.right.z * s.up.x - s.right.x * s.up.z,
                          s.right.x * s.up.y - s.right.y * s.up.x};
@@ -2830,7 +2836,7 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         // value, so a viewer with no terrain gets the flat case above.
         in.groundNormal = {0.0f, 0.0f, 1.0f};
         QuadFrame g;
-        REQUIRE(BuildQuadFrame(10, in, g));
+        REQUIRE(BuildQuadFrame(Mode(10), in, g));
         CHECK(g.up.y == Approx(1.0f));
     }
 
@@ -2839,12 +2845,12 @@ TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render m
         // X. The engine skips the normalise on a step below the epsilon rather
         // than zeroing it, so a stalled bolt does not snap to world X.
         QuadFrame f;
-        REQUIRE(BuildQuadFrame(12, {camF, none, {0.6f, 0.8f, 0.0f}}, f));
+        REQUIRE(BuildQuadFrame(Mode(12), {camF, none, {0.6f, 0.8f, 0.0f}}, f));
         CHECK(f.up.x == Approx(0.6f));
         CHECK(f.up.y == Approx(0.8f));
         // One that never moved at all does.
         QuadFrame g;
-        REQUIRE(BuildQuadFrame(12, {camF}, g));
+        REQUIRE(BuildQuadFrame(Mode(12), {camF}, g));
         CHECK(g.up.x == Approx(1.0f));
         CHECK(g.up.y == Approx(0.0f));
     }
@@ -2885,7 +2891,7 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         // quaternion, copied there at @0x71000B1EC0.
         Quaternion q = spun;
         for (i32 mode : {1, 8}) {
-            CHECK_FALSE(BuildChildOrientation(mode, {camF}, q));
+            CHECK_FALSE(BuildChildOrientation(Mode(mode), {camF}, q));
             CHECK(q.x == Approx(spun.x));
             CHECK(q.w == Approx(spun.w));
         }
@@ -2898,7 +2904,7 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         in.camForward = camF;
         in.emitterQuat = spun;
         Quaternion q = Quaternion::identity();
-        REQUIRE(BuildChildOrientation(7, in, q));
+        REQUIRE(BuildChildOrientation(Mode(7), in, q));
         CHECK(q.x == Approx(spun.x));
         CHECK(q.y == Approx(spun.y));
         CHECK(q.z == Approx(spun.z));
@@ -2916,13 +2922,13 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         in.axisUnit = in.axis;
 
         QuadFrame f;
-        REQUIRE(BuildQuadFrame(3, in, f));
+        REQUIRE(BuildQuadFrame(Mode(3), in, f));
         const Vector3f normal{f.right.y * f.up.z - f.right.z * f.up.y,
                               f.right.z * f.up.x - f.right.x * f.up.z,
                               f.right.x * f.up.y - f.right.y * f.up.x};
 
         Quaternion q = Quaternion::identity();
-        REQUIRE(BuildChildOrientation(3, in, q));
+        REQUIRE(BuildChildOrientation(Mode(3), in, q));
         CHECK(same(col(q, 0), normal));
         CHECK(same(col(q, 1), f.right));
         CHECK(same(col(q, 2), f.up));
@@ -2938,7 +2944,7 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         in.axisUnit = in.axis;
         for (i32 mode : {2, 3, 12}) {
             Quaternion q = Quaternion::identity();
-            REQUIRE(BuildChildOrientation(mode, in, q));
+            REQUIRE(BuildChildOrientation(Mode(mode), in, q));
             CHECK(same(col(q, 0), {0.0f, 1.0f, 0.0f}));
             CHECK(same(col(q, 2), {0.0f, 0.0f, 1.0f}));
         }
@@ -2948,7 +2954,7 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         vert.axis = {0.0f, 0.0f, 1.0f};
         vert.axisUnit = vert.axis;
         Quaternion q = Quaternion::identity();
-        CHECK_FALSE(BuildChildOrientation(12, vert, q));
+        CHECK_FALSE(BuildChildOrientation(Mode(12), vert, q));
     }
 
     SECTION("modes 0 and 13 turn the child to face the camera") {
@@ -2956,8 +2962,8 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         // 13 flattens it, so with a horizontal camera the two must agree --
         // the same cross-check that settled the column convention for quads.
         Quaternion a = Quaternion::identity(), b = Quaternion::identity();
-        REQUIRE(BuildChildOrientation(0, {camF}, a));
-        REQUIRE(BuildChildOrientation(13, {camF}, b));
+        REQUIRE(BuildChildOrientation(Mode(0), {camF}, a));
+        REQUIRE(BuildChildOrientation(Mode(13), {camF}, b));
         for (int i = 0; i < 3; ++i)
             CHECK(same(col(a, i), col(b, i)));
         // Facing the camera means +X points back down the view direction.
@@ -2969,8 +2975,8 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         pd3::FrameInput tilted;
         tilted.camForward = {0.0f, 0.707107f, -0.707107f};
         Quaternion c = Quaternion::identity(), d = Quaternion::identity();
-        REQUIRE(BuildChildOrientation(0, tilted, c));
-        REQUIRE(BuildChildOrientation(13, tilted, d));
+        REQUIRE(BuildChildOrientation(Mode(0), tilted, c));
+        REQUIRE(BuildChildOrientation(Mode(13), tilted, d));
         CHECK(same(col(d, 2), {0.0f, 0.0f, 1.0f}));
         CHECK_FALSE(same(col(c, 2), {0.0f, 0.0f, 1.0f}));
     }
@@ -2988,8 +2994,8 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
             a.camForward = {0.0f, 1.0f, 0.0f};
             b.camForward = {1.0f, 0.0f, 0.0f};
             Quaternion qa = Quaternion::identity(), qb = Quaternion::identity();
-            REQUIRE(BuildChildOrientation(mode, a, qa));
-            REQUIRE(BuildChildOrientation(mode, b, qb));
+            REQUIRE(BuildChildOrientation(Mode(mode), a, qa));
+            REQUIRE(BuildChildOrientation(Mode(mode), b, qb));
             CHECK(qa.x == Approx(qb.x));
             CHECK(qa.y == Approx(qb.y));
             CHECK(qa.z == Approx(qb.z));
@@ -3000,8 +3006,8 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         pd3::FrameInput a = in, b = in;
         a.camForward = {0.0f, 1.0f, 0.0f};
         b.camForward = {1.0f, 0.0f, 0.0f};
-        REQUIRE(BuildQuadFrame(2, a, fa));
-        REQUIRE(BuildQuadFrame(2, b, fb));
+        REQUIRE(BuildQuadFrame(Mode(2), a, fa));
+        REQUIRE(BuildQuadFrame(Mode(2), b, fb));
         CHECK_FALSE(same(fa.right, fb.right));
     }
 
@@ -3010,7 +3016,7 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         in.camForward = camF;
         // Flat ground and an unrotated emitter compose to nothing at all.
         Quaternion q = Quaternion::identity();
-        REQUIRE(BuildChildOrientation(9, in, q));
+        REQUIRE(BuildChildOrientation(Mode(9), in, q));
         for (int i = 0; i < 3; ++i) {
             const Vector3f e[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
             CHECK(same(col(q, i), e[i]));
@@ -3019,7 +3025,7 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         // what "ground-conforming" means for a model rather than a quad.
         in.groundNormal = {0.0f, 0.6f, 0.8f};
         Quaternion s = Quaternion::identity();
-        REQUIRE(BuildChildOrientation(10, in, s));
+        REQUIRE(BuildChildOrientation(Mode(10), in, s));
         CHECK(same(col(s, 2), in.groundNormal));
     }
 }

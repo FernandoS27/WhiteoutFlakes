@@ -6,7 +6,6 @@
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
-#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>

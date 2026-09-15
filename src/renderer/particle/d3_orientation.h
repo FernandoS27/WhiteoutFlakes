@@ -35,6 +35,7 @@
 // normal is still a rendering decision.
 // ============================================================================
 
+#include "d3_channels.h"  // PrtRenderMode
 #include "d3_particle.h" // OrientationFromAxes, the arc modes 9 and 10 compose
 #include "types.h"
 #include "whiteout/flakes/types.h"
@@ -45,7 +46,7 @@ namespace whiteout::flakes::renderer::particle::d3 {
 
 /// The engine's degenerate-frame epsilon. Pinned by execution: at 1e-7 sixty of
 /// G-D3P-11's cases go red.
-inline constexpr f32 kFrameEpsilon = 1e-6f;
+inline constexpr f32 kFrameEpsilon = kEpsilon;
 
 inline constexpr Vector3f kWorldUp{0.0f, 0.0f, 1.0f};
 inline constexpr Vector3f kWorldX{1.0f, 0.0f, 0.0f};
@@ -320,31 +321,32 @@ struct FrameInput {
 /// All fourteen modes. False means the mode writes nothing — 0 (ungated), 1 and
 /// 8 — or that the frame came out degenerate; either way the caller's own basis
 /// stands.
-inline bool BuildQuadFrame(i32 renderMode, const FrameInput& in, QuadFrame& out) {
+inline bool BuildQuadFrame(PrtRenderMode renderMode, const FrameInput& in, QuadFrame& out) {
+    using enum PrtRenderMode;
     switch (renderMode) {
-    case 2:
+    case AxisStreak:
         return FrameAlongAxis(SelectFrameAxis(in.axis, in.axisUnit), in.camForward, true, out);
-    case 3:
+    case AcrossAxis:
         return FrameAcrossAxis(SelectFrameAxis(in.axis, in.axisUnit), out);
-    case 4:
+    case AcrossSystemXY:
         return FrameAcrossAxis(
             SelectFrameAxis({in.fromSystem.x, in.fromSystem.y, 0.0f}, in.axisUnit), out);
-    case 5:
+    case AcrossSystem:
         return FrameAcrossAxis(SelectFrameAxis(in.fromSystem, in.axisUnit), out);
-    case 6:
+    case AcrossCameraXY:
         return FrameAcrossAxis(
             SelectFrameAxis({-in.camForward.x, -in.camForward.y, 0.0f}, in.axisUnit), out);
-    case 7:
+    case EmitterFrame:
         return FrameEmitter(in.emitterQuat, out);
-    case 9:
-    case 10:
+    case Ground:
+    case GroundAlt:
         return FrameGroundConformed(in.emitterQuat, in.groundNormal, out);
-    case 11:
+    case SystemStreak:
         return FrameAlongAxis(SelectFrameAxis(in.fromSystem, in.axisUnit), in.camForward, true,
                               out);
-    case 12:
+    case AxisUpright:
         return FrameAlongAxis(SelectFrameAxis(in.axis, in.axisUnit), kWorldUp, false, out);
-    case 13:
+    case Vertical:
         return FrameVertical(in.camForward, out);
     default:
         return false;
@@ -426,42 +428,44 @@ inline bool FlattenedCameraAxis(const Vector3f& camForward, Vector3f& out) {
 /// camera-facing (0 x907, 13 x187), velocity-aligned (12 x275, 2 x142, 3 x11)
 /// or system-relative (11 x10, 5 x3, 9 x1). Modes 4, 6, 8 and 10 are never
 /// asked for by a child-actor system at all.
-inline bool BuildChildOrientation(i32 renderMode, const FrameInput& in, Quaternion& out) {
+inline bool BuildChildOrientation(PrtRenderMode renderMode, const FrameInput& in,
+                                  Quaternion& out) {
+    using enum PrtRenderMode;
     switch (renderMode) {
-    case 0:
+    case CameraGated:
         // The one mode with no ungated arm at all. `OrientBillboard` is this
         // same construction with the negation folded in; it keeps its own copy
         // because G-D3P-11 pins that one bit for bit.
         return OrientBillboard(in.camForward, out);
-    case 2:
-    case 3:
-    case 12:
+    case AxisStreak:
+    case AcrossAxis:
+    case AxisUpright:
         return GatedFrame(SelectFrameAxis(in.axis, in.axisUnit), out);
-    case 4:
+    case AcrossSystemXY:
         return GatedFrame(SelectFrameAxis({in.fromSystem.x, in.fromSystem.y, 0.0f}, in.axisUnit),
                           out);
-    case 5:
-    case 11:
+    case AcrossSystem:
+    case SystemStreak:
         // Modes 2 and 11 lose the camera here: `Particle_OrientationBasisHelper`
         // @0x71000BBF10 opens with `if (gated) { Particle_QuaternionFromAxes(...);
         // return; }` and never reaches the cross with the view direction that
         // gives the ungated arm its billboard.
         return GatedFrame(SelectFrameAxis(in.fromSystem, in.axisUnit), out);
-    case 6:
+    case AcrossCameraXY:
         return GatedFrame(SelectFrameAxis({-in.camForward.x, -in.camForward.y, 0.0f}, in.axisUnit),
                           out);
-    case 7:
+    case EmitterFrame:
         out = in.emitterQuat;
         return true;
-    case 9:
-    case 10:
+    case Ground:
+    case GroundAlt:
         // The arm the ungated path reaches the long way round: it rotates the
         // three world axes by this same product and reads them back as the
         // columns, which is the product again.
         out = OrientationFromAxes(in.emitterQuat.rotate_vector(kWorldUp), in.groundNormal) *
               in.emitterQuat;
         return true;
-    case 13: {
+    case Vertical: {
         Vector3f n;
         if (!FlattenedCameraAxis(in.camForward, n))
             return false;

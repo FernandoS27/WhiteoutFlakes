@@ -1,6 +1,7 @@
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 
 #include "compiled_shaders.h"
+#include "io/d3/d3_sno_cache.h"
 #include "io/d3/d3_types.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"

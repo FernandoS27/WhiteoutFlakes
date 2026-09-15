@@ -23,9 +23,9 @@ namespace whiteout::flakes::renderer::particle::d3 {
 
 struct EmitterDesc {
     // ---- system ----
-    i32 systemType = 0;
-    u32 prtFlags = 0;
-    i32 renderMode = 0;
+    SystemType systemType = SystemType::Standard;
+    u32 prtFlags = 0; ///< `PrtFlag` bits
+    PrtRenderMode renderMode = PrtRenderMode::CameraGated;
 
     /// Seconds. The engine stores frame counts at 60 fps and multiplies all
     /// three by 0.016667 on load; do the conversion once, here.
@@ -116,6 +116,9 @@ struct EmitterDesc {
     /// into the name `cos_wings_*` — is wrong. Type 1 is 4,790 files that each
     /// spawn a MODEL, and the 176-byte segment record that reading was built on
     /// belongs to type 9, the weather systems.
+    bool SpawnsChildActors() const {
+        return snoActor >= 0 && EmitsActors(systemType);
+    }
     /// @brief Do this system's particles come off the owning model's surface?
     ///
     /// Shapes 6, 7 and 11 — 1,454 shipped files. The host builds the surface
@@ -125,8 +128,8 @@ struct EmitterDesc {
                shape == Shape::MeshSequential;
     }
 
-    bool SpawnsChildActors() const {
-        return snoActor >= 0 && (systemType == 1 || systemType == 3 || systemType == 4);
+    bool Has(PrtFlag f) const {
+        return d3::Has(prtFlags, f);
     }
 
     const Path& Channel(i32 id) const {

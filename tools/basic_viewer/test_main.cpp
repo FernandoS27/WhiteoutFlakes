@@ -318,12 +318,13 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
         // Where the host put each emitter, straight off the live service —
         // the one number that separates "the sim is wrong" from "the emitter
         // is in the wrong place", and the trace schema carries no equivalent.
-        renderer.Particles().ForEachEmitter([](const part::EmitterKey& k, const part::Emitter2& e) {
+        renderer.Particles().ForEachEmitter([](const part::EmitterKey& k,
+                                               const part::ParticleEmitter& e) {
             const wf::Vector3f& w = e.WorldPosition();
             std::printf("  em %2d out=%u at=(%8.2f %8.2f %8.2f) visible=%d\n", k.id,
                         unsigned(k.output), w.x, w.y, w.z, e.Visible() ? 1 : 0);
 #if WDX_ENABLE_D3
-            const auto* d3 = dynamic_cast<const part::d3::Emitter*>(&e);
+            const auto* d3 = e.AsD3();
             if (!d3)
                 return;
             const auto& m = d3->D3Desc().d3mat;
@@ -342,7 +343,8 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
             d3->D3Desc().Channel(part::d3::kChAlpha).ScalarRange(a6lo, a6hi);
             std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) "
                         "vcol=(%d%d %d%d) aTest=%.3f erosion=%d ch6=%.2f..%.2f layers=%u\n",
-                        d3->D3Desc().snoId, d3->D3Desc().caps, d3->D3Desc().systemType,
+                        d3->D3Desc().snoId, d3->D3Desc().caps,
+                        static_cast<int>(d3->D3Desc().systemType),
                         int(d3->D3Desc().shape), m.passResolved ? 1 : 0, m.effectFile.c_str(),
                         m.blendSrc, m.blendDst, m.colorVcolFirst ? 1 : 0, m.colorVcolLast ? 1 : 0,
                         m.alphaVcolFirst ? 1 : 0, m.alphaVcolLast ? 1 : 0, m.alphaTest,
@@ -1019,7 +1021,7 @@ static int RunDrawTrace(
                 std::cout << " *** NOT REGISTERED ***" << std::endl;
                 continue;
             }
-            const auto& d = em->Desc();
+            const auto& d = em->AsEmitter2()->Desc();
             std::cout << (d.sc2.motion.analytic ? " analytic" : " euler")
                       << (out == ParticleOutput::ChildModel ? " child" : " quad")
                       << " slots=" << d.sc2.emit.slotBones.size() << " squirt=" << squirtKeys
@@ -1533,16 +1535,19 @@ static int RunChildModelCheck(whiteout::flakes::renderer::RenderService& rendere
     }
 
     i32 childEmitters = 0;
-    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2&) {
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k,
+                                            const part::ParticleEmitter&) {
         if (k.output == part::ParticleOutput::ChildModel)
             ++childEmitters;
     });
     std::cout << "[cmcheck] " << mdxPath.filename().string() << ": " << childEmitters
               << " child-model emitter(s)" << std::endl;
-    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
-        if (k.output == part::ParticleOutput::ChildModel)
-            std::cout << "[cmcheck]   emitter " << k.id << " path='" << e.Desc().ChildModelPath()
-                      << "' lifeSpan=" << e.Desc().lifeSpan << std::endl;
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k,
+                                            const part::ParticleEmitter& e) {
+        const auto* e2 = e.AsEmitter2();
+        if (k.output == part::ParticleOutput::ChildModel && e2)
+            std::cout << "[cmcheck]   emitter " << k.id << " path='" << e2->Desc().ChildModelPath()
+                      << "' lifeSpan=" << e2->Desc().lifeSpan << std::endl;
     });
     if (childEmitters == 0) {
         std::cout << "[cmcheck] no child-model emitters — nothing to check" << std::endl;
@@ -1564,9 +1569,11 @@ static int RunChildModelCheck(whiteout::flakes::renderer::RenderService& rendere
     // the Birth/Death balance — the assertion that matters — goes untested.
     const i32 seqCount = (std::max)(1, (i32)hero->animation.Sequences().size());
     i32 longestLife = 0;
-    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
-        if (k.output == part::ParticleOutput::ChildModel)
-            longestLife = (std::max)(longestLife, (i32)(e.Desc().lifeSpan * 60.0f));
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k,
+                                            const part::ParticleEmitter& e) {
+        const auto* e2 = e.AsEmitter2();
+        if (k.output == part::ParticleOutput::ChildModel && e2)
+            longestLife = (std::max)(longestLife, (i32)(e2->Desc().lifeSpan * 60.0f));
     });
     const i32 perSeq = (std::max)(frames / seqCount, longestLife * 3 + 60);
 
@@ -1583,7 +1590,7 @@ static int RunChildModelCheck(whiteout::flakes::renderer::RenderService& rendere
 
             i32 aliveParticles = 0;
             renderer.Particles().ForEachEmitter(
-                [&](const part::EmitterKey& k, const part::Emitter2& e) {
+                [&](const part::EmitterKey& k, const part::ParticleEmitter& e) {
                     if (k.output == part::ParticleOutput::ChildModel)
                         aliveParticles += e.TotalAlive();
                 });
@@ -1608,7 +1615,8 @@ static int RunChildModelCheck(whiteout::flakes::renderer::RenderService& rendere
     // Combined with worstOrphans this is the Birth/Death balance check — every
     // Birth that produced an actor eventually produced exactly one Death.
     i32 finalParticles = 0;
-    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k,
+                                            const part::ParticleEmitter& e) {
         if (k.output == part::ParticleOutput::ChildModel)
             finalParticles += e.TotalAlive();
     });

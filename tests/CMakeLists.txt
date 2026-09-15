@@ -32,7 +32,10 @@ include(Catch)
 # those paths misses.
 
 # One executable per test file, auto-registered with CTest so `ctest` runs
-# each TEST_CASE as its own test (and `-R` filters work on case names).
+# each TEST_CASE as its own test. Every ctest name is prefixed with its
+# program (`particle_sim_test.<case>`), so `-R "^particle_sim_test\."` selects
+# the whole program: without the prefix `-R` matches case TITLES alone, and a
+# filter meant for a suite silently runs whichever cases happen to name it.
 function(wdx_add_test TARGET)
     add_executable(${TARGET} ${ARGN})
     set_target_properties(${TARGET} PROPERTIES
@@ -49,7 +52,8 @@ function(wdx_add_test TARGET)
             /wd4100 /wd4127 /wd4244 /wd4267
         )
     endif()
-    catch_discover_tests(${TARGET} WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    catch_discover_tests(${TARGET} WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                         TEST_PREFIX "${TARGET}.")
     set_property(GLOBAL APPEND PROPERTY WDX_TEST_TARGETS ${TARGET})
 endfunction()
 
@@ -323,6 +327,9 @@ wdx_add_test(particle_trail_test    particle_trail_test.cpp)
 # Refraction emitters (M2 Refraction): the two scrolling texture layers and the
 # routing that keeps a distortion mask out of the scene's colour.
 wdx_add_test(particle_refraction_test particle_refraction_test.cpp)
+# Multi-texture emitters (M2 MultiTexture): the same UV state as refraction,
+# but the draw stays in the sorted transparent queue.
+wdx_add_test(particle_multitex_test particle_multitex_test.cpp)
 wdx_add_test(particle_trace_test    particle_trace_test.cpp)
 wdx_add_test(ribbon_sim_test        ribbon_sim_test.cpp)
 

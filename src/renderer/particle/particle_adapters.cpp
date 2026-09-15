@@ -1,6 +1,7 @@
 #include "renderer/particle/particle_adapters.h"
 
 #include "particle.h" // ParticleEmitterConfig
+#include "particle_constants.h"
 
 #include <algorithm>
 #include <bit>
@@ -47,9 +48,6 @@ Vector3f QuantColor(const Vector3f& rgb) {
             Quant8(rgb.z * 255.0f) / 255.0f};
 }
 
-// WC3 samples each segment over [bias, 1-bias] rather than [0, 1].
-constexpr f32 kWc3SampleBias = 0.005f;
-
 } // namespace
 
 std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig& cfg) {
@@ -60,8 +58,9 @@ std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig
     desc->lifeSpan = cfg.lifeSpan;
     desc->tailLength = cfg.tailLength;
 
-    desc->hasHead = (cfg.particleType == 1 || cfg.particleType == 3);
-    desc->hasTail = (cfg.particleType == 2 || cfg.particleType == 3);
+    const auto type = static_cast<Wc3ParticleType>(cfg.particleType);
+    desc->hasHead = (type == Wc3ParticleType::Head || type == Wc3ParticleType::Both);
+    desc->hasTail = (type == Wc3ParticleType::Tail || type == Wc3ParticleType::Both);
 
     desc->sortZ = cfg.sortZ;
     desc->modelSpace = cfg.modelSpace;
@@ -69,7 +68,7 @@ std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig
 
     // A line emitter is a plane emitter with the longitudinal sweep collapsed.
     desc->shape = std::make_shared<PlaneShape>();
-    desc->longitude = cfg.lineEmitter ? 0.0f : 6.2831853071795864769f;
+    desc->longitude = cfg.lineEmitter ? 0.0f : kWowTwoPi;
 
     desc->angularVelocity = 0.0f;
     desc->priorityPlane = cfg.priorityPlane;
@@ -179,7 +178,7 @@ void FillCurve(Curve& curve, const std::vector<f32>& times, const Values& values
 // dividing, which makes the factor zero and the feature inert.
 void SolveFollowLine(EmitterDesc& desc, const M2ParticleEmitterConfig& cfg) {
     const f32 ds = cfg.followSpeed2 - cfg.followSpeed1;
-    if (std::fabs(ds) < 2.3841858e-7f) {
+    if (std::fabs(ds) < kFollowSpeedEpsilon) {
         desc.followBias = 0.0f;
         desc.followSlope = 0.0f;
         return;
@@ -324,6 +323,7 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     // track every frame, not from a fixed multiplier the way PE1 does.
     if (!cfg.geometryModelPath.empty()) {
         desc->output = ParticleOutput::ChildModel;
+        desc->childModelKind = EmitterDesc::ChildModelKind::M2;
         desc->childModelPaths = {cfg.geometryModelPath};
     }
     // Not an output kind: a trail emitter's particles are ordinary billboards.
@@ -389,8 +389,7 @@ namespace {
 
 /// `InitCopy`'s mid-time clamp, in 4.8 as in 5.0 — see Sc2EmitterDesc::Look::midTime.
 f32 Sc2ClampMid(f32 v) {
-    constexpr f32 kMaxMid = 0.996f;
-    return v > kMaxMid ? kMaxMid : v;
+    return v > sc2::kMidTimeCeil ? sc2::kMidTimeCeil : v;
 }
 
 } // namespace
@@ -409,10 +408,9 @@ DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
     // ---- EMIT ----
     s.emit.shape = cfg.emitShape;
     s.emit.velocityType = static_cast<u8>(cfg.velocityType);
-    // The pool is capped by the vertex arena, not by the author: 0x200000 bytes
-    // over a 464-byte element (RE §3.1). An emitter asking for more gets fewer.
-    constexpr u32 kMaxParticles = 0x200000u / 464u;
-    s.emit.maxParticles = (std::min)(cfg.maxParticles, kMaxParticles);
+    // The pool is capped by the vertex arena, not by the author (RE §3.1). An
+    // emitter asking for more gets fewer.
+    s.emit.maxParticles = (std::min)(cfg.maxParticles, sc2::kMaxParticles);
     s.emit.lodReduce = cfg.lodReduce;
     s.emit.lodCut = cfg.lodCut;
     s.emit.slotBones = cfg.slotBones;
@@ -424,7 +422,7 @@ DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
     s.emit.speedRandom = s.Has(ParticleAdditionalFlag::EmitSpeedRandomize);
     s.emit.lifetimeRandom = s.Has(ParticleAdditionalFlag::LifespanRandomize);
     s.emit.massRandom = s.Has(ParticleAdditionalFlag::MassRandomize);
-    for (int k = 0; k < 9; ++k)
+    for (i32 k = 0; k < sc2::OverlayGroup::kCount; ++k)
         s.emit.overlayType[k] = cfg.overlayType[k];
     s.emit.preRollPeaks = cfg.preRollPeaks;
     s.emit.preRollInit = cfg.preRollInit;
@@ -461,7 +459,7 @@ DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
     s.look.sizeSmoothing = cfg.sizeSmoothing;
     s.look.colorSmoothing = cfg.colorSmoothing;
     s.look.rotationSmoothing = cfg.rotationSmoothing;
-    for (int k = 0; k < 4; ++k) {
+    for (i32 k = 0; k < sc2::MidChannel::kCount; ++k) {
         s.look.midTime[k] = Sc2ClampMid(cfg.midTime[k]);
         s.look.midHold[k] = cfg.midHold[k];
     }
@@ -501,8 +499,8 @@ DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
     // negative zero counts where a float compare would not.
     s.children.modelOrientLegacy = std::bit_cast<u32>(cfg.modelOrientPreset) != 0u;
     s.children.modelOrientVariant = cfg.modelOrientVariant;
-    s.children.scaleCollisionChild = (cfg.rotationFlags & 0x10u) != 0;
-    s.children.scaleTrailChild = (cfg.rotationFlags & 0x20u) != 0;
+    s.children.scaleCollisionChild = s.Has(Sc2RotationBit::ScaleCollisionChild);
+    s.children.scaleTrailChild = s.Has(Sc2RotationBit::ScaleTrailChild);
 
     // The derivation, once, on the finished block. Anything that reads
     // `motion.analytic` reads a decision, never a re-derivation (OP1's second

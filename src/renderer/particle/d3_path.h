@@ -26,6 +26,7 @@
 //    draw one.
 // ============================================================================
 
+#include "d3_channels.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -101,11 +102,8 @@ struct PathNode {
 };
 
 /// The per-evaluation context, `Particle_BuildEvalContext` @0x710037AD70.
-/// `timeMode` is the engine's `nTimeMode`: 0 takes `time/period` raw, 1 wraps
-/// it into the path's loop sub-range, 2 additionally cross-fades toward a
-/// second sample near the end of the curve.
 struct EvalCtx {
-    i32 timeMode = 1;
+    TimeMode timeMode = TimeMode::Looped;
     f32 time = 0.0f;   ///< the particle's age in seconds (or the emitter's elapsed)
     f32 period = 1.0f; ///< the particle's lifetime in seconds (or the emission period)
     f32 blend = 0.0f;  ///< system normalised emission time; weights the end-blend

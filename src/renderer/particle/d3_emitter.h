@@ -3,10 +3,10 @@
 // ============================================================================
 // d3::Emitter — the Diablo III particle simulation.
 //
-// A third dialect, not a third set of curves. It plugs in at Emitter2's two
-// virtual seams (Update and BuildGeometry) and shares the pool, the registry,
-// the draw list and the transparent sort with WC3 and WoW; everything above
-// those is its own. See D3_PARTICLE_DESIGN.md §12.
+// A third dialect, not a third set of curves. It implements the same
+// `ParticleEmitter` as `Emitter2`, beside it rather than under it, and shares
+// the pool, the registry, the draw list and the transparent sort with WC3 and
+// WoW; everything above those is its own. See D3_PARTICLE_DESIGN.md §12.
 //
 // Two facts shape the whole class:
 //
@@ -26,7 +26,7 @@
 #include "d3_emitter_desc.h"
 #include "d3_particle.h"
 #include "d3_path.h"
-#include "particle2_emitter.h"
+#include "particle_emitter.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -37,9 +37,16 @@
 
 namespace whiteout::flakes::renderer::particle::d3 {
 
-class Emitter final : public particle::Emitter2 {
+class Emitter final : public particle::ParticleEmitter {
 public:
     Emitter();
+
+    Emitter* AsD3() override {
+        return this;
+    }
+    const Emitter* AsD3() const override {
+        return this;
+    }
 
     /// Never null: an emitter without one reads a static default whose channels
     /// are all empty, which emits nothing rather than crashing.
@@ -50,8 +57,17 @@ public:
 
     void Update(f32 elapsed, f32 emissionScaler) override;
     i32 BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& out) const override;
-    void ApplyState(const model::FrameState::ParticleFrameState& st) override;
     void CollectOutputEvents(std::vector<ChildModelEvent>& out) override;
+
+    /// The desc's material and priority, in the id space its output declares:
+    /// a type 1/3/4 system draws nothing of its own — every emission is a whole
+    /// model — so it registers as a child-model emitter and the geometry
+    /// builder is never asked for it.
+    EmitterDrawHeader DrawHeader() const override;
+
+    i32 TotalAlive() const override {
+        return static_cast<i32>(pool_.AliveCount());
+    }
 
     /// @brief Who the children belong to, and what mints their handles.
     ///
@@ -73,8 +89,9 @@ public:
     }
 
     /// The system's own age, which is the clock every layer's UV transform is
-    /// sampled against.
-    f32 MaterialTimeSec() const override {
+    /// sampled against — what makes a re-triggered effect restart its scroll
+    /// instead of jumping to wherever a scene clock had reached.
+    f32 MaterialTimeSec() const {
         return systemAge_;
     }
 
@@ -87,30 +104,6 @@ public:
         emitterQuat_ = q;
     }
 
-    /// @brief The model surface emitter shapes 6, 7 and 11 sample.
-    ///
-    /// Two halves because they change at different rates: the geometry is
-    /// built once per actor and shared, the pose arrives every frame. Without
-    /// either the three shapes fall back to the point case — the engine's own
-    /// answer when its actor lookup fails.
-    void SetEmitMesh(std::shared_ptr<const EmitMesh> mesh) override {
-        emitMesh_ = std::move(mesh);
-    }
-    bool HasEmitMesh() const {
-        return emitMesh_ && !emitMesh_->Empty();
-    }
-    /// @param pose     Node world matrices, model space, by global bone index.
-    /// @param invBind  The matching inverse bind matrices. Skinning is
-    ///                 `rest * invBind[b] * pose[b]`, the same product the
-    ///                 bone palette uploads.
-    /// @param toWorld  Model space -> renderer units, scale included.
-    void SetEmitMeshPose(std::span<const Matrix44f> pose, std::span<const Matrix44f> invBind,
-                         const Matrix44f& toWorld) override {
-        emitPose_ = pose;
-        emitInvBind_ = invBind;
-        emitMeshToWorld_ = toWorld;
-    }
-
     /// The bound spawn target the seek model converges on. Without one the
     /// model is inert, which is what the engine does when nothing is bound.
     void SetSeekTarget(const Vector3f& t) {
@@ -121,15 +114,6 @@ public:
         hasSeekTarget_ = false;
     }
 
-    /// @brief Where the ground is, for the two ground-conforming render modes.
-    ///
-    /// The engine raycasts the world per particle and caches the hit normal;
-    /// this is the renderer's equivalent — the shared ground query, which is
-    /// the grid unless a host registered real terrain through
-    /// `RenderSettings::SetGroundQuery`. It answers with a HEIGHT, so the
-    /// normal comes from two tangents sampled a step apart, which on the flat
-    /// grid is exactly world up: the engine's own raycast-miss value. Without a
-    /// query the modes still work and read flat.
     /// @brief The camera's view direction, for the modes that face it.
     ///
     /// `Particle_PrepareDrawFrame` reads it off the per-view record at
@@ -138,19 +122,6 @@ public:
     /// MODEL to the camera, and between them that is 1,094 shipped systems.
     void SetCameraForward(const Vector3f& f) {
         camForward_ = f;
-    }
-
-    // The base declares this virtual so the service can install one ground
-    // query on every emitter it holds without knowing the family. D3 keeps
-    // its own copy — it had the setter first and its MOVE reads it directly
-    // — so the override stores here and lets the base store its own.
-    // Overrides rather than hides: the base declares the contract so the
-    // service can install one query on every emitter it holds without knowing
-    // the family. It does NOT chain — the base stores into the SC2 runtime,
-    // and this class is `final` and never SC2, so chaining would only copy a
-    // std::function per emitter per frame into a store nothing reads.
-    void SetGroundQuery(GroundQuery q) override {
-        groundQuery_ = std::move(q);
     }
 
     /// Global wind, for the two foliage system types. `phase` is a shared
@@ -206,16 +177,15 @@ public:
     /// re-triggers an effect rather than respawning it.
     void Restart();
 
-    /// A scene rewind is a re-trigger, so it is the same call — the base
-    /// version would leave the system clock and the pre-simulate behind.
+    /// A scene rewind is a re-trigger, so it is the same call.
     void ResetParticles() override {
         Restart();
     }
 
-protected:
-    void OnPoolResized(usize capacity) override;
-
 private:
+    /// Grow the pool, and the per-particle state index-parallel with it.
+    void GrowPool(u32 capacity);
+
     /// What `ParticleSystem_TickEmitter` precomputes once per tick and
     /// `ParticleSystem_SampleEmitterShape` reads per particle.
     struct EmitContext {
@@ -233,8 +203,8 @@ private:
         f32 ringPhase = 0.0f;
     };
 
-    /// One area-weighted (or, for shape 11, sequential) point on @ref
-    /// emitMesh_, skinned and taken to renderer units. False leaves the caller
+    /// One area-weighted (or, for shape 11, sequential) point on
+    /// `surface_.mesh`, skinned and taken to renderer units. False leaves the caller
     /// on the point case.
     bool SampleEmitMeshPoint(bool sequential, u32 sequence, Vector3f& out);
     Vector3f SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const;
@@ -270,6 +240,14 @@ private:
     void RunPreSimulate();
 
     /// `Particle_UpdateGroundNormal` @0x71000BA330's job, against the grid.
+    ///
+    /// The engine raycasts the world per particle and caches the hit normal;
+    /// this is the renderer's equivalent — the shared ground query installed on
+    /// every emitter, which is the grid unless a host registered real terrain
+    /// through `RenderSettings::SetGroundQuery`. It answers with a HEIGHT, so
+    /// the normal comes from two tangents sampled a step apart, which on the
+    /// flat grid is exactly world up: the engine's own raycast-miss value.
+    /// Without a query the two ground-conforming modes still work and read flat.
     /// Re-samples only when the particle's XY has moved, as the engine does.
     void RefreshGroundNormal(ParticleState& st, const Vector3f& pos) const;
 
@@ -277,8 +255,8 @@ private:
     std::vector<ParticleState> states_;
 
     /// The system's own random stream — particle seeds and the shape draws
-    /// come out of it. Distinct from `Emitter2::randSeed_`, which is the
-    /// WC3/WoW `CRandom` and is never touched here.
+    /// come out of it. The WC3/WoW `CRandom` stream is `Emitter2`'s and this
+    /// class has none.
     MwcRng sysRng_{0x1234567u, 666u};
     /// The seed emitter-side channel evaluations use (`sys+28` in the engine).
     u32 emitterSeed_ = 1;
@@ -290,18 +268,14 @@ private:
     i32 emittedLastUpdate_ = 0;
     u32 emitSequence_ = 0; ///< shape 11's monotone counter; never reset
 
-    std::shared_ptr<const EmitMesh> emitMesh_;
-    std::span<const Matrix44f> emitPose_;
-    std::span<const Matrix44f> emitInvBind_;
-    Matrix44f emitMeshToWorld_ = Matrix44f::identity();
 
     i32 attachBone_ = -1;
     Matrix44f attachOffset_ = Matrix44f::identity();
     Quaternion emitterQuat_ = Quaternion::identity();
 
     // The emitter placement the live particles were last carried to. Separate
-    // from `prevWorldPos_`, which is the birth-lerp segment and moves on a
-    // different schedule.
+    // from `placement_.prevWorldPos`, which is the birth-lerp segment and
+    // moves on a different schedule.
     Vector3f carryPos_{0, 0, 0};
     Quaternion carryQuat_ = Quaternion::identity();
     bool carrySeeded_ = false;
@@ -313,7 +287,6 @@ private:
     Vector2f windDir_{1, 0};
     f32 windStrength_ = 0.0f;
     f32 windPhase_ = 0.0f;
-    GroundQuery groundQuery_;
 
     // The child actors a type 1/3/4 system has spawned, and the events not yet
     // drained. Handles rather than pool indices: these are not particles, and

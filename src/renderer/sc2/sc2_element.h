@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include "renderer/ground_query.h"
+#include "renderer/sc2/sc2_constants.h"
 #include "renderer/sc2/sc2_rng.h"
 #include "whiteout/flakes/types.h"
 
@@ -24,53 +25,8 @@ namespace whiteout::flakes::renderer::sc2 {
 
 using whiteout::Vector3f;
 
-// -- runtime bit names (RE §3) -----------------------------------------------
-// These three words are RUNTIME state, not file fields: WhiteoutLib's
-// `ParticleFlag` / `ParticleRotationFlag` enums cover the `PAR_` bits, and
-// nothing covers these, which is why they were inline hex at every use site.
-// Named once here (R7); the RE section is the authority for each meaning.
-
-/// `CParticleSystem+0x120` — the emitter's derived state word.
-enum SystemStateFlag : u32 {
-    kStateForces = 0x1,             ///< local force pair nonzero.
-    kStateWorldForces = 0x2,        ///< `localForces|worldForces >= 0x10000`.
-    kStateWorldSpace = 0x4,         ///< `additionalFlags & 8`.
-    kStateInheritVelocity = 0x8,    ///< `flags & 0x40`.
-    kStateGpuMotion = 0x10,         ///< the CPU/GPU motion split (RE §2).
-    kStateScaleTimeByParent = 0x20,
-    /// Unnamed in the RE's `0x120` table. `Tick` tests `0x20|0x40` together
-    /// before scaling `dtMs`, so this bit arms the same multiply — found by
-    /// tracing what the tick READS, which is the only place either bit is
-    /// consumed (OP3).
-    kStateScaleTimeAlso = 0x40,
-    kStateEmissionDisabled = 0x80,
-    /// `Tick`'s second consumer of this bit: a resync forces the FULL-step
-    /// path, so the sweep never straddles the discontinuity (OP3).
-    kStateSquirtResync = 0x100,
-    kStateUseLocalTime = 0x400,
-    /// Re-entrancy guard around the sequence-change restart check; while it is
-    /// set, `Tick` skips the check AND leaves bit 31 standing (OP3).
-    kStateRestartBusy = 0x800,
-    kStateSquirtPrime = 0x1000,
-    kStateSequenceChanged = 0x80000000u, ///< set by UpdateEmitterState.
-};
-
-/// `CParticleSystem+0x34C` — the u24 emission-state word.
-enum EmitStateFlag : u32 {
-    kEmitAnyAnimated = 0x4,  ///< some AnimRef is animated (gates the sampler).
-    kEmitNoise = 0x8,
-    kEmitStillEmitting = 0x10,
-    kEmitSuppressed = 0x20,
-};
-
-/// `SParticleElement+0x3E` — the per-element state word.
-enum ElementFlag : u16 {
-    kElemTrail = 0x1,
-    kElemCollideTerrain = 0x4,
-    kElemCollideObjects = 0x8,
-    kElemOrientationFrozen = 0x10, ///< instanceType 6 froze its direction.
-    kElemAtRest = 0x40,            ///< gravity off; collision put it to sleep.
-};
+// The runtime bit names (`SystemStateFlag`, `EmitStateFlag`, `ElementFlag`)
+// live in `sc2_constants.h` with the rest of the vocabulary.
 
 // -- LOD tables (O3 golden o3_lodtables) -------------------------------------
 // Indexed [5*row + quality]. The reduce row scales the emission rate; a nonzero
@@ -122,8 +78,8 @@ f32 SampleWave(u32 type, f32 phase, f32 amp, Rng* rng = nullptr);
 // HEIGHT, so the surface is horizontal (normal = up); the dual query's
 // forward-particle-system half has nothing to hit in the viewer. Positions and
 // velocity are in the space the query answers (scene).
-inline constexpr f32 kCollideRadius = 0.03f;
-inline constexpr f32 kCollideSpeedSq = 0.01f;
+// The radius and the speed floor are `kCollideRadius` / `kCollideSpeedSq` in
+// `sc2_constants.h`.
 
 struct GroundHit {
     Vector3f pos;

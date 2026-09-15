@@ -10,9 +10,10 @@
 
 #include "particle_stages_sc2.h"
 
+#include "sc2_emitter_desc.h"
+
 #include "renderer/sc2/sc2_element_math.h"
 
-#include <bit>
 #include <cmath>
 
 namespace whiteout::flakes::renderer::particle {
@@ -23,21 +24,18 @@ namespace vs = whiteout::flakes::renderer::sc2::vs;
 
 using Quat = std::array<f32, 4>;
 
-constexpr f32 kInv255 = 1.0f / 255.0f; ///< `0x3B808081`, both colour tables
-constexpr f32 kInv256 = 1.0f / 256.0f;
-constexpr f32 kInv32 = 1.0f / 32.0f;
-constexpr f32 kScaleFloor = 0.001f;     ///< `dword_103BC8C10`
-constexpr f32 kYGuard = 1.0e-4f;        ///< `dword_103BB6B78`, types 2 and 3 only
-constexpr f32 kTerrainMinSq = 0.01f;    ///< `dword_103C458F8`
-constexpr f32 kPole = 0.999f;           ///< `dword_103C2BC94`
-constexpr f32 kPackStep = 1.0f / 65536.0f;
-constexpr f32 kPackBack = -65536.0f;
-constexpr f32 kCodeScale = 2.0f / 255.0f; ///< `dword_103C2B674`
-constexpr u32 kFlagSwapYZ = 0x800000u;
-constexpr u32 kFlagNoTailFloor = 0x100000u;
-constexpr u32 kAddWorldSpace = 8u;
-constexpr u32 kRotElementKeys = 4u;
-constexpr u32 kRotRandomDirection = 0x80u;
+using sc2::kCodeScale;
+using sc2::kInv255;
+constexpr f32 kInv256 = sc2::kInvSizeQuant;
+constexpr f32 kInv32 = sc2::kInvRotationQuant;
+constexpr f32 kPackStep = 1.0f / sc2::kPackHalf;
+constexpr f32 kPackBack = -sc2::kPackHalf;
+/// The pole test's cosine. DISAGREES — F4 with the spawn spline's spelling of
+/// the same dword.
+constexpr f32 kPole = sc2::kModelPoleCos;
+/// A world-space type-7/8 `orientVec` read as one plain direction rather than a
+/// packed pair. DISAGREES — F5: `sc2::SystemStateFlag` names this bit
+/// `kStateEmissionDisabled`, and the RE §3 table agrees with that name.
 constexpr u32 kStatePlainOrient = 0x80u;
 
 /// `1/sqrt` and one Newton step, `(r·−0.5)·((s·r)·r − 3)` — the grouping every
@@ -171,7 +169,7 @@ struct DirectionBasis {
 
 DirectionBasis FacingBasis(const Vector3f& src) {
     const f32 x = src.x;
-    const f32 y = src.y + kYGuard;
+    const f32 y = src.y + sc2::kFacingYGuard;
     const f32 s = ((src.z * src.z) + (src.x * src.x)) + (y * y);
     const f32 r = RsqNewton(s);
     const f32 xn = x * r;
@@ -363,6 +361,7 @@ std::array<Vector3f, 3> Sc2QuatRows(const std::array<f32, 4>& q) {
 }
 
 Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
+    namespace mid = sc2::MidChannel;
     Sc2ModelPose out;
     const std::array<f32, 16>& m = in.world;
     const f32 rowLen0 = (m[2] * m[2]) + ((m[1] * m[1]) + (m[0] * m[0]));
@@ -375,7 +374,8 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
     const f32 t = age < 0.0f ? 0.0f : ageTop;
 
     Vector3f pos = in.position;
-    if ((in.additionalFlags & kAddWorldSpace) == 0) {
+    const bool worldSpace = Sc2Has(in.additionalFlags, ParticleAdditionalFlag::WorldSpace);
+    if (!worldSpace) {
         const Vector3f& p = in.position;
         pos = {((p.z * m[8]) + (p.y * m[4])) + ((p.x * m[0]) + m[12]),
                ((p.z * m[9]) + (p.y * m[5])) + ((p.x * m[1]) + m[13]),
@@ -383,11 +383,11 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
     }
 
     // ---- the scalar tier ----
-    const bool elementKeys = (in.rotationFlags & kRotElementKeys) != 0;
+    const bool elementKeys = Sc2Has(in.rotationFlags, Sc2RotationBit::ElementKeys);
     f32 size;
     if (!elementKeys) {
         size = Curve1(in.sizeSmoothing, in.sizeKeys[0], in.sizeKeys[1], in.sizeKeys[2], t,
-                      in.midTime[0], in.midHold[0]);
+                      in.midTime[mid::Size], in.midHold[mid::Size]);
     } else {
         // The LONGEST world row, which the emitter-cache path never applies.
         const f32 rowLen2 = (m[10] * m[10]) + ((m[9] * m[9]) + (m[8] * m[8]));
@@ -396,10 +396,10 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         const f32 rowScale = NewtonLength(longest);
         size = rowScale * Curve1(in.sizeSmoothing, S16(in.elementSize[0]) * kInv256,
                                  S16(in.elementSize[1]) * kInv256,
-                                 S16(in.elementSize[2]) * kInv256, t, in.midTime[0],
-                                 in.midHold[0]);
+                                 S16(in.elementSize[2]) * kInv256, t, in.midTime[mid::Size],
+                                 in.midHold[mid::Size]);
     }
-    const f32 uniform = std::fmax(size, kScaleFloor);
+    const f32 uniform = std::fmax(size, sc2::kModelScaleFloor);
     out.scale = {uniform, uniform, uniform};
 
     const std::array<u32, 3>& words = elementKeys ? in.elementColors : in.colorKeys;
@@ -412,22 +412,26 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
                    static_cast<f32>((wd >> 24) & 0xFFu) * kInv255};
     }
     const auto colour =
-        Sc2EvalCurve2D(in.colorSmoothing, keys[0], keys[1], keys[2], t, in.midTime[1], in.midHold[1]);
+        Sc2EvalCurve2D(in.colorSmoothing, keys[0], keys[1], keys[2], t, in.midTime[mid::Color],
+                       in.midHold[mid::Color]);
     out.tint = {colour[0] * in.modelTint.x, colour[1] * in.modelTint.y, colour[2] * in.modelTint.z};
     const f32 alpha = Curve1(in.colorSmoothing, keys[0][3], keys[1][3], keys[2][3], t,
-                             in.midTime[2], in.midHold[2]);
+                             in.midTime[mid::Alpha], in.midHold[mid::Alpha]);
     const f32 alphaTop = std::fmin(1.0f, alpha);
     out.alpha = (alpha < 0.0f ? 0.0f : alphaTop) * in.modelAlpha;
 
+    const Sc2InstanceType type = Sc2InstanceTypeOf(in.instanceType);
     f32 angle = 0.0f;
-    if (in.instanceType != 6) {
+    if (type != Sc2InstanceType::TerrainDirOriented) {
         if (elementKeys) {
             angle = Curve1(in.rotationSmoothing, S16(in.elementRotation[0]) * kInv32,
                            S16(in.elementRotation[1]) * kInv32,
-                           S16(in.elementRotation[2]) * kInv32, t, in.midTime[3], in.midHold[3]);
+                           S16(in.elementRotation[2]) * kInv32, t, in.midTime[mid::Rotation],
+                           in.midHold[mid::Rotation]);
         } else {
             angle = Curve1(in.rotationSmoothing, in.rotationKeys[0], in.rotationKeys[1],
-                           in.rotationKeys[2], t, in.midTime[3], in.midHold[3]);
+                           in.rotationKeys[2], t, in.midTime[mid::Rotation],
+                           in.midHold[mid::Rotation]);
         }
     }
 
@@ -439,8 +443,8 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
     const Vector3f& vel = in.velocity;
     const Vector3f& ia = in.instanceAngle;
 
-    switch (in.instanceType) {
-    case 0: {
+    switch (type) {
+    case Sc2InstanceType::Billboard: {
         const Vector3f fwd = NormalisedOr(in.camera[1], {0.0f, -1.0f, 0.0f});
         const Vector3f right = NormalisedOr(in.camera[0], {1.0f, 0.0f, 0.0f});
         const Vector3f up = NormalisedOr(in.camera[2], {0.0f, 0.0f, 1.0f});
@@ -449,16 +453,16 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         axis = Neg(fwd);
         break;
     }
-    case 1:
-    case 10: {
+    case Sc2InstanceType::Tail:
+    case Sc2InstanceType::Trail: {
         q = VelocityCameraBasis(vel, cam);
         const f32 speed = NewtonLength((vel.z * vel.z) + ((vel.y * vel.y) + (vel.x * vel.x)));
         f32 stretch = in.tailLength * speed;
-        if ((in.parFlags & kFlagNoTailFloor) == 0)
+        if (!Sc2Has(in.parFlags, ParticleFlag::FixTailLengthOnCreation))
             stretch = std::fmax(stretch, in.tailLength);
         const f32 z = stretch * out.scale.z;
         out.scale.z = z;
-        if (in.instanceType == 10) {
+        if (type == Sc2InstanceType::Trail) {
             Vector3f dir = vel;
             if (speed > 0.0f) {
                 const f32 inv = 1.0f / speed;
@@ -468,19 +472,21 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         }
         break;
     }
-    case 2:
-    case 3: {
-        const DirectionBasis basis = FacingBasis(in.instanceType == 2 ? vel : ia);
+    case Sc2InstanceType::FaceTravelDir:
+    case Sc2InstanceType::FaceWorldDir: {
+        const DirectionBasis basis =
+            FacingBasis(type == Sc2InstanceType::FaceTravelDir ? vel : ia);
         q = basis.q;
         spin = true;
-        // Under `rotationFlags & 0x80` a type 3 spins about the element's own
-        // random direction instead of its forward.
-        axis = (in.instanceType == 3 && (in.rotationFlags & kRotRandomDirection) != 0)
+        // Under `Sc2RotationBit::RandomDirection` a type 3 spins about the
+        // element's own random direction instead of its forward.
+        axis = (type == Sc2InstanceType::FaceWorldDir &&
+                Sc2Has(in.rotationFlags, Sc2RotationBit::RandomDirection))
                    ? in.randomDirection
                    : basis.back;
         break;
     }
-    case 4: {
+    case Sc2InstanceType::SingleAxis: {
         const f32 ex = -ia.x;
         const f32 ey = -ia.y;
         const f32 ez = -ia.z;
@@ -507,7 +513,7 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         axis = Neg(b);
         break;
     }
-    case 5: {
+    case Sc2InstanceType::TerrainOriented: {
         // No guard on this normalise: a zero `instanceAngle` is a NaN pose.
         const f32 s = ((ia.z * ia.z) + (ia.x * ia.x)) + (ia.y * ia.y);
         const f32 r = RsqNewton(s);
@@ -519,7 +525,7 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         const f32 pz = u.z - (dp * n.z);
         const f32 s2 = ((pz * pz) + (px * px)) + (py * py);
         Vector3f p{1, 0, 0};
-        if (s2 >= kTerrainMinSq) {
+        if (s2 >= sc2::kTerrainProjectMinSq) {
             const f32 r2 = RsqNewton(s2);
             p = {px * r2, py * r2, r2 * pz};
         }
@@ -557,7 +563,7 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         q = QuatFromRows(rs, Neg(u), rp);
         break;
     }
-    case 6: {
+    case Sc2InstanceType::TerrainDirOriented: {
         const f32 s = ((ia.z * ia.z) + (ia.x * ia.x)) + (ia.y * ia.y);
         const f32 r0 = 1.0f / std::sqrt(s);
         const f32 rI = (r0 * -0.5f) * (((s * r0) * r0) + -3.0f);
@@ -589,13 +595,13 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         q = QuatFromRows(row0, Vector3f{-(ia.x * rI), -(ia.y * rI), -(ia.z * rI)}, b);
         break;
     }
-    case 7:
-    case 8: {
+    case Sc2InstanceType::EmitterOriented:
+    case Sc2InstanceType::PhysicsOriented: {
         Vector3f a{0, 0, 0};
         Vector3f b{0, 0, 0};
         Vector3f c{0, 0, 0};
         bool built = true;
-        if ((in.additionalFlags & kAddWorldSpace) != 0) {
+        if (worldSpace) {
             const Vector3f& ov = in.orientVec;
             if ((in.stateFlags & kStatePlainOrient) == 0) {
                 // Two directions packed as six byte codes in three floats,
@@ -634,7 +640,7 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
                 // frame from leaves the basis at identity and does not spin.
                 built = false;
                 const f32 s = (ov.z * ov.z) + ((ov.y * ov.y) + (ov.x * ov.x));
-                if (s >= kScaleFloor) {
+                if (s >= sc2::kPlainOrientMinSq) {
                     const f32 r = RsqNewton(s);
                     const Vector3f d{ov.x * r, ov.y * r, r * ov.z};
                     f32 refX;
@@ -650,14 +656,14 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
                         refY = 0.0f;
                     }
                     const f32 s2 = (refY * refY) + (refX * refX);
-                    if (s2 >= kScaleFloor) {
+                    if (s2 >= sc2::kPlainOrientMinSq) {
                         const f32 r2 = RsqNewton(s2);
                         a = {refX * r2, r2 * refY, 0.0f};
                         const f32 v345 = (r2 * refY) * d.z;
                         const f32 v346 = (refX * r2) * d.z;
                         const f32 v347 = (a.y * d.x) - ((refX * r2) * d.y);
                         const f32 s3 = (v347 * v347) + ((v346 * v346) + (v345 * v345));
-                        if (s3 >= kScaleFloor) {
+                        if (s3 >= sc2::kPlainOrientMinSq) {
                             const f32 r3 = RsqNewton(s3);
                             b = {(-(a.y * d.z)) * r3, v346 * r3, r3 * v347};
                             c = d;
@@ -689,9 +695,9 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         }
         break;
     }
-    case 9: {
+    case Sc2InstanceType::Pinned: {
         Vector3f o = in.spawnOrigin;
-        if ((in.additionalFlags & kAddWorldSpace) == 0) {
+        if (!worldSpace) {
             const Vector3f& p = in.spawnOrigin;
             o = {((m[8] * p.z) + (m[4] * p.y)) + ((m[0] * p.x) + m[12]),
                  ((m[9] * p.z) + (m[5] * p.y)) + ((m[1] * p.x) + m[13]),
@@ -713,7 +719,7 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
         q = MulBasisAxis(q, AxisAngle(axis, angle));
 
     // `SwapYZOnModelParticles`: a 90° yaw about Z, before the preset.
-    if ((in.parFlags & kFlagSwapYZ) != 0) {
+    if (Sc2Has(in.parFlags, ParticleFlag::SwapYZOnModelParticles)) {
         constexpr f32 k = 0.7071067690849304f;
         q = {(q[1] + q[0]) * k, (q[1] - q[0]) * k, (q[2] + q[3]) * k, (q[3] - q[2]) * k};
     }
@@ -721,12 +727,14 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
     Quat preset{0.0f, 0.0f, 0.0f, 1.0f};
     if (in.legacyOrient) {
         i32 index = -1;
-        switch (in.instanceType) {
-        case 2: index = 0; break;
-        case 3: index = in.orientVariant == 6 ? 5 : (in.orientVariant != 0 ? 2 : 1); break;
-        case 5: index = 3; break;
-        case 6: index = 4; break;
-        case 7: index = 6; break;
+        switch (type) {
+        case Sc2InstanceType::FaceTravelDir: index = 0; break;
+        case Sc2InstanceType::FaceWorldDir:
+            index = in.orientVariant == 6 ? 5 : (in.orientVariant != 0 ? 2 : 1);
+            break;
+        case Sc2InstanceType::TerrainOriented: index = 3; break;
+        case Sc2InstanceType::TerrainDirOriented: index = 4; break;
+        case Sc2InstanceType::EmitterOriented: index = 6; break;
         default: break;
         }
         if (index >= 0)

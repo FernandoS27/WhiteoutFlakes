@@ -233,16 +233,16 @@ TEST_CASE("the service routes refraction emitters out of the scene", "[particle]
         auto e = std::make_unique<Emitter2>();
         e->SetDesc(desc);
         Arm(*e, 60.0f, 0x51DE0100u + static_cast<u32>(id));
-        svc.AddEmitter(7, ParticleOutput::Billboard, id, std::move(e));
+        svc.AddEmitter(7, id, std::move(e));
     }
 
     REQUIRE(svc.HasRefractionEmitters());
     svc.Simulate(kDt);
     // Visibility is applied per frame by the actor layer, which no test scene
     // runs; drive it directly so both emitters release particles.
-    svc.ForEachEmitter([](const EmitterKey&, const Emitter2&) {});
+    svc.ForEachEmitter([](const EmitterKey&, const ParticleEmitter&) {});
     for (i32 id : {0, 1}) {
-        Emitter2* e = svc.GetEmitter(7, ParticleOutput::Billboard, id);
+        Emitter2* e = svc.GetEmitter(7, ParticleOutput::Billboard, id)->AsEmitter2();
         REQUIRE(e != nullptr);
         e->SetVisible(true);
         e->Update(kDt, 1.0f);

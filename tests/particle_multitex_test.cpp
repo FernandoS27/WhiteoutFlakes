@@ -79,7 +79,7 @@ void AddArmed(ParticleService& svc, i32 id, std::shared_ptr<EmitterDesc> desc) {
     auto e = std::make_unique<Emitter2>();
     e->SetDesc(std::move(desc));
     Arm(*e, 60.0f, 0x51DE0200u + static_cast<u32>(id));
-    svc.AddEmitter(7, ParticleOutput::Billboard, id, std::move(e));
+    svc.AddEmitter(7, id, std::move(e));
 }
 
 void DriveOnce(ParticleService& svc, std::initializer_list<i32> ids) {
@@ -87,7 +87,7 @@ void DriveOnce(ParticleService& svc, std::initializer_list<i32> ids) {
     // Visibility is applied per frame by the actor layer, which no test scene
     // runs; drive it directly so every emitter releases a particle.
     for (i32 id : ids) {
-        Emitter2* e = svc.GetEmitter(7, ParticleOutput::Billboard, id);
+        Emitter2* e = svc.GetEmitter(7, ParticleOutput::Billboard, id)->AsEmitter2();
         REQUIRE(e != nullptr);
         e->SetVisible(true);
         e->Update(kDt, 1.0f);

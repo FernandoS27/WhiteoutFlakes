@@ -4,7 +4,7 @@
 #include "animation/animation.h"
 #include "assets/texture_asset_manager.h"
 #include "particle.h"
-#include "particle/particle_stages_sc2.h"
+#include "particle/sc2_compose.h"
 #include "core/surface_table.h"
 #include "core/surface_vocabulary.h"
 #include "core/vertex_layout.h"

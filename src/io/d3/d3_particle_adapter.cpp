@@ -165,9 +165,9 @@ std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i
     auto d = std::make_shared<pd3::EmitterDesc>();
 
     d->snoId = (snoId != -1) ? snoId : prt.dwSnoId;
-    d->systemType = prt.eSystemType;
+    d->systemType = static_cast<renderer::particle::d3::SystemType>(prt.eSystemType);
     d->prtFlags = static_cast<u32>(prt.dwFlags);
-    d->renderMode = prt.nRenderMode;
+    d->renderMode = static_cast<renderer::particle::d3::PrtRenderMode>(prt.nRenderMode);
 
     d->lifetime = static_cast<f32>(prt.tmLifetime) * kFrameToSeconds;
     d->emissionPeriod = static_cast<f32>(prt.tmEmissionPeriod) * kFrameToSeconds;

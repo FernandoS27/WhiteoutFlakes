@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 
 namespace whiteout::flakes::renderer::particle::d3 {
 
@@ -153,13 +152,13 @@ namespace {
 // between taking that branch and not for every path that ends at exactly 1.
 f32 NormalisedTime(const Path& p, const EvalCtx& ctx) {
     const f32 period = ctx.period;
-    if (period == 0.0f || period == 1.0f / 60.0f)
+    if (period == 0.0f || period == kFrameSeconds)
         return 0.0f;
-    if (ctx.timeMode == 0)
+    if (ctx.timeMode == TimeMode::Raw)
         return ctx.time / period; // no wrap at all
     const f32 lo = p.loopStart;
     const f32 hi = p.loopEnd;
-    if (lo < 0.000001f && hi > 0.999999f)
+    if (lo < kEpsilon && hi > kNearlyOne)
         return ctx.time / period - std::trunc(ctx.time / period);
     const f32 hiT = period * hi;
     f32 time = ctx.time;
@@ -240,7 +239,7 @@ Vector4f SampleAt(const Path& p, const Vector4f& r, const EvalCtx& ctx) {
     // Time mode 2 pulls every channel toward its end-of-curve value as the
     // emitter runs down its own period. The second sample is taken at
     // `loopEnd + blendT*(1 - loopEnd)` and weighted by `blend`.
-    if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+    if (ctx.timeMode == TimeMode::LoopedBlend && ctx.blend > kEpsilon) {
         const f32 t2 = p.loopEnd + ctx.blendT * (1.0f - p.loopEnd);
         const Vector4f v2 = SampleNodes(p, t2, r);
         for (i32 c = 0; c < 4; ++c)
@@ -288,7 +287,7 @@ void Path::ScalarEndpoints(const EvalCtx& ctx, f32& lo, f32& hi) const {
     };
 
     lanesAt(NormalisedTime(*this, ctx), lo, hi);
-    if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+    if (ctx.timeMode == TimeMode::LoopedBlend && ctx.blend > kEpsilon) {
         f32 lo2 = 0.0f, hi2 = 0.0f;
         lanesAt(loopEnd + ctx.blendT * (1.0f - loopEnd), lo2, hi2);
         lo = lo + ctx.blend * (lo2 - lo);
@@ -468,7 +467,7 @@ Vector4f Path::EvalColor(u32 particleSeed, i32 channelId, const EvalCtx& ctx) co
     } else {
         const f32 t = NormalisedTime(*this, ctx);
         c = SampleColorNodes(*this, t, q);
-        if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+        if (ctx.timeMode == TimeMode::LoopedBlend && ctx.blend > kEpsilon) {
             const f32 t2 = loopEnd + ctx.blendT * (1.0f - loopEnd);
             c = BlendColor(c, SampleColorNodes(*this, t2, q), Fx8(ctx.blend));
         }
@@ -496,7 +495,7 @@ i32 Path::EvalInt(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const {
 
     const f32 t = NormalisedTime(*this, ctx);
     i32 v = SampleIntNodes(*this, t, r);
-    if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+    if (ctx.timeMode == TimeMode::LoopedBlend && ctx.blend > kEpsilon) {
         const f32 t2 = loopEnd + ctx.blendT * (1.0f - loopEnd);
         const i32 v2 = SampleIntNodes(*this, t2, r);
         v += RoundHalfEven(ctx.blend * static_cast<f32>(v2 - v));

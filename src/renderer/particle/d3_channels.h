@@ -22,6 +22,72 @@
 
 namespace whiteout::flakes::renderer::particle::d3 {
 
+// ---- units and the engine's own constants ----
+
+/// Every `.prt` rate is authored per frame at 60 fps: a velocity channel is
+/// ×60, an acceleration ×60², a frame count ×1/60.
+inline constexpr f32 kFramesPerSecond = 60.0f;
+inline constexpr f32 kFramesPerSecondSq = 3600.0f;
+inline constexpr f32 kFrameSeconds = 1.0f / 60.0f;
+
+/// The engine's correctly-rounded 2π (@0x7100E3BEE4), the one angles wrap by.
+/// NOT the azimuth constant the shape samplers multiply by — see
+/// `kAzimuthTwoPi` in `d3_emitter.cpp`, two ULPs below it on purpose.
+inline constexpr f32 kTwoPi = 6.28318530717958647692f;
+
+/// The engine's degenerate epsilon, `1e-6` @0x7100E3BEA0: below it a length,
+/// a divisor or an opacity counts as zero.
+inline constexpr f32 kEpsilon = 1e-6f;
+/// `0.999999` @0x7100E3BFF8: at or above it an opacity is opaque, and a path's
+/// loop end reaching it spans the whole curve.
+inline constexpr f32 kNearlyOne = 0.999999f;
+
+/// The two seed values the engine nudges out of the way of its sentinels.
+inline constexpr u32 kFirstSentinelSeed = 0xFFFFFFFEu;
+/// What a particle's UV-state stream is seeded with: its own seed, salted.
+inline constexpr u32 kUvSeedSalt = 0x2D32u;
+
+/// `ParticleSystem_TickEmitter`'s hard ceiling on live particles, and the
+/// smallest pool it grows to.
+inline constexpr i32 kMaxLiveParticles = 4096;
+inline constexpr usize kMinPoolGrowth = 64;
+/// Foliage emits once, to at most this many, and then only sways.
+inline constexpr i32 kMaxWindSpringPopulation = 256;
+/// `PrtFlag::ClampDistanceEmission`'s ceiling on the emitter speed, `.prt`
+/// units per second.
+inline constexpr f32 kDistanceEmissionMaxSpeed = 300.0f;
+/// `tmPreSimulate` is clamped to this many seconds (@0x71000ADF84).
+inline constexpr f32 kMaxPreSimulateSeconds = 1000.0f;
+/// `particle+212`'s clamp.
+inline constexpr f32 kMinParticleSize = 0.0001f;
+inline constexpr f32 kMaxParticleSize = 999.0f;
+
+/// `nTimeMode`: how an evaluation turns `time / period` into a curve position.
+enum class TimeMode : i32 {
+    Raw = 0,         ///< the quotient as it is, no wrap
+    Looped = 1,      ///< wrapped into the path's loop sub-range
+    LoopedBlend = 2, ///< as Looped, cross-fading toward a second sample at the end
+};
+
+/// `dwPrtFlags` — five read bits in the whole shipped runtime.
+enum class PrtFlag : u32 {
+    /// Bit 0: the system runs until told to stop — time mode 1, no release test.
+    Persistent = 0x1u,
+    /// Bit 8: birth AT the emitter (skipping the lerp and its draw), and carry
+    /// the live particles when the emitter moves.
+    BirthAtEmitter = 0x100u,
+    /// Bit 10: the PARTICLE channels are sampled unwrapped (time mode 0).
+    ParticleUnwrapped = 0x400u,
+    /// Bit 28: ENABLES the `kDistanceEmissionMaxSpeed` clamp.
+    ClampDistanceEmission = 0x10000000u,
+    /// Bit 29: carry by translation only, never by rotation.
+    CarryWithoutRotation = 0x20000000u,
+};
+
+inline constexpr bool Has(u32 prtFlags, PrtFlag f) {
+    return (prtFlags & static_cast<u32>(f)) != 0;
+}
+
 // ---- particle channels (ids 1..25; there is no id 4) ----
 enum ChannelId : i32 {
     kChSize = 1,          ///< FloatPath   — multiplies the birth size
@@ -146,6 +212,9 @@ enum Capability : u32 {
 
 /// `eSystemType` — this picks the whole update path, not a variation of one.
 /// Three of the ten shipped values are never simulated at all.
+///
+/// `Ribbon` is the first RE pass's name and is wrong: type 1 is 4,790 files that
+/// each spawn a MODEL (see `EmitterDesc::SpawnsChildActors`).
 enum class SystemType : i32 {
     Standard = 0,
     Ribbon = 1,        ///< 22% of the corpus: segment records, not pool particles
@@ -160,20 +229,69 @@ enum class SystemType : i32 {
     WorldAnchored = 10, ///< emits from the world origin
 };
 
+/// The types `ParticleSystem_UpdateDispatch` @0x71000B1660 never updates:
+/// `(1 << type) & 0xB0` — light shafts, the unused slot and static clutter.
+inline constexpr u32 kNeverUpdatedTypes = (1u << 4) | (1u << 5) | (1u << 7);
+/// `& 0x140` — the two that run only the wind spring.
+inline constexpr u32 kWindSpringTypes = (1u << 6) | (1u << 8);
+
 /// Whether the ordinary particle simulation runs for this system type.
-/// `ParticleSystem_UpdateDispatch` @0x71000B1660: `(1<<type) & 0xB0` returns
-/// outright, `& 0x140` goes to the wind spring, everything else simulates.
-inline bool SimulatesParticles(i32 systemType) {
-    if (systemType < 0 || systemType > 10)
+/// Types outside the shipped range simulate, as the dispatch's default does.
+inline bool SimulatesParticles(SystemType type) {
+    const i32 t = static_cast<i32>(type);
+    if (t < 0 || t > static_cast<i32>(SystemType::WorldAnchored))
         return true;
-    const u32 bit = 1u << static_cast<u32>(systemType);
-    return (bit & 0xB0u) == 0 && (bit & 0x140u) == 0;
+    const u32 bit = 1u << static_cast<u32>(t);
+    return (bit & kNeverUpdatedTypes) == 0 && (bit & kWindSpringTypes) == 0;
 }
 
 /// Types 6 and 8 — foliage and clutter. They run the damped wind spring
 /// INSTEAD of the particle simulation, never alongside it.
-inline bool UsesWindSpring(i32 systemType) {
-    return systemType == 6 || systemType == 8;
+inline bool UsesWindSpring(SystemType type) {
+    return type == SystemType::Foliage || type == SystemType::WindClutter;
+}
+
+/// Types 7 and 8 place their instances at load: `ParticleSystem_TickEmitter`
+/// returns before its accumulator (`eSystemType - 7 < 2`).
+inline bool SkipsEmission(SystemType type) {
+    return type == SystemType::StaticClutter || type == SystemType::WindClutter;
+}
+
+/// Types 1, 3 and 4: `ParticleSystem_EmitParticle`'s `(type - 3) < 2 || type
+/// == 1` — an emission is a whole actor, not a pool particle.
+inline bool EmitsActors(SystemType type) {
+    return type == SystemType::Ribbon || type == SystemType::RibbonPhysics ||
+           type == SystemType::LightShaft;
+}
+
+/// Types 2, 3 and 9 own a body in the shared world-collision solver.
+inline bool OwnsSolverBody(SystemType type) {
+    return type == SystemType::Swarm || type == SystemType::RibbonPhysics ||
+           type == SystemType::Weather;
+}
+
+/// `nRenderMode` — which frame `Particle_BuildOrientationBasis` @0x71000BAB30
+/// builds. See `d3_orientation.h` for what each one is.
+enum class PrtRenderMode : i32 {
+    CameraGated = 0,    ///< writes nothing ungated; the child arm faces the camera
+    Unoriented = 1,     ///< writes nothing
+    AxisStreak = 2,     ///< along the motion axis, turned to the camera
+    AcrossAxis = 3,     ///< across the motion axis
+    AcrossSystemXY = 4, ///< across the flattened direction from the system
+    AcrossSystem = 5,   ///< across the direction from the system
+    AcrossCameraXY = 6, ///< across the flattened camera direction
+    EmitterFrame = 7,   ///< the emitter's own frame
+    UnorientedAlt = 8,  ///< writes nothing
+    Ground = 9,         ///< conformed to the terrain normal
+    GroundAlt = 10,     ///< as 9
+    SystemStreak = 11,  ///< along the direction from the system, turned to the camera
+    AxisUpright = 12,   ///< along the motion axis, about world up
+    Vertical = 13,      ///< world-vertical, yawed to the camera
+};
+
+/// Modes 9 and 10 read the terrain normal under the particle.
+inline bool ConformsToGround(PrtRenderMode mode) {
+    return mode == PrtRenderMode::Ground || mode == PrtRenderMode::GroundAlt;
 }
 
 } // namespace whiteout::flakes::renderer::particle::d3

@@ -34,6 +34,10 @@ public:
 protected:
     Matrix44f TransformFor(u32 poolIndex) const override;
     f32 VisibilityFor(u32 poolIndex) const override;
+    /// An `.m2`, which the child-template cache cannot build.
+    ChildModelEvent::Route BirthRoute() const override {
+        return ChildModelEvent::Route::ModelParticle;
+    }
 
     void OnPoolResized(usize capacity) override;
     void OnParticleBorn(u32 poolIndex) override;

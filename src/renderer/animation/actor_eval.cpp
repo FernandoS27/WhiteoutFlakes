@@ -131,10 +131,12 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         // A model-particle emitter is registered under ChildModel, but its
         // animated state is an ordinary ParticleFrameState — the sim does not
         // care what the output is, so this loop drives both id spaces.
-        auto* em = particles.GetEmitter(mi.handle,
-                                       ps.modelParticle ? particle::ParticleOutput::ChildModel
-                                                        : particle::ParticleOutput::Billboard,
-                                       ps.emitterId);
+        auto* registered = particles.GetEmitter(
+            mi.handle,
+            ps.modelParticle ? particle::ParticleOutput::ChildModel
+                             : particle::ParticleOutput::Billboard,
+            ps.emitterId);
+        auto* em = registered ? registered->AsEmitter2() : nullptr;
         if (!em)
             continue;
 
@@ -149,7 +151,7 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         if (ps.boneGenerator)
             em->SetBoneSpawnTable(state.boneSpawnTable);
 
-        if (em->Desc().family == particle::EmitterDesc::Family::Sc2) {
+        if (em->IsSc2()) {
             // What a model particle's pose reads from the scene, and the
             // actor's world scale it runs its SC2 units against.
             em->SetSc2Scene(view, mi.worldScale);
@@ -169,8 +171,7 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         // key, which takes last frame's cursors — actor memory, like the WC3
         // squirt edge below. Every player the model is playing, not the top
         // layer alone.
-        if (em->Desc().family == particle::EmitterDesc::Family::Sc2 &&
-            i < mi.render.sc2ParticleClocks.size()) {
+        if (em->IsSc2() && i < mi.render.sc2ParticleClocks.size()) {
             const particle::Sc2Crossing crossing = particle::Sc2CrossSquirtKeys(
                 em->Desc().sc2, state.sc2AnimPlayers, mi.render.sc2ParticleClocks[i], frameDtMs);
             for (usize s = 0; s < crossing.bursts.size(); ++s) {
@@ -202,12 +203,13 @@ void ApplyChildModelFrameStates(Actor& mi, const FrameState& state,
     for (const auto& ps : state.pe1States) {
         auto* em = particles.GetEmitter(mi.handle, particle::ParticleOutput::ChildModel,
                                         ps.emitterId);
-        // Checked, not a static_cast: the child-model space is no longer PE1's
+        // Asked, not a static_cast: the child-model space is no longer PE1's
         // alone — a `.prt` whose particles are models registers there too, and
         // it has no PE1 state to apply. One actor cannot produce both, so this
-        // never fires; it costs a type check per PE1 emitter per frame and buys
-        // a reinterpret that would be silent.
-        auto* pe1 = dynamic_cast<particle::ChildModelEmitter*>(em);
+        // never fires; it costs a virtual call per PE1 emitter per frame and
+        // buys a reinterpret that would be silent.
+        auto* e2 = em ? em->AsEmitter2() : nullptr;
+        auto* pe1 = e2 ? e2->AsChildModel() : nullptr;
         if (!pe1)
             continue;
         pe1->ApplyPE1State(ps);
@@ -352,10 +354,9 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalCo
 void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
                            particle::ParticleService& particles,
                            const ActorEvalContext& ctx) {
-    particles.ForEachEmitter([&](const particle::EmitterKey& key, const particle::Emitter2& e) {
-        if (key.model != mi.handle)
-            return;
-        auto* d3 = dynamic_cast<particle::d3::Emitter*>(const_cast<particle::Emitter2*>(&e));
+    particles.ForModelEmitters(mi.handle, [&](const particle::EmitterKey&,
+                                              particle::ParticleEmitter& e) {
+        auto* d3 = e.AsD3();
         if (!d3)
             return;
         const i32 bone = d3->AttachBone();

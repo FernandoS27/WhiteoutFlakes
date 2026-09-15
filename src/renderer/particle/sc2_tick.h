@@ -74,6 +74,11 @@ struct Sc2TickFrame {
     /// world-space Tail's `|v|·tail` came out 100× long, world-space gravity
     /// and kill radius 100× weak, a local emitter's noise 100× small.
     f32 hostScale = 1.0f;
+
+    /// The ground MOVE collides with and the mesh shape 7 is born on — the
+    /// emitter's own surface, handed over per frame like the transforms. Null
+    /// collides with nothing and gives a Mesh emitter no surface.
+    const EmitSurface* surface = nullptr;
 };
 
 /// @p m with the host's world scale taken off: columns x, y and z of every row

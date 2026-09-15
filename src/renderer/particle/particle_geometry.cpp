@@ -1,4 +1,5 @@
 #include "renderer/particle/particle_geometry.h"
+#include "renderer/particle/particle_constants.h"
 #include "whiteout/flakes/util/coordinate_system.h"
 
 #include <algorithm>
@@ -120,37 +121,36 @@ void EmitStrip(std::vector<Vertex>& out, const Vector3f& c0, const Vector3f& c1,
     out.push_back({c1, normal, color, uv1});
 }
 
-// The client's own guards. A velocity shorter than this cannot orient a quad,
-// and a tail whose on-screen length is under 1/36 of a unit is drawn as a plain
-// billboard instead of stretched. The tail one is a length in the emitter's own
-// units, so it scales with the model; the velocity one is a squared-magnitude
-// floor and does not.
-constexpr f32 kVelocityEpsilon = 2.3841858e-7f;
+// The client's own guards. A velocity shorter than `kVelocityEpsilon` cannot
+// orient a quad, and a tail whose on-screen length is under 1/36 of a unit is
+// drawn as a plain billboard instead of stretched. The tail one is a length in
+// the emitter's own units, so it scales with the model; the velocity one is a
+// squared-magnitude floor and does not.
 constexpr f32 kTailMinPlaneLength = 1.0f / 36.0f;
 
 i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
                      std::vector<Vertex>& out) {
     const ParticlePool& pool = emitter.Pool();
 
-    const bool hasHead = emitter.HasHead();
-    const bool hasTail = emitter.HasTail();
+    const bool hasHead = emitter.Desc().hasHead;
+    const bool hasTail = emitter.Desc().hasTail;
     if (!hasHead && !hasTail)
         return 0;
 
-    const bool modelSpace = emitter.UseModelSpace();
-    const bool xyQuads = emitter.XYQuads();
-    const f32 angVel = emitter.AngularVelocity();
+    const bool modelSpace = emitter.Desc().modelSpace;
+    const bool xyQuads = emitter.Desc().xyQuads;
+    const f32 angVel = emitter.Desc().angularVelocity;
     const bool useAngVel = std::abs(angVel) > kEpsilon;
-    const f32 tailLength = emitter.TailLength();
-    const ParticleMaterialDesc& mat = emitter.Material();
-    const SpriteSheet& sheet = emitter.Sheet();
-    const LifetimeCurves& curves = emitter.Curves();
-    const f32 lifeSpan = emitter.LifeSpan();
+    const f32 tailLength = emitter.Desc().tailLength;
+    const ParticleMaterialDesc& mat = emitter.Desc().material;
+    const SpriteSheet& sheet = emitter.Desc().sheet;
+    const LifetimeCurves& curves = emitter.Desc().curves;
+    const f32 lifeSpan = emitter.Desc().lifeSpan;
     const f32 ooLifeSpan = (lifeSpan > 0.0f) ? (1.0f / lifeSpan) : 0.0f;
 
     CameraBasis cam = BasisFromView(*in.worldToView);
 
-    const CoordSpace emSpace = emitter.GetCoordSpace();
+    const CoordSpace emSpace = emitter.Desc().coordSpace;
     const bool needsConvert = (emSpace != CoordinateSystem::Default());
 
     auto resolveWorld = [&](const Particle2& p, Vector3f& outPos, Vector3f& outVel) {
@@ -174,14 +174,14 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
         u32 idx = pool.AliveAt(i);
         const Particle2& p = pool[idx];
         SortRecord rec{static_cast<u32>(i), 0.0f};
-        if (emitter.SortZ()) {
+        if (emitter.Desc().sortZ) {
             Vector3f wp, wv;
             resolveWorld(p, wp, wv);
             rec.viewZ = Dot(wp, cam.fwd);
         }
         order.push_back(rec);
     }
-    if (emitter.SortZ()) {
+    if (emitter.Desc().sortZ) {
 
         // Index tie-break: a burst spawned at one point gives every particle
         // the same viewZ, and equal elements resolve unspecified otherwise.
@@ -320,7 +320,7 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
             if (LengthSq(perp) < kEpsilon) {
 
                 Vector3f altUp =
-                    (std::abs(tailDir.z) > 0.999f) ? Vector3f{0, 1, 0} : Vector3f{0, 0, 1};
+                    (std::abs(tailDir.z) > kTailVerticalCos) ? Vector3f{0, 1, 0} : Vector3f{0, 0, 1};
                 perp = Cross(tailDir, altUp);
             }
             perp = Normalize(perp);
@@ -525,11 +525,11 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         const f32 sizeRand = CRandom::reals_(rs);
         if (d.unscaledSizeVariation) {
             const f32 sizeRand2 = CRandom::reals_(rs);
-            size.x *= (std::max)(1.0f + sizeRand * d.sizeVariation.x, 1e-4f);
-            size.y *= (std::max)(1.0f + sizeRand2 * d.sizeVariation.y, 1e-4f);
+            size.x *= (std::max)(1.0f + sizeRand * d.sizeVariation.x, kSizeJitterFloor);
+            size.y *= (std::max)(1.0f + sizeRand2 * d.sizeVariation.y, kSizeJitterFloor);
         } else {
             // One draw, and only the x variation, applied to both axes.
-            const f32 m = (std::max)(1.0f + sizeRand * d.sizeVariation.x, 1e-4f);
+            const f32 m = (std::max)(1.0f + sizeRand * d.sizeVariation.x, kSizeJitterFloor);
             size.x *= m;
             size.y *= m;
         }
@@ -698,16 +698,16 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
 
 } // namespace
 
-// The twinkle table. The client fills 128 floats with `rand()`-seeded noise when
+// The twinkle table. The client fills `kTwinkleTableSize` floats with `rand()`-seeded noise when
 // the particle system starts (`CParticleEmitter2::Init` @0x10169efe0), so its
 // blink pattern genuinely differs between runs of the game. Ours is seeded
 // fixed: same uniform [0,1) distribution, reproducible run to run — the one
 // deliberate divergence in this file, and what lets a twinkling emitter be
 // trace-gated at all.
 const f32* TwinkleTable() {
-    static const std::array<f32, 128> table = [] {
-        std::array<f32, 128> t{};
-        RndSeed s(0x7A17C1E5u);
+    static const std::array<f32, kTwinkleTableSize> table = [] {
+        std::array<f32, kTwinkleTableSize> t{};
+        RndSeed s(kTwinkleTableSeed);
         for (f32& v : t)
             v = CRandom::real_(s);
         return t;
@@ -717,7 +717,7 @@ const f32* TwinkleTable() {
 
 u32 TwinkleIndex(u16 seed, f32 age, f32 twinkleSpeed) {
     const u8 phase = static_cast<u8>(static_cast<i32>(age * twinkleSpeed));
-    return ((static_cast<u32>(seed) & 0xFFu) + phase) & 0x7Fu;
+    return ((static_cast<u32>(seed) & kTwinkleSeedByteMask) + phase) & kTwinkleIndexMask;
 }
 
 i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,

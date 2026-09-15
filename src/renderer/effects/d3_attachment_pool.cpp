@@ -6,6 +6,7 @@
 #include "renderer/effects/event_crossing.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/particle/d3_emitter.h"
+#include "renderer/particle/emitter_factory.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 
@@ -106,19 +107,15 @@ void D3AttachmentPool::Tick(Actor& actor, i32 activeSeq, i32 localTimeMs, i32 se
                 auto desc = io::d3::BuildD3EmitterDesc(*prt, e.snoParticle);
                 profiles::diablo3::D3ResolveParticleMaterial(*prt, cache_, desc->d3mat);
                 profiles::diablo3::D3BindParticleTextures(actor, desc);
-                auto em = std::make_unique<particle::d3::Emitter>();
-                em->SetD3Desc(std::move(desc));
-                em->SetAttachBone(e.bone);
-                em->SetAttachOffset(e.offset);
                 e.emitterId = nextEmitterId_++;
-                e.output = em->Desc().output;
-                if (allocHandle_)
-                    em->SetChildOwner(actor.handle, e.emitterId, allocHandle_);
-                particles->AddEmitter(actor.handle, e.output, e.emitterId, std::move(em));
+                auto em = particle::EmitterFactory::CreateD3(
+                    std::move(desc), e.bone, e.offset, {actor.handle, e.emitterId, allocHandle_});
+                e.output = em->DrawHeader().output;
+                particles->AddEmitter(actor.handle, e.emitterId, std::move(em));
                 continue; // Freshly built: already at age zero.
             }
             auto* em = particles->GetEmitter(actor.handle, e.output, e.emitterId);
-            if (auto* d3 = dynamic_cast<particle::d3::Emitter*>(em))
+            if (auto* d3 = em ? em->AsD3() : nullptr)
                 d3->Restart();
             continue;
         }
@@ -155,8 +152,8 @@ void D3AttachmentPool::ReleaseSequence(i32 seq, u32 owner,
             // Restart first, and only then remove: a `.prt` whose particles are
             // whole models reports its children's deaths as events, and those
             // have to be queued before the emitter carrying them is dropped.
-            if (auto* d3 = dynamic_cast<particle::d3::Emitter*>(
-                    particles->GetEmitter(owner, e.output, e.emitterId)))
+            auto* em = particles->GetEmitter(owner, e.output, e.emitterId);
+            if (auto* d3 = em ? em->AsD3() : nullptr)
                 d3->Restart();
             particles->RemoveEmitter(owner, e.output, e.emitterId);
         }

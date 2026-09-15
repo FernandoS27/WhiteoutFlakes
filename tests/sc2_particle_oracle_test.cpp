@@ -2622,6 +2622,8 @@ struct Sc2Rig {
     particle::Sc2EmitterDesc d;
     particle::Sc2Runtime rt;
     particle::Sc2TickFrame f;
+    /// What an emitter hands the tick as its surface.
+    particle::EmitSurface surface;
 
     Sc2Rig(u32 maxParticles, f32 rate, f32 lifetime) {
         d.emit.maxParticles = maxParticles;
@@ -2650,6 +2652,7 @@ struct Sc2Rig {
         rt.wallMs += f.dtMs;
         f.nowMs = rt.wallMs;
         f.frameIndex = ++rt.frameIndex;
+        f.surface = &surface;
         return particle::Sc2TickEmitter(rt, d, f);
     }
 
@@ -3555,7 +3558,7 @@ TEST_CASE("compose: an Euler emitter moves, lands and draws where it is",
     SECTION("particles fall, land on the ground and rest there") {
         Sc2Rig rig(256, 30.0f, 100.0f);
         euler(rig);
-        rig.rt.groundQuery = ground;
+        rig.surface.groundQuery = ground;
         REQUIRE(rig.Run(180, kSixtieth) > 0u);
 
         std::vector<i32> alive;
@@ -3605,7 +3608,7 @@ TEST_CASE("compose: an Euler emitter moves, lands and draws where it is",
         // the rest from the birth state.
         Sc2Rig rig(256, 30.0f, 100.0f);
         rig.d.motion.gravity3 = {0.0f, 0.0f, -9.8f};
-        rig.rt.groundQuery = ground;
+        rig.surface.groundQuery = ground;
         REQUIRE(rig.Run(180, kSixtieth) > 0u);
         std::vector<i32> alive;
         rig.rt.store.list.Walk(alive);
@@ -4724,7 +4727,7 @@ TEST_CASE("compose: a Mesh emitter is born on its surface, and type 4 follows th
 
     SECTION("on the triangle, moving along its normal") {
         Sc2Rig rig(256, 120.0f, 100.0f);
-        rig.rt.emitMesh = triangle();
+        rig.surface.mesh = triangle();
         rig.rt.meshTriangles = {particle::Sc2MeshTriangle{0u, 0u}};
         rig.d.emit.shape = 7;
         rig.d.emit.velocityType = 4;

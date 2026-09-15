@@ -22,11 +22,9 @@
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "model/model_template_manager.h"
-#include "particle/child_model_emitter.h"
-#include "particle/model_particle_emitter.h"
+#include "particle/emitter_factory.h"
 #include "particle/particle2_emitter.h"
 #include "particle/particle_adapters.h"
-#include "particle/sc2_model_particle_emitter.h"
 #include "render_service.h"
 #include "render_service_impl.h"
 #include "scene_manager.h"
@@ -401,22 +399,19 @@ void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAd
         auto desc = io::d3::BuildD3EmitterDesc(*prt, snoParticle);
         profiles::diablo3::D3ResolveParticleMaterial(*prt, &D3Cache(), desc->d3mat);
         profiles::diablo3::D3BindParticleTextures(actor, desc);
-        auto em = std::make_unique<particle::d3::Emitter>();
-        if (desc->SamplesModelSurface()) {
+        const bool samplesSurface = desc->SamplesModelSurface();
+        auto em = particle::EmitterFactory::CreateD3(std::move(desc), bone, offset,
+                                                     {actor.handle, emitterId, [this] { return rs_.Scene().AllocActorId(); }});
+        if (samplesSurface) {
             if (!emitMeshTried) {
                 emitMeshTried = true;
                 emitMesh = io::d3::BuildD3EmitMesh(app, d3->EmittedSubObjects());
             }
             em->SetEmitMesh(emitMesh);
         }
-        em->SetD3Desc(std::move(desc));
-        em->SetAttachBone(bone);
-        em->SetAttachOffset(offset);
         // Registered in the space its own output declares: a type 1/3/4 system
         // emits models, and the two spaces are separate id ranges.
-        const auto out = em->Desc().output;
-        em->SetChildOwner(actor.handle, emitterId, [this] { return rs_.Scene().AllocActorId(); });
-        rs_.Particles().AddEmitter(actor.handle, out, emitterId++, std::move(em));
+        rs_.Particles().AddEmitter(actor.handle, emitterId++, std::move(em));
     };
 
     if (const io::d3n::Actor* acr = d3->SourceActor()) {
@@ -584,7 +579,8 @@ void ModelLoader::RestyleWowParticleColors(u32 handle, io::M2ModelAdapter& m2) {
         // instead of putting it out and lighting it again.
         for (const particle::ParticleOutput output :
              {particle::ParticleOutput::Billboard, particle::ParticleOutput::ChildModel}) {
-            if (auto* em = rs_.Particles().GetEmitter(handle, output, static_cast<i32>(i))) {
+            auto* registered = rs_.Particles().GetEmitter(handle, output, static_cast<i32>(i));
+            if (auto* em = registered ? registered->AsEmitter2() : nullptr) {
                 const bool squirt = em->SquirtPending();
                 em->SetDesc(desc);
                 em->SetSquirtPending(squirt);
@@ -728,24 +724,15 @@ void ModelLoader::AddM2Emitter(u32 handle, i32 index,
     // One M2 emitter is either quads or models, never both, so the index cannot
     // collide across the two id spaces and the seed stays a function of
     // (actor, emitter index) either way.
-    const bool models = desc && desc->output == particle::ParticleOutput::ChildModel;
-    std::unique_ptr<particle::Emitter2> em;
-    if (models) {
+    if (desc && desc->output == particle::ParticleOutput::ChildModel)
         PreloadModelParticleGeometry(handle, desc->ChildModelPath());
-        em = std::make_unique<particle::ModelParticleEmitter>(
-            handle, index, [this] { return rs_.Scene().AllocActorId(); });
-    } else {
-        em = std::make_unique<particle::Emitter2>();
-    }
     const std::string trailKey = desc ? desc->trailModelPath : std::string();
-    em->SetDesc(std::move(desc));
-    em->SetBehavior(behavior);
-    em->SetSeed(particle::MixSeed(handle, (u32)index));
+    auto em = particle::EmitterFactory::Create(std::move(desc), behavior,
+                                               particle::MixSeed(handle, (u32)index),
+                                               {handle, index, [this] { return rs_.Scene().AllocActorId(); }});
     if (!trailKey.empty())
         AttachTrailEmitters(handle, index, *em, trailKey, behavior);
-    rs_.Particles().AddEmitter(
-        handle, models ? particle::ParticleOutput::ChildModel : particle::ParticleOutput::Billboard,
-        index, std::move(em));
+    rs_.Particles().AddEmitter(handle, index, std::move(em));
 }
 
 void ModelLoader::AttachTrailEmitters(u32 handle, i32 index, particle::Emitter2& parent,
@@ -800,13 +787,12 @@ void ModelLoader::AttachTrailEmitters(u32 handle, i32 index, particle::Emitter2&
             desc->material.textureId = -1;
         }
 
-        auto trail = std::make_unique<particle::Emitter2>();
-        trail->SetDesc(std::move(desc));
-        trail->SetBehavior(behavior);
         // A range no other emitter of this actor occupies, so the stream stays
         // a function of (actor, emitter index, trail index) alone.
-        trail->SetSeed(
-            particle::MixSeed(handle, 0xC000u + static_cast<u32>(index * kMax + childIdx)));
+        auto trail = particle::EmitterFactory::Create(
+            std::move(desc), behavior,
+            particle::MixSeed(handle,
+                              particle::kTrailSeedSalt + static_cast<u32>(index * kMax + childIdx)));
         trail->SetTrailState(particle::TrailStateFromM2Config(tcfg));
         parent.AddTrail(std::move(trail));
         ++childIdx;
@@ -854,12 +840,13 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
     for (i32 i = 0; i < (i32)configs.size(); i++) {
         if (configs[i].modelPath.empty())
             continue;
-        auto em = std::make_unique<particle::ChildModelEmitter>(
-            handle, i, [this] { return rs_.Scene().AllocActorId(); });
-        em->SetDesc(particle::DescFromWc3ChildModelConfig(configs[i]));
-        em->SetBehavior(rs_.Pipeline().LoadTimeProfile().Particles());
-        em->SetSeed(particle::MixSeed(handle, 0x8000u + (u32)i));
-        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::ChildModel, i, std::move(em));
+        rs_.Particles().AddEmitter(
+            handle, i,
+            particle::EmitterFactory::Create(
+                particle::DescFromWc3ChildModelConfig(configs[i]),
+                rs_.Pipeline().LoadTimeProfile().Particles(),
+                particle::MixSeed(handle, particle::kPe1SeedSalt + static_cast<u32>(i)),
+                {handle, i, [this] { return rs_.Scene().AllocActorId(); }}));
     }
 }
 
@@ -974,14 +961,12 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
     const particle::ParticleBehavior particleBehavior =
         rs_.Pipeline().LoadTimeProfile().Particles();
     for (i32 i = 0; i < (i32)tmpl->pe2Configs.size(); i++) {
-        auto em = std::make_unique<particle::Emitter2>();
-        em->SetDesc(tmpl->pe2Descs[i]);
-        em->SetBehavior(particleBehavior);
         // Seed from stable identity, not construction order, so the same scene
         // reproduces its particle motion across runs.
-        em->SetSeed(particle::MixSeed(mi->handle, (u32)i));
-        rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::Billboard, i,
-                                   std::move(em));
+        rs_.Particles().AddEmitter(
+            mi->handle, i,
+            particle::EmitterFactory::Create(tmpl->pe2Descs[i], particleBehavior,
+                                             particle::MixSeed(mi->handle, (u32)i)));
     }
     // `.m2` emitters register into the same Billboard id space: a model has
     // MDX emitters or M2 ones, never both, so the ids cannot collide.
@@ -1018,13 +1003,12 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         // GetPE1Configs) but have nothing to spawn.
         if (tmpl->pe1Configs[i].modelPath.empty())
             continue;
-        auto em = std::make_unique<particle::ChildModelEmitter>(
-            mi->handle, i, [this] { return rs_.Scene().AllocActorId(); });
-        em->SetDesc(tmpl->pe1Descs[i]);
-        em->SetBehavior(particleBehavior);
-        em->SetSeed(particle::MixSeed(mi->handle, 0x8000u + (u32)i));
-        rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::ChildModel, i,
-                                   std::move(em));
+        rs_.Particles().AddEmitter(
+            mi->handle, i,
+            particle::EmitterFactory::Create(
+                tmpl->pe1Descs[i], particleBehavior,
+                particle::MixSeed(mi->handle, particle::kPe1SeedSalt + static_cast<u32>(i)),
+                {mi->handle, i, [this] { return rs_.Scene().AllocActorId(); }}));
     }
 
     // CornFx (CornEmitter) — register one emitter per init in the
@@ -1227,12 +1211,10 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         rs_.Pipeline().LoadTimeProfile().Particles();
     for (usize i = 0; i < particleConfigs.size(); i++) {
         const auto& pcfg = particleConfigs[i];
-        auto em = std::make_unique<particle::Emitter2>();
-        em->SetDesc(particle::DescFromWc3Config(pcfg));
-        em->SetBehavior(particleBehavior);
-        em->SetSeed(particle::MixSeed(handle, (u32)i));
-        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::Billboard, (i32)i,
-                                   std::move(em));
+        rs_.Particles().AddEmitter(
+            handle, (i32)i,
+            particle::EmitterFactory::Create(particle::DescFromWc3Config(pcfg), particleBehavior,
+                                             particle::MixSeed(handle, (u32)i)));
     }
     mi->render.pe2State.resize(particleConfigs.size());
 
@@ -1821,21 +1803,21 @@ void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSo
                 }
                 // A ModelParticles emitter reports its particles as child
                 // actors, through the same handle allocator M2's use.
-                std::unique_ptr<particle::Emitter2> em;
                 if (desc->output == particle::ParticleOutput::ChildModel) {
                     for (const auto& path : desc->childModelPaths)
                         PreloadSc2ModelParticle(actor, path);
-                    em = std::make_unique<particle::Sc2ModelParticleEmitter>(
-                        actor.handle, i, [this] { return rs_.Scene().AllocActorId(); });
-                } else {
-                    em = std::make_unique<particle::Emitter2>();
                 }
-                em->SetDesc(desc);
+                // The constructor's own seed. An SC2 emitter draws from its
+                // runtime's stream, which nothing seeds from the actor yet
+                // (PARTICLE_REFACTOR_PLAN F3).
+                auto em = particle::EmitterFactory::Create(
+                    desc, rs_.Pipeline().LoadTimeProfile().Particles(),
+                    particle::kDefaultEmitterSeed, {actor.handle, i, [this] { return rs_.Scene().AllocActorId(); }});
                 if (emitMesh && sc2Particles[i].emitShape ==
                                     static_cast<u8>(::whiteout::m3::EmitterShape::Mesh)) {
                     em->SetEmitMesh(emitMesh);
                 }
-                rs_.Particles().AddEmitter(actor.handle, desc->output, i, std::move(em));
+                rs_.Particles().AddEmitter(actor.handle, i, std::move(em));
             }
             actor.render.sc2ParticleClocks.assign(sc2Particles.size(), {});
         }

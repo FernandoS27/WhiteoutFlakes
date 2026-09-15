@@ -604,48 +604,33 @@ void FrameTicker::DriveChildModels() {
             if (rs_.Scene().PE1InstanceCount() >= model::kMaxChildModelInstances)
                 break;
 
-            auto* em = rs_.Particles().GetEmitter(ev.owner, particle::ParticleOutput::ChildModel,
-                                                  ev.emitterId);
-            if (!em)
-                break;
-
+            using Route = particle::ChildModelEvent::Route;
+            if (ev.route == Route::D3Actor) {
 #if WDX_ENABLE_D3
-            // A Diablo III system whose particles ARE models names an `.acr` by
-            // SNO id, which the child-template cache cannot build: that cache is
-            // keyed on a path and always produces an MdxModelAdapter.
-            if (auto* d3em = dynamic_cast<particle::d3::Emitter*>(em)) {
-                const i32 sno = d3em->D3Desc().snoActor;
-                if (sno < 0)
+                // A Diablo III system whose particles ARE models names an `.acr`
+                // by SNO id, which the child-template cache cannot build: that
+                // cache is keyed on a path and always produces an
+                // MdxModelAdapter.
+                if (ev.snoActor < 0)
                     break;
-                if (auto* child = rs_.Loader().SpawnD3ParticleActor(*owner, sno, ev.transform,
-                                                                    ev.childHandle))
+                if (auto* child = rs_.Loader().SpawnD3ParticleActor(*owner, ev.snoActor,
+                                                                    ev.transform, ev.childHandle))
                     child->spawnEmitterId = ev.emitterId;
-                break;
-            }
 #endif
-
-            // A StarCraft II `PAR_` names a TABLE, and the pending walk drew
-            // the row this particle became (RE §16.16). The loader resolves an
-            // `.m3` by path, as it resolves an `.m2` model particle below.
-            if (em->Desc().family == particle::EmitterDesc::Family::Sc2) {
-                const auto& paths = em->Desc().childModelPaths;
-                if (ev.pathIndex >= paths.size())
-                    break;
-                if (auto* child = rs_.Loader().SpawnModelParticle(*owner, paths[ev.pathIndex],
-                                                                  ev.transform, ev.childHandle))
-                    child->spawnEmitterId = ev.emitterId;
                 break;
             }
 
-            const std::string& path = em->Desc().ChildModelPath();
+            const std::string& path = ev.path;
             if (path.empty())
                 break;
 
-            // An M2 model particle names an `.m2` (by fileDataID, in practice),
-            // which the child-TEMPLATE cache cannot build — it is keyed on a
-            // path and always produces an MdxModelAdapter. The loader owns that
-            // route and its own per-model cache.
-            if (dynamic_cast<particle::ModelParticleEmitter*>(em)) {
+            // An M2 model particle names an `.m2` (by fileDataID, in practice)
+            // and a StarCraft II one the `.m3` its `PAR_` table row names (the
+            // pending walk drew the row, RE §16.16). The child-TEMPLATE cache
+            // cannot build either — it is keyed on a path and always produces
+            // an MdxModelAdapter — so the loader owns that route and its own
+            // per-model cache.
+            if (ev.route == Route::ModelParticle) {
                 if (auto* child = rs_.Loader().SpawnModelParticle(*owner, path, ev.transform,
                                                                   ev.childHandle))
                     child->spawnEmitterId = ev.emitterId;

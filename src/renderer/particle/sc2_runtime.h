@@ -21,43 +21,25 @@
 // ============================================================================
 
 #include "emit_mesh.h"
+#include "emitter_placement.h"
 #include "particle_stages_sc2.h"
-#include "sc2_compose.h"
 #include "renderer/sc2/sc2_rng.h"
-#include "ground_query.h"
+#include "sc2_compose.h"
 #include "types.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace whiteout::flakes::renderer::particle {
 
 class Emitter2;
-struct Sc2Runtime;
 
-/// A ModelParticles element still waiting for its model. Retail's spawn-batch
-/// entry is `{element, PAR_, CParticleSystem}`; the runtime stands for the last
-/// two and the node for the first.
-struct Sc2PendingModel {
-    Sc2Runtime* runtime = nullptr;
-    i32 node = -1;
-};
-
-/// The frame's pending list. Retail keeps one per update thread and walks it
-/// once, after the parallel update job — the frame driver raises a
-/// thread-local byte around the job so `Update` skips its own walk (RE
-/// §16.32). One per service here, walked after every emitter has updated.
-using Sc2PendingModels = std::vector<Sc2PendingModel>;
-
-/// A request with the emitter it is addressed to. The maker pushes these onto
-/// its outbox; the service drains them and delivers each to the target's inbox
-/// — which is why no emitter ever looks another one up (design R4).
-struct RoutedSpawnRequest {
-    i32 targetEmitterId = -1;
-    SpawnRequest req;
-};
+// `Sc2PendingModel`, `Sc2PendingModels` and `RoutedSpawnRequest` live in
+// `sc2_kernel_types.h`, where the emitter's interface can name them.
 
 /// What the eight SC2 shapes read, reached through `SpawnParams::sc2`.
 ///
@@ -157,12 +139,6 @@ struct Sc2Runtime {
     /// pre-roll reads its peak in this column.
     i32 activeSequence = -1;
 
-    // ---- MOVE ----
-    /// Installed by the service at registration and whenever the host changes
-    /// it — never rebuilt per frame, because a `std::function` copy per
-    /// particle per sub-step is exactly the cost this avoids.
-    GroundQuery groundQuery;
-
     // ---- EMIT ----
     /// Per emission slot: slot 0 is the `PAR_` itself, 1..n its `PARC` copies.
     /// `carry` is the fractional particle the rate has not yet released,
@@ -196,19 +172,15 @@ struct Sc2Runtime {
     /// emitters' rows to one constant buffer.
     Sc2QuadBatch batch;
 
-    /// The mesh emitter shape 7 is born on. Shared with every actor spawned
-    /// from the same model; the pose that skins it arrives per frame as views
-    /// into the actor's own arrays, so nothing is copied per spawn.
-    std::shared_ptr<const EmitMesh> emitMesh;
-    std::span<const Matrix44f> emitPose;
-    std::span<const Matrix44f> emitInvBind;
-    Matrix44f emitToWorld = Matrix44f::identity();
-    /// The emitter-region slot's triangle table over @ref emitMesh, built when
-    /// the mesh is set: every triangle of every region `shapeRegions` names, in
-    /// that order. Retail's asset loader builds its table and nothing measures
+    /// The emitter-region slot's triangle table over the surface's mesh, built
+    /// when the emitter first ticks against that mesh: every triangle of every
+    /// region `shapeRegions` names, in that order. Retail's asset loader builds its table and nothing measures
     /// its order, so region-then-triangle is a composition choice. The mesh's
     /// indices are already global, so one zero region base serves them all.
     std::vector<Sc2MeshTriangle> meshTriangles;
+    /// The mesh @ref meshTriangles was built over. Null after a describe,
+    /// whose regions may differ, so the next tick rebuilds it.
+    const EmitMesh* meshTrianglesOf = nullptr;
 
     // ---- OUTPUT: model particles ----
     /// The emitter this runtime belongs to — the pending walk fires the birth
@@ -235,6 +207,43 @@ struct Sc2Runtime {
     /// applies that scale itself.
     std::array<Vector3f, 3> camera{Vector3f{1, 0, 0}, Vector3f{0, -1, 0}, Vector3f{0, 0, 1}};
     f32 actorWorldScale = 1.0f;
+
+    // ---- arming ----
+    /// The half of `CParticleSystem::Init` a describe and a rewind both run:
+    /// the store sized from the desc's cap — `min(authored,
+    /// sc2::kMaxParticles)`, a 2 MiB vertex arena over the 464-byte
+    /// four-vertex stride, which the desc already carries — and the runtime
+    /// words derived from the record.
+    ///
+    /// Nothing set those words before this existed: every Euler emitter took
+    /// the analytic path (0x10) and never left its spawn point, no emitter ever
+    /// had noise (emitFlags 8), and the time-scale bits the clock reads were
+    /// always clear.
+    void Arm(const Sc2EmitterDesc& d) {
+        store.Init(d.emit.maxParticles);
+        const Sc2InitWords words = Sc2InitRuntimeWords(d);
+        clock.stateFlags = words.stateFlags;
+        emitFlagsWord = words.emitFlags;
+    }
+
+    /// A rewind: the clocks, the sweep and the queues start over, then @ref Arm
+    /// derives the words again on the fresh clock. The slots keep their count
+    /// and lose their carry.
+    ///
+    /// Exactly the field set a rewind has always reset. `activeSequence`,
+    /// `timeOffset`, `accumTime` and `rng` survive it — PARTICLE_REFACTOR_PLAN
+    /// F3 is the decision to widen this.
+    void Rearm(const Sc2EmitterDesc& d) {
+        clock = Sc2EmitClock{};
+        initState = Sc2InitState{};
+        preRollPending = false;
+        curPos = {0, 0, 0};
+        Arm(d);
+        inbox.clear();
+        outbox.clear();
+        for (Slot& slot : slots)
+            slot = Slot{};
+    }
 };
 
 } // namespace whiteout::flakes::renderer::particle

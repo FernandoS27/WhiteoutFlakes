@@ -29,6 +29,7 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <span>
 #include <vector>
 
@@ -113,6 +114,16 @@ Sc2InitWords Sc2InitRuntimeWords(const Sc2EmitterDesc& d);
 /// One animation player the actor layer samples a `PAR_`'s squirt keys
 /// against: a container, its unwrapped time, and whether it loops.
 using Sc2ClockSample = renderer::model::FrameState::Sc2AnimPlayer;
+
+/// What an actor keeps between frames for one `PAR_`'s squirt keys: the
+/// players it last walked — each one's container and where its playhead was —
+/// and one sink per emission slot.
+struct Sc2SquirtMemory {
+    std::vector<u16> stcs;
+    std::vector<i32> timeMs;
+    bool valid = false;
+    std::vector<Sc2KeySink> sinks;
+};
 
 /// What one frame's squirt crossing asks of the emitter.
 struct Sc2Crossing {

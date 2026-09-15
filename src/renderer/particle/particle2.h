@@ -1,5 +1,6 @@
 #pragma once
 
+#include "particle_constants.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -27,13 +28,18 @@ struct Particle2 {
 
     // ---- WoW reading: lifespan variance quantum + render seed ----
     //
-    // `varQ` is CRandom::frand quantised to [-32767, 32767]; the runtime scales
-    // it by 1/32768 and multiplies by the emitter's lifespanVariation. `seed`
+    // `varQ` is CRandom::frand quantised to [-32767, 32767]
+    // (`QuantizeLifespanVariance`); the runtime scales it by
+    // `kLifespanVarianceUnit` and multiplies by the emitter's lifespanVariation. `seed`
     // is re-seeded into a scratch RNG every frame to re-derive spin, size
     // jitter, cell choice and twinkle, so it must survive unchanged for the
     // particle's whole life.
     i16 LifespanVarQ() const {
         return static_cast<i16>(static_cast<u16>(aux & 0xFFFFu));
+    }
+    /// The variance quantum as the [-1, 1] fraction the runtime multiplies.
+    f32 LifespanVariance() const {
+        return static_cast<f32>(LifespanVarQ()) * kLifespanVarianceUnit;
     }
     u16 RenderSeed() const {
         return static_cast<u16>(aux >> 16);

@@ -334,7 +334,7 @@ TEST_CASE("the service draws and counts a trail", "[particle][trail]") {
     Arm(*owned, 60.0f, 5u);
     PlaceAt(*owned, {0, 0, 0});
     Emitter2* parent = owned.get();
-    svc.AddEmitter(1u, ParticleOutput::Billboard, 0, std::move(owned));
+    svc.AddEmitter(1u, 0, std::move(owned));
 
     for (i32 i = 0; i < 4; ++i) {
         parent->SetVisible(true);

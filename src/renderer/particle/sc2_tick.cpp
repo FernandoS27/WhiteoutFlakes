@@ -51,7 +51,7 @@ bool Sc2GroundContact(void* ctx, const Vector3f& a, const Vector3f& b, Sc2Contac
 /// speed, size, alpha, colour (dead), rotation, horizontal, vertical. Group 0
 /// drives YAW and group 1 PITCH — the swap RE §11.5 records, kept because it is
 /// the file's field names that are wrong and not the runtime's behaviour.
-Sc2Overlay Overlay(const Sc2EmitterDesc& d, const Sc2Frame& s, usize group) {
+Sc2Overlay Overlay(const Sc2EmitterDesc& d, const Sc2Frame& s, i32 group) {
     Sc2Overlay o;
     o.type = d.emit.overlayType[group];
     o.amplitude = s.overlayAmp[group];
@@ -64,13 +64,13 @@ Sc2Overlay Overlay(const Sc2EmitterDesc& d, const Sc2Frame& s, usize group) {
 /// the first zero weight as retail's loop does and never renormalised. OP13
 /// stubbed this, so the mesh's own skin is the port's and not a measurement.
 Vector3f Sc2MeshVertex(void* ctx, u32 v) {
-    const Sc2Runtime& rt = *static_cast<const Sc2Runtime*>(ctx);
-    const EmitMesh& m = *rt.emitMesh;
+    const EmitSurface& surface = *static_cast<const EmitSurface*>(ctx);
+    const EmitMesh& m = *surface.mesh;
     if (v >= m.rest.size())
         return {0.0f, 0.0f, 0.0f};
     const Vector3f& rest = m.rest[v];
-    if (v >= m.bones.size() || v >= m.weights.size() || rt.emitPose.empty() ||
-        rt.emitInvBind.empty())
+    if (v >= m.bones.size() || v >= m.weights.size() || surface.pose.empty() ||
+        surface.invBind.empty())
         return rest;
     Vector3f acc{0.0f, 0.0f, 0.0f};
     for (usize k = 0; k < kEmitMeshBones; ++k) {
@@ -78,11 +78,11 @@ Vector3f Sc2MeshVertex(void* ctx, u32 v) {
         if (!(w > 0.0f))
             break;
         const i32 b = m.bones[v][k];
-        if (b < 0 || static_cast<usize>(b) >= rt.emitPose.size() ||
-            static_cast<usize>(b) >= rt.emitInvBind.size())
+        if (b < 0 || static_cast<usize>(b) >= surface.pose.size() ||
+            static_cast<usize>(b) >= surface.invBind.size())
             continue;
         const Vector3f p = whiteout::transform_point(
-            rest, rt.emitInvBind[static_cast<usize>(b)] * rt.emitPose[static_cast<usize>(b)]);
+            rest, surface.invBind[static_cast<usize>(b)] * surface.pose[static_cast<usize>(b)]);
         acc = {acc.x + p.x * w, acc.y + p.y * w, acc.z + p.z * w};
     }
     return acc;
@@ -113,14 +113,14 @@ Sc2SpawnVelInputs VelocityInputs(const Sc2EmitterDesc& d, const Sc2Frame& s,
     in.speed = s.speed;
     in.speedRandom = s.speedRandom;
     in.speedIsEndpoint = d.Has(ParticleAdditionalFlag::EmitSpeedRandomize);
-    in.flattenXY = (static_cast<u32>(d.rotationFlags) & 8u) != 0;
+    in.flattenXY = d.Has(Sc2RotationBit::FlattenVelocityXY);
     in.variationTime = clock.variationTime;
     in.variationPhase = s.overlayPhase;
-    in.yawOverlay = Overlay(d, s, 0);
-    in.pitchOverlay = Overlay(d, s, 1);
-    in.speedOverlay = Overlay(d, s, 2);
-    in.horizontalOverlay = Overlay(d, s, 7);
-    in.verticalOverlay = Overlay(d, s, 8);
+    in.yawOverlay = Overlay(d, s, sc2::OverlayGroup::Yaw);
+    in.pitchOverlay = Overlay(d, s, sc2::OverlayGroup::Pitch);
+    in.speedOverlay = Overlay(d, s, sc2::OverlayGroup::Speed);
+    in.horizontalOverlay = Overlay(d, s, sc2::OverlayGroup::Horizontal);
+    in.verticalOverlay = Overlay(d, s, sc2::OverlayGroup::Vertical);
     return in;
 }
 
@@ -185,7 +185,7 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
         ec.lodReduce = d.emit.lodReduce;
         ec.quality = f.quality;
         ec.elemScaleX = f.elemScaleX;
-        ec.suppressed = (rt.emitFlagsWord & 0x20u) != 0;
+        ec.suppressed = (rt.emitFlagsWord & sc2::kEmitSuppressed) != 0;
         ec.nodeVisible = s.active;
         counts[i] = Sc2ComputeEmitCount(ec);
     }
@@ -271,8 +271,8 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
     // emitter's particles sit relative to its own origin.
     sim.origin = d.emit.worldSpace ? f.worldPos : Vector3f{0.0f, 0.0f, 0.0f};
     sim.rotationSmoothing = d.look.rotationSmoothing;
-    sim.rotationMidTime = d.look.midTime[3];
-    sim.rotationMidHold = d.look.midHold[3];
+    sim.rotationMidTime = d.look.midTime[sc2::MidChannel::Rotation];
+    sim.rotationMidHold = d.look.midHold[sc2::MidChannel::Rotation];
 
     sim.worldMatrix = Sc2Mat16(f.worldMatrix);
     sim.worldSpace = d.emit.worldSpace;
@@ -290,8 +290,8 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
     sim.splatChance = d.children.splatChance;
 
     Sc2Collider collider;
-    Sc2GroundContext ground{&rt.groundQuery, f.hostScale};
-    if (rt.groundQuery) {
+    Sc2GroundContext ground{f.surface ? &f.surface->groundQuery : nullptr, f.hostScale};
+    if (f.surface && f.surface->groundQuery) {
         collider.ctx = &ground;
         collider.terrain = &Sc2GroundContact;
     }
@@ -308,13 +308,13 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
     const Sc2MeshRegionBase meshRegion{};
     Sc2MeshSurfaceInputs meshIn;
     const bool haveMesh =
-        d.emit.shape == static_cast<u8>(Sc2SpawnShape::Mesh) && rt.emitMesh != nullptr;
+        d.emit.shape == static_cast<u8>(Sc2SpawnShape::Mesh) && f.surface && f.surface->mesh;
     if (haveMesh) {
         meshIn.triangles = rt.meshTriangles;
-        meshIn.faces = rt.emitMesh->tris;
+        meshIn.faces = f.surface->mesh->tris;
         meshIn.regions = std::span<const Sc2MeshRegionBase>(&meshRegion, 1);
-        meshIn.colorR = rt.emitMesh->colorR;
-        meshIn.ctx = &rt;
+        meshIn.colorR = f.surface->mesh->colorR;
+        meshIn.ctx = const_cast<EmitSurface*>(f.surface);
         meshIn.position = &Sc2MeshVertex;
     }
 
@@ -383,16 +383,16 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
             in.color.randomKeys = {s.colorRandomBGRA[0], s.colorRandomBGRA[1],
                                    s.colorRandomBGRA[2]};
             in.color.randomEnable = d.emit.colorRandom;
-            in.color.colorMidTime = d.look.midTime[1];
-            in.color.alphaMidTime = d.look.midTime[2];
-            in.color.alphaOverlay = Overlay(d, s, 4);
+            in.color.colorMidTime = d.look.midTime[sc2::MidChannel::Color];
+            in.color.alphaMidTime = d.look.midTime[sc2::MidChannel::Alpha];
+            in.color.alphaOverlay = Overlay(d, s, sc2::OverlayGroup::Alpha);
             in.color.variationTime = rt.clock.variationTime;
             in.color.variationPhase = s.overlayPhase;
 
             in.size.keys = {s.size3.x, s.size3.y, s.size3.z};
             in.size.randomKeys = {s.sizeRandom3.x, s.sizeRandom3.y, s.sizeRandom3.z};
             in.size.randomEnable = d.emit.sizeRandom;
-            in.size.sizeOverlay = Overlay(d, s, 3);
+            in.size.sizeOverlay = Overlay(d, s, sc2::OverlayGroup::Size);
             in.size.instanceType = d.look.instanceType;
             in.size.instanceDistance = d.look.instanceDistance;
             in.size.variationTime = rt.clock.variationTime;
@@ -402,9 +402,9 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
             in.rotation.randomKeys = {s.rotationRandom3.x, s.rotationRandom3.y,
                                       s.rotationRandom3.z};
             in.rotation.randomEnable = d.emit.rotationRandom;
-            in.rotation.relative = (static_cast<u32>(d.rotationFlags) & 2u) != 0;
-            in.rotation.rotationMidTime = d.look.midTime[3];
-            in.rotation.rotationOverlay = Overlay(d, s, 6);
+            in.rotation.relative = d.Has(Sc2RotationBit::Relative);
+            in.rotation.rotationMidTime = d.look.midTime[sc2::MidChannel::Rotation];
+            in.rotation.rotationOverlay = Overlay(d, s, sc2::OverlayGroup::Rotation);
             in.rotation.variationTime = rt.clock.variationTime;
             in.rotation.variationPhase = s.overlayPhase;
 
@@ -527,9 +527,9 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
         cv.drag = d.motion.drag;
         cv.gravity = d.motion.gravity3.z;
         cv.gravityScale = f.worldGravityScale;
-        cv.sizeMidTime = d.look.midTime[0];
+        cv.sizeMidTime = d.look.midTime[sc2::MidChannel::Size];
         cv.parFlags = static_cast<u32>(d.flags);
-        cv.noise = (rt.emitFlagsWord & 8u) != 0;
+        cv.noise = (rt.emitFlagsWord & sc2::kEmitNoise) != 0;
         cv.noiseAmplitude = d.motion.noiseAmplitude;
         cv.noiseFrequency = d.motion.noiseFrequency;
         cv.noiseCoherence = d.motion.noiseCoherence;
@@ -703,7 +703,7 @@ Sc2ModelPose Sc2PoseModelParticle(const Sc2Runtime& rt, const Sc2EmitterDesc& d,
     in.sizeSmoothing = d.look.sizeSmoothing;
     in.colorSmoothing = d.look.colorSmoothing;
     in.rotationSmoothing = d.look.rotationSmoothing;
-    for (usize k = 0; k < 4; ++k) {
+    for (usize k = 0; k < sc2::MidChannel::kCount; ++k) {
         in.midTime[k] = d.look.midTime[k];
         in.midHold[k] = d.look.midHold[k];
     }
@@ -731,9 +731,9 @@ void Sc2SwapRemovePending(Sc2PendingModels& list, const Sc2Runtime* runtime, i32
 void Sc2ConvertBezierKeys(model::FrameState::ParticleFrameState::Sc2ParticleFrame& s,
                           const Sc2EmitterDesc& d) {
     namespace element = whiteout::flakes::renderer::sc2;
-    constexpr u8 kBezier = 2;
+    constexpr u8 kBezier = element::SmoothingMode::Bezier;
     // `sizeMidTime` for all three channels, as `UpdateAnimatedParams` passes it.
-    const f32 t = d.look.midTime[0];
+    const f32 t = d.look.midTime[element::MidChannel::Size];
     const auto convert = [t](Vector3f& keys) {
         f32 k[3] = {keys.x, keys.y, keys.z};
         element::ConvertColorNode(k, t);

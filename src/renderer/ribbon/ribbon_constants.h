@@ -21,6 +21,7 @@
 // array indices with no name at all.
 // ============================================================================
 
+#include "renderer/sc2/sc2_constants.h"
 #include "whiteout/flakes/types.h"
 
 namespace whiteout::flakes::renderer::ribbon {
@@ -29,24 +30,24 @@ namespace whiteout::flakes::renderer::ribbon {
 
 /// `dword_103C472B8`. The ONLY deg→rad in the ribbon pipeline: yaw and pitch
 /// arrive in degrees, twist is radians end to end.
-inline constexpr f32 kDegToRad = 0.017453292f;
+inline constexpr f32 kDegToRad = ::whiteout::flakes::renderer::sc2::kDegToRad;
 
 /// `dword_103BB6B78`. UpdateHeadSegment's stationary floor, tested against a
 /// SQUARED length, and re-used as the magnitude of the direction it substitutes
 /// for a degenerate velocity. Also the re-emission gate's squared head-distance
 /// threshold — one constant, two readers, as in the binary.
-inline constexpr f32 kSqStationaryFloor = 1e-4f;
+inline constexpr f32 kSqStationaryFloor = ::whiteout::flakes::renderer::sc2::kSqStationaryFloor;
 
 /// `dword_103BC8C10`. The headU delta below which techs 0/2/3 skip re-emission,
 /// and the speed below which length-mode catch-up gives up.
-inline constexpr f32 kHeadUGate = 1e-3f;
+inline constexpr f32 kHeadUGate = ::whiteout::flakes::renderer::sc2::kHeadUGate;
 
 /// `dword_103C45910`.
-inline constexpr f32 kMsPerSec = 1000.0f;
+inline constexpr f32 kMsPerSec = ::whiteout::flakes::renderer::sc2::kMsPerSec;
 
 /// `dword_103AAD5F0`. The period a zero emission rate stands in for, so the
 /// accumulator can never lap it.
-inline constexpr f32 kFltMax = 3.4028235e38f;
+inline constexpr f32 kFltMax = ::whiteout::flakes::renderer::sc2::kFltMax;
 
 /// `startBlend` (`dword_103AD52E0`) — UpdateEmit's "already emitting" return.
 /// It is a RETURN VALUE, not a general one: `invMass` and a length-mode
@@ -62,13 +63,13 @@ inline constexpr u32 kEmittingFlag = 0x2u;
 /// CatchUpEmission's fixed pre-roll step and its cap, and the tick count a
 /// length-mode ribbon falls back to when its launch speed is degenerate.
 inline constexpr u32 kCatchUpTickMs = 33u;
-inline constexpr f32 kCatchUpTickSeconds = 0.033f;
+inline constexpr f32 kCatchUpTickSeconds = ::whiteout::flakes::renderer::sc2::kCatchUpTickSeconds;
 inline constexpr u32 kCatchUpCapMs = 2500u;
 inline constexpr u32 kLengthModeFallbackTicks = 15000u;
 
 /// The load-time ceiling on a mid-time: it is a divisor in the two-piece
 /// interpolators, so 1.0 exactly would divide by zero in the second piece.
-inline constexpr f32 kMidTimeCeil = 0.996f;
+inline constexpr f32 kMidTimeCeil = ::whiteout::flakes::renderer::sc2::kMidTimeCeil;
 
 /// The mid-time a twist track falls back to when none was authored. Rotation is
 /// the one channel the VS reads without the desc's clamp having run on it.
@@ -82,12 +83,12 @@ inline constexpr f32 InvMidTime(f32 mid) {
 }
 
 /// The engine's load-time drag floor.
-inline constexpr f32 kDragFloor = 0.01f;
+inline constexpr f32 kDragFloor = ::whiteout::flakes::renderer::sc2::kDragFloor;
 
 /// "This ribbon authored noise." The same test decides the SIM TECHNIQUE (noise
 /// demotes to legacy) and whether BUILD displaces, so the two can never
 /// disagree by construction.
-inline constexpr f32 kNoiseThreshold = 0.001f;
+inline constexpr f32 kNoiseThreshold = ::whiteout::flakes::renderer::sc2::kNoiseThreshold;
 
 /// The three fixed Z slices `FillVertices_Animated` samples the noise field at
 /// (`0x3EA8F5C3` / `0x3F28F5C3`; the first is 0).
@@ -119,7 +120,7 @@ inline constexpr f32 kArcEpsilon = 1e-6f;
 inline constexpr f32 kSizeHalfScale = 0.5f;
 inline constexpr f32 kSplineSizeScale = 0.25f;
 
-inline constexpr f32 kTwoPi = 6.2831853071795864769f;
+inline constexpr f32 kTwoPi = ::whiteout::flakes::renderer::sc2::kTwoPi;
 
 // -- channel orders -----------------------------------------------------------
 // These were positional indices into `midTime[4]`, `waveAmp[5]` and
@@ -127,9 +128,7 @@ inline constexpr f32 kTwoPi = 6.2831853071795864769f;
 // a cast, in namespaces so they do not collide.
 
 /// `midTime[]` / `midHold[]` order, as the `RIB_` record stores it.
-namespace MidChannel {
-enum : i32 { Size = 0, Color = 1, Alpha = 2, Rotation = 3, kCount = 4 };
-} // namespace MidChannel
+namespace MidChannel = ::whiteout::flakes::renderer::sc2::MidChannel;
 
 /// The five overlay-wave channels. yaw/pitch/speed/size ADD to their base at
 /// the head; alpha rides back to the caller to be added to each colour stop.

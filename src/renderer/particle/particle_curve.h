@@ -19,7 +19,6 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
-#include <algorithm>
 #include <vector>
 
 namespace whiteout::flakes::renderer::particle {

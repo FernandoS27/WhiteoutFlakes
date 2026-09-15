@@ -1,4 +1,5 @@
 #include "renderer/particle/particle_shape.h"
+#include "renderer/particle/particle_constants.h"
 
 #include <cmath>
 
@@ -126,7 +127,7 @@ void WowBoneShape::Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) 
     // ApplyParams @0x10169dcf0: a radial offset in the bone's own plane, radius
     // drawn before the angle.
     const f32 radius = p.width + CRandom::real_(rnd) * (p.height - p.width);
-    const f32 angle = CRandom::real_(rnd) * 6.2831855f;
+    const f32 angle = CRandom::real_(rnd) * kWowTwoPi;
     const f32 c = std::cos(angle);
     const f32 s = std::sin(angle);
     pos = {pos.x + (e.axisA.x * c + e.axisB.x * s) * radius,

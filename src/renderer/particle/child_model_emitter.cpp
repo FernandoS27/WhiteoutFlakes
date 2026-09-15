@@ -8,22 +8,23 @@ ChildModelEmitter::ChildModelEmitter(ModelId owner, i32 emitterId, HandleAllocat
     : owner_(owner), emitterId_(emitterId), allocHandle_(std::move(allocHandle)) {}
 
 void ChildModelEmitter::ApplyPE1State(const model::FrameState::PE1FrameState& st) {
-    emissionRate_ = st.emissionRate;
-    motion_.gravity = {0.0f, 0.0f, -st.gravity};
+    SetEmissionRate(st.emissionRate);
+    Motion().gravity = {0.0f, 0.0f, -st.gravity};
 
-    spawn_.speed.base = st.speed;
-    spawn_.speed.variance = 0.0f; // PE1 has no speed variation
-    spawn_.latitude = st.latitude;
-    spawn_.longitude = st.longitude;
+    SpawnParams& spawn = Spawn();
+    spawn.speed.base = st.speed;
+    spawn.speed.variance = 0.0f; // PE1 has no speed variation
+    spawn.latitude = st.latitude;
+    spawn.longitude = st.longitude;
 
     SetVisible(st.visibility > 0.0f);
-    modelToWorld_ = CoordinateSystem::ConvertTransform(CoordinateSystem::Default(),
-                                                       desc_->coordSpace, st.transform);
+    SetModelToWorld(CoordinateSystem::ConvertTransform(CoordinateSystem::Default(),
+                                                       Desc().coordSpace, st.transform));
 }
 
 Matrix44f ChildModelEmitter::TransformFor(u32 poolIndex) const {
-    const f32 s = desc_->childScale;
-    return Matrix44f::scaling({s, s, s}) * Matrix44f::translation(pool_[poolIndex].position);
+    const f32 s = Desc().childScale;
+    return Matrix44f::scaling({s, s, s}) * Matrix44f::translation(Pool()[poolIndex].position);
 }
 
 void ChildModelEmitter::OnPoolResized(usize capacity) {
@@ -35,7 +36,7 @@ void ChildModelEmitter::OnParticleBorn(u32 poolIndex) {
     // indices are store nodes, so the pool's capacity alone would leave the
     // slot this writes out of range.
     if (poolIndex >= childHandles_.size())
-        childHandles_.resize((std::max)(pool_.Capacity(), static_cast<usize>(poolIndex) + 1), 0);
+        childHandles_.resize((std::max)(Pool().Capacity(), static_cast<usize>(poolIndex) + 1), 0);
 
     const u32 handle = allocHandle_ ? allocHandle_() : 0;
     childHandles_[poolIndex] = handle;
@@ -48,6 +49,10 @@ void ChildModelEmitter::OnParticleBorn(u32 poolIndex) {
     ev.emitterId = emitterId_;
     ev.childHandle = handle;
     ev.pathIndex = PathIndexFor(poolIndex);
+    ev.route = BirthRoute();
+    const std::vector<std::string>& paths = Desc().childModelPaths;
+    if (ev.pathIndex < paths.size())
+        ev.path = paths[ev.pathIndex];
     ev.transform = TransformFor(poolIndex);
     pending_.push_back(ev);
 }
@@ -75,8 +80,9 @@ void ChildModelEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& out) {
         out.push_back(ev);
     pending_.clear();
 
-    for (usize i = 0; i < pool_.AliveCount(); ++i) {
-        const u32 idx = pool_.AliveAt(i);
+    const ParticlePool& pool = Pool();
+    for (usize i = 0; i < pool.AliveCount(); ++i) {
+        const u32 idx = pool.AliveAt(i);
         if (idx >= childHandles_.size())
             continue;
         const u32 handle = childHandles_[idx];

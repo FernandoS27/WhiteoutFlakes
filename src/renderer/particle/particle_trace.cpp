@@ -13,6 +13,8 @@ namespace whiteout::flakes::renderer::particle {
 namespace {
 
 constexpr const char* kMagic = "wpt2";
+/// The format before the output column; still read.
+constexpr const char* kMagicV1 = "wpt1";
 
 inline u64 EmitterIndexKey(ModelId model, u8 output, i32 id) {
     return (static_cast<u64>(model) << 40) | (static_cast<u64>(output) << 32) |
@@ -47,12 +49,12 @@ void CaptureFrame(const ParticleService& svc, const Matrix44f& worldToView, i32 
 
     // L1 — pool state, straight off each emitter.
     std::unordered_map<u64, usize> index;
-    svc.ForEachEmitter([&](const EmitterKey& k, const Emitter2& e) {
+    svc.ForEachEmitter([&](const EmitterKey& k, const ParticleEmitter& e) {
         TraceEmitter te;
         te.output = static_cast<u8>(k.output);
         te.model = k.model;
         te.emitterId = k.id;
-        te.priorityPlane = e.PriorityPlane();
+        te.priorityPlane = e.DrawHeader().priorityPlane;
 
         const ParticlePool& pool = e.Pool();
         te.particles.reserve(pool.AliveCount());
@@ -159,8 +161,8 @@ bool ReadTrace(Trace& t, const std::string& path, std::string& err) {
     // introduced it needs to be checked against.
     std::string magic;
     std::getline(f, magic);
-    const bool hasOutputColumn = (magic.rfind("wpt2", 0) == 0);
-    if (!hasOutputColumn && magic.rfind("wpt1", 0) != 0) {
+    const bool hasOutputColumn = (magic.rfind(kMagic, 0) == 0);
+    if (!hasOutputColumn && magic.rfind(kMagicV1, 0) != 0) {
         err = "bad magic in " + path;
         return false;
     }

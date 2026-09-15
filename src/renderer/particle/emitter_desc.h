@@ -13,9 +13,11 @@
 // emitter came from.
 // ============================================================================
 
+#include "particle_constants.h"
 #include "particle_curve.h"
 #include "particle_material.h"
 #include "particle_motion.h"
+#include "particle_output.h"
 #include "particle_shape.h"
 #include "sc2_emitter_desc.h"
 #include "types.h"
@@ -52,11 +54,6 @@ struct SpriteSheet {
     }
 };
 
-// What a live particle *is* at frame time. Orthogonal to the spawn shape: a
-// cone that emits child models is ConeShape + ChildModel, not a subclass of
-// both. Ray / Mesh / Light slot in here without touching the sim.
-enum class ParticleOutput : u8 { Billboard = 0, ChildModel = 1 };
-
 // How an emitter releases particles. WC3 is Continuous plus an optional
 // one-shot burst when its emission rate crosses zero ("squirt"); M3's
 // emit-N-total is the third mode this leaves room for.
@@ -84,6 +81,14 @@ struct EmitterDesc {
     Sc2EmitterDesc sc2;
 
     ParticleOutput output = ParticleOutput::Billboard;
+
+    /// Which client's child-model particle a WC3-family `ChildModel` output is.
+    /// The two place their children differently — a PE1 is a scaled copy at
+    /// the particle, an M2 model particle tumbles and takes its size off the
+    /// scale track — so they are different emitter classes, and this is what
+    /// `EmitterFactory` chooses between. An SC2 one is told by `family`.
+    enum class ChildModelKind : u8 { Pe1, M2 };
+    ChildModelKind childModelKind = ChildModelKind::Pe1;
 
     // Child-model output only: which models a particle may become, and its
     // scale. A list because an SC2 `PAR_` carries a TABLE of model paths and
@@ -170,7 +175,7 @@ struct EmitterDesc {
     bool followPosition = false;
     // Initial longitudinal sweep. Seeds SpawnParams::longitude at registration;
     // PE1 animates it per frame, PE2 never does.
-    f32 longitude = 6.2831853071795864769f;
+    f32 longitude = kWowTwoPi;
     f32 tailLength = 1.0f;
     f32 angularVelocity = 0.0f;
 

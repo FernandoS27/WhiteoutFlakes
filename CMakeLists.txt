@@ -1339,8 +1339,14 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/d3_emitter.cpp
     src/renderer/particle/particle_pool.cpp
     src/renderer/particle/particle2_emitter.cpp
+    src/renderer/particle/particle2_emitter_sc2.cpp
     src/renderer/particle/particle_shape.cpp
-    src/renderer/particle/particle_stages_sc2.cpp
+    src/renderer/particle/sc2_kernels_build.cpp
+    src/renderer/particle/sc2_kernels_emit.cpp
+    src/renderer/particle/sc2_kernels_move.cpp
+    src/renderer/particle/sc2_kernels_spawn.cpp
+    src/renderer/particle/trail_set.cpp
+    src/renderer/particle/emitter_factory.cpp
     src/renderer/particle/particle_stages_sc2_model.cpp
     src/renderer/particle/sc2_compose.cpp
     src/renderer/particle/sc2_tick.cpp

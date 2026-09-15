@@ -81,7 +81,7 @@ Emitter2* AddBillboard(ParticleService& svc, ModelId model, i32 id, u32 seed,
     e->SetDesc(std::move(desc));
     Arm(*e, seed);
     Emitter2* raw = e.get();
-    svc.AddEmitter(model, ParticleOutput::Billboard, id, std::move(e));
+    svc.AddEmitter(model, id, std::move(e));
     return raw;
 }
 
@@ -139,7 +139,7 @@ TEST_CASE("No particle outlives its lifespan") {
     Step(svc, {e}, 300);
 
     i32 checked = 0;
-    svc.ForEachEmitter([&](const EmitterKey&, const Emitter2& em) {
+    svc.ForEachEmitter([&](const EmitterKey&, const ParticleEmitter& em) {
         const ParticlePool& pool = em.Pool();
         for (usize i = 0; i < pool.AliveCount(); ++i) {
             REQUIRE(pool[pool.AliveAt(i)].age < kLife);
@@ -242,7 +242,7 @@ TEST_CASE("Gravity set on an emitter reaches its particles") {
     Step(svc, {e}, 60);
 
     f32 lowest = 0.0f;
-    svc.ForEachEmitter([&](const EmitterKey&, const Emitter2& em) {
+    svc.ForEachEmitter([&](const EmitterKey&, const ParticleEmitter& em) {
         const ParticlePool& pool = em.Pool();
         for (usize i = 0; i < pool.AliveCount(); ++i)
             lowest = std::min(lowest, pool[pool.AliveAt(i)].velocity.z);
@@ -391,7 +391,7 @@ TEST_CASE("Child-model particles balance Birth against Death") {
     emitter->SetDesc(desc);
     Arm(*emitter, 616u);
     ChildModelEmitter* raw = emitter.get();
-    svc.AddEmitter(1u, ParticleOutput::ChildModel, 0, std::move(emitter));
+    svc.AddEmitter(1u, 0, std::move(emitter));
 
     std::set<u32> liveHandles;
     std::set<u32> everBorn;
@@ -442,7 +442,7 @@ TEST_CASE("Child-model emitters contribute nothing to the vertex stream") {
     emitter->SetDesc(desc);
     Arm(*emitter, 616u);
     ChildModelEmitter* raw = emitter.get();
-    svc.AddEmitter(1u, ParticleOutput::ChildModel, 0, std::move(emitter));
+    svc.AddEmitter(1u, 0, std::move(emitter));
 
     for (i32 i = 0; i < 120; ++i) {
         raw->SetVisible(true);
@@ -513,7 +513,7 @@ ModelParticleEmitter* AddModelParticles(ParticleService& svc,
     e->SetDesc(std::move(desc));
     Arm(*e, seed);
     ModelParticleEmitter* raw = e.get();
-    svc.AddEmitter(1u, ParticleOutput::ChildModel, id, std::move(e));
+    svc.AddEmitter(1u, id, std::move(e));
     return raw;
 }
 

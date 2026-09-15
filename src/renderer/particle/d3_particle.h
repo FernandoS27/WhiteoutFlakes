@@ -15,6 +15,7 @@
 // momentum rather than a teleport.
 // ============================================================================
 
+#include "d3_channels.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -150,8 +151,8 @@ struct WindSpringRig {
 inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
                            const Vector2f& windDir, f32 windStrength, f32 windPhase, f32 dt,
                            bool reuseForce = false) {
-    constexpr f32 kTwoPi = 6.28318530717958647692f;
-    constexpr f32 kEps = 1e-6f;
+    /// Where an over-extended sway parks: this fraction of the limit, at rest.
+    constexpr f32 kParkFraction = 0.95f;
 
     const f32 w = rig.frequency * kTwoPi;
     const f32 damp = w * (rig.damping + rig.damping);
@@ -161,7 +162,7 @@ inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
         const f32 gust = rig.baseAmount -
                          rig.gustAmount * (std::cos(st.swayPhase * kTwoPi + windPhase) *
                                            windStrength);
-        st.swayForce = {windDir.x * gust * (1.0f / 60.0f), windDir.y * gust * (1.0f / 60.0f)};
+        st.swayForce = {windDir.x * gust * kFrameSeconds, windDir.y * gust * kFrameSeconds};
     }
 
     st.swayVelocity = {
@@ -176,14 +177,15 @@ inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
     const f32 l2 = st.swayOffset.x * st.swayOffset.x + st.swayOffset.y * st.swayOffset.y;
     if (l2 > lim * lim) {
         const f32 l = std::sqrt(l2);
-        if (l > kEps) {
+        if (l > kEpsilon) {
             const f32 inv = 1.0f / l;
             st.swayOffset = {inv * st.swayOffset.x, inv * st.swayOffset.y};
         }
         // The 0.95 park happens either way — a degenerate length skips the
         // normalise, not the scale.
         st.swayVelocity = {0, 0};
-        st.swayOffset = {(lim * 0.95f) * st.swayOffset.x, (lim * 0.95f) * st.swayOffset.y};
+        st.swayOffset = {(lim * kParkFraction) * st.swayOffset.x,
+                         (lim * kParkFraction) * st.swayOffset.y};
     }
 }
 
@@ -202,14 +204,14 @@ inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
 inline Vector3f ConeSpread(const Vector3f& v, f32 cone, f32 azimuth) {
     const f32 len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     Vector3f n = v;
-    if (len > 1e-6f) {
+    if (len > kEpsilon) {
         const f32 inv = 1.0f / len;
         n = {inv * v.x, inv * v.y, inv * v.z};
     }
     const bool onX = v.y == 0.0f && v.z == 0.0f;
     Vector3f perp = onX ? Vector3f{-n.z, 0.0f, n.x} : Vector3f{0.0f, n.z, -n.y};
     const f32 pl = std::sqrt(perp.z * perp.z + (perp.y * perp.y + perp.x * perp.x));
-    if (pl > 1e-6f) {
+    if (pl > kEpsilon) {
         const f32 inv = 1.0f / pl;
         perp = {inv * perp.x, perp.y * inv, inv * perp.z};
     }
@@ -233,7 +235,9 @@ inline Vector3f ConeSpread(const Vector3f& v, f32 cone, f32 azimuth) {
 /// engine returns none. The result is deliberately not normalised — it is unit
 /// in exact arithmetic, and the extra step only moves the rounding.
 inline Quaternion OrientationFromAxes(const Vector3f& a, const Vector3f& b) {
-    const f32 eps = 1e-6f;
+    /// The near-parallel and anti-parallel early-outs, 2.56° of arc either side.
+    constexpr f32 kParallelDot = 0.999f;
+    const f32 eps = kEpsilon;
     const f32 la = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
     const f32 lb = std::sqrt(b.x * b.x + b.y * b.y + b.z * b.z);
     if (lb <= eps || la < eps)
@@ -242,9 +246,9 @@ inline Quaternion OrientationFromAxes(const Vector3f& a, const Vector3f& b) {
     const Vector3f ua{ia * a.x, ia * a.y, ia * a.z};
     const Vector3f ub{ib * b.x, ib * b.y, ib * b.z};
     const f32 d = ub.z * ua.z + (ub.x * ua.x + ub.y * ua.y);
-    if (d > 0.999f)
+    if (d > kParallelDot)
         return {0, 0, 0, 1};
-    if (d < -0.999f)
+    if (d < -kParallelDot)
         return {1, 0, 0, 0};
     const Vector3f c{ub.z * ua.y - ub.y * ua.z, ub.x * ua.z - ub.z * ua.x,
                      ub.y * ua.x - ub.x * ua.y};

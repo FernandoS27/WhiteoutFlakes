@@ -37,7 +37,6 @@
 // sheet on every particle.
 // ============================================================================
 
-#include "io/d3/d3_sno_cache.h"
 #include "io/d3/d3_types.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
@@ -45,6 +44,10 @@
 #include <array>
 #include <memory>
 #include <string>
+
+namespace whiteout::flakes::io {
+struct D3TextureAtlas;
+}
 
 namespace whiteout::flakes::renderer::particle::d3 {
 
@@ -171,13 +174,17 @@ struct MaterialDesc {
     /// rectangle over the model, which is what the Mystic Ally's caustics were.
     bool distortion = false;
 
+    /// The ENGINE's blend enum, not D3DBLEND.
+    enum EngineBlend : u32 { kBlendOne = 2, kBlendSrcAlpha = 5 };
+    /// `D3DCMPFUNC`. Always reads as "no depth test at all" to the engine, and
+    /// every premultiplied pass says it; the default is the ordinary test.
+    enum DepthCompare : u32 { kCmpLessEqual = 4, kCmpAlways = 8 };
+
     bool blendEnable = true;
-    u32 blendSrc = 5; ///< The ENGINE's blend enum, not D3DBLEND. 5 = SrcAlpha.
-    u32 blendDst = 2; ///< 2 = One.
+    u32 blendSrc = kBlendSrcAlpha;
+    u32 blendDst = kBlendOne;
     bool depthWrite = false;
-    /// The pass's depth compare, D3DCMPFUNC. 8 = Always, which the engine reads
-    /// as "no depth test at all" — and every premultiplied pass says 8.
-    u32 depthFunc = 4;
+    u32 depthFunc = kCmpLessEqual;
     /// @brief The `_pma` output form: 0 none, 1 premultiply and invert the
     ///        alpha, 2 premultiply and write 1, 3 premultiply only.
     ///

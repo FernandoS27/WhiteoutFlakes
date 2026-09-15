@@ -3,6 +3,8 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <cmath>
+
 namespace whiteout::flakes::renderer::particle {
 
 struct RndSeed {
@@ -70,6 +72,12 @@ inline u32 MixSeed(u32 x) {
     x = x ^ (x >> 16);
     return x;
 }
+
+// The ranges an actor's emitters mix their index into, so no two outputs of one
+// actor share a stream: PE2 and M2 emitters take the index as it is, PE1 child
+// model emitters and M2 trails offset it into ranges no emitter index reaches.
+inline constexpr u32 kPe1SeedSalt = 0x8000u;
+inline constexpr u32 kTrailSeedSalt = 0xC000u;
 
 // Seed for one emitter, derived from its owning actor and its index within that
 // actor. Stable regardless of how many emitters were constructed before it —

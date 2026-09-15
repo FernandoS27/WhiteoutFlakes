@@ -1,6 +1,7 @@
 #include "renderer/particle/splat_service.h"
 
 #include "renderer/assets/asset_manager.h"
+#include "renderer/particle/particle_constants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -161,7 +162,7 @@ void SplatService::EvaluateAt(const Splat& s, f32 outColor[4], i32& outCellIdx) 
     }
 
     auto cellOf = [](i32 start, i32 end, i32 repeat, f32 t) {
-        const f32 nudge = t * 0.99f + 0.005f;
+        const f32 nudge = t * kWc3SampleSpan + kWc3SampleBias;
         const f32 r = (repeat < 1) ? 1.0f : (f32)repeat;
         const i32 delta = (end >= start) ? (end - start + 1) : (end - start - 1);
         const f32 effT = (r == 1.0f) ? nudge : std::fmod(nudge * r, 1.0f);

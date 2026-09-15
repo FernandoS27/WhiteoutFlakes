@@ -106,8 +106,12 @@ LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice& gfx, IContentProvider& content,
     }
     DbgLogf("[WDEX IBL] ReadFile OK for %s (%zu bytes)\n", relPath.c_str(), bytes->size());
 
+    // Faces in file order. 3.0.0 samples the probe in a frame whose +Z is the
+    // main light, and the shipped files are baked that way: +Z brightest, -Z
+    // darkest. Swapping -X and -Z (kBlizzardProbeFaceOrder) put the dark face
+    // on one side of every model.
     return LoadEnvProbeFromBytes(gfx, std::span<const u8>(bytes->data(), bytes->size()),
-                                 relPath.c_str(), true);
+                                 relPath.c_str(), false);
 }
 
 LoadedEnvProbe LoadEnvProbeFromFile(gfx::IGFXDevice& gfx, const std::string& absPath,
@@ -180,17 +184,17 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         case PF::RG32F:
             return gfx::Format::R32G32_FLOAT;
         case PF::RGBA8:
-            return gfx::Format::R8G8B8A8_UNORM;
+            return srgb ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM;
         case PF::RGBA16:
             return gfx::Format::R16G16B16A16_UNORM;
         case PF::RGBA32F:
             return gfx::Format::R32G32B32A32_FLOAT;
         case PF::BC1:
-            return gfx::Format::BC1_UNORM;
+            return srgb ? gfx::Format::BC1_UNORM_SRGB : gfx::Format::BC1_UNORM;
         case PF::BC2:
-            return gfx::Format::BC2_UNORM;
+            return srgb ? gfx::Format::BC2_UNORM_SRGB : gfx::Format::BC2_UNORM;
         case PF::BC3:
-            return gfx::Format::BC3_UNORM;
+            return srgb ? gfx::Format::BC3_UNORM_SRGB : gfx::Format::BC3_UNORM;
         case PF::BC4:
             return gfx::Format::BC4_UNORM;
         case PF::BC5:
@@ -198,11 +202,17 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         case PF::BC6H:
             return gfx::Format::BC6H_UF16;
         case PF::BC7:
-            return gfx::Format::BC7_UNORM;
+            return srgb ? gfx::Format::BC7_UNORM_SRGB : gfx::Format::BC7_UNORM;
         }
         return gfx::Format::Unknown;
     };
-    gfx::Format gpuFormat = mapFmt(tex.format(), false);
+    // The HD shaders sample the probes through an sRGB view:
+    // TextureCreateIBLCubeMapArray creates them with CGxTexFlags 0x1203, and
+    // CGxDevice::ITexCreate turns flag 0x200 into the format's sRGB variant,
+    // the view HD render mode binds. An 8-bit probe read as UNORM comes out
+    // brighter everywhere but its extremes (0.6 instead of 0.32).
+    const bool srgb = true;
+    gfx::Format gpuFormat = mapFmt(tex.format(), srgb);
     // Backends that can't sample BCn (some WebGPU adapters — Mali and other
     // mobile GPUs) decompress here. Texture::format(RGBA8) runs the BC1/2/3/7
     // decoder and keeps the full mip chain + cube faces, so the upload path
@@ -211,7 +221,7 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         !gfx.SupportsBlockCompression()) {
         DbgLogf("[WDEX IBL] backend lacks BC -- decompressing probe to RGBA8\n");
         tex.format(whiteout::textures::PixelFormat::RGBA8);
-        gpuFormat = gfx::Format::R8G8B8A8_UNORM;
+        gpuFormat = mapFmt(whiteout::textures::PixelFormat::RGBA8, srgb);
     }
     if (gpuFormat == gfx::Format::Unknown) {
 
@@ -221,7 +231,7 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
             DbgLogf("[WDEX IBL] fallback decode FAILED\n");
             return failed;
         }
-        gpuFormat = gfx::Format::R8G8B8A8_UNORM;
+        gpuFormat = mapFmt(whiteout::textures::PixelFormat::RGBA8, srgb);
     }
 
     const u32 mipCount = tex.mipCount();

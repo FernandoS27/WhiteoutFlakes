@@ -773,10 +773,12 @@ TEST_CASE("a collision spawn reaches its child through the service",
     for (i32 i = 0; i < 2; ++i) {
         auto em = std::make_unique<particle::Emitter2>();
         em->SetDesc(particle::DescFromSc2ParticleConfig(configs[static_cast<usize>(i)], configs));
-        service.AddEmitter(1, particle::ParticleOutput::Billboard, i, std::move(em));
+        service.AddEmitter(1, i, std::move(em));
     }
-    particle::Emitter2* parent = service.GetEmitter(1, particle::ParticleOutput::Billboard, 0);
-    particle::Emitter2* child = service.GetEmitter(1, particle::ParticleOutput::Billboard, 1);
+    particle::Emitter2* parent =
+        service.GetEmitter(1, particle::ParticleOutput::Billboard, 0)->AsEmitter2();
+    particle::Emitter2* child =
+        service.GetEmitter(1, particle::ParticleOutput::Billboard, 1)->AsEmitter2();
     REQUIRE(parent != nullptr);
     REQUIRE(child != nullptr);
     REQUIRE(parent->Desc().sc2.children.collisionChildIsWorldSpace);
@@ -836,7 +838,7 @@ TEST_CASE("a collision spawn reaches a model-particle child in the ChildModel id
     auto parentEm = std::make_unique<particle::Emitter2>();
     parentEm->SetDesc(particle::DescFromSc2ParticleConfig(configs[0], configs));
     particle::Emitter2* parent = parentEm.get();
-    service.AddEmitter(1, particle::ParticleOutput::Billboard, 0, std::move(parentEm));
+    service.AddEmitter(1, 0, std::move(parentEm));
 
     u32 nextHandle = 1;
     auto childEm = std::make_unique<particle::Sc2ModelParticleEmitter>(
@@ -844,7 +846,7 @@ TEST_CASE("a collision spawn reaches a model-particle child in the ChildModel id
     childEm->SetDesc(particle::DescFromSc2ParticleConfig(configs[1], configs));
     REQUIRE(childEm->Desc().output == particle::ParticleOutput::ChildModel);
     particle::Emitter2* child = childEm.get();
-    service.AddEmitter(1, particle::ParticleOutput::ChildModel, 1, std::move(childEm));
+    service.AddEmitter(1, 1, std::move(childEm));
     REQUIRE(service.GetEmitter(1, particle::ParticleOutput::Billboard, 1) == nullptr);
 
     std::vector<particle::ChildModelEvent> events;
@@ -1087,7 +1089,7 @@ TEST_CASE("SC2 model particles balance Birth against Death, each with a row of i
     em->SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
     REQUIRE(em->Desc().output == particle::ParticleOutput::ChildModel);
     particle::Emitter2* raw = em.get();
-    service.AddEmitter(1, particle::ParticleOutput::ChildModel, 0, std::move(em));
+    service.AddEmitter(1, 0, std::move(em));
 
     std::set<u32> live;
     std::set<u32> everBorn;
@@ -1171,7 +1173,7 @@ struct ModelRig {
             1u, 0, [this] { return nextHandle++; });
         em->SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
         emitter = em.get();
-        service.AddEmitter(1, particle::ParticleOutput::ChildModel, 0, std::move(em));
+        service.AddEmitter(1, 0, std::move(em));
     }
 
     /// One frame; every event is checked against the protocol as it drains.
@@ -1279,7 +1281,7 @@ TEST_CASE("an SC2 Bezier size channel poses its model through the authored mid k
             1u, 0, [&nextHandle] { return nextHandle++; });
         em->SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
         particle::Emitter2* raw = em.get();
-        service.AddEmitter(1, particle::ParticleOutput::ChildModel, 0, std::move(em));
+        service.AddEmitter(1, 0, std::move(em));
         std::vector<particle::ChildModelEvent> events;
         u32 first = 0;
         int bornFrame = -1;
@@ -1376,7 +1378,7 @@ TEST_CASE("an SC2 Mesh emitter is born only on the regions it names",
     em->SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
     em->SetEmitMesh(mesh);
     particle::Emitter2* raw = em.get();
-    service.AddEmitter(1, particle::ParticleOutput::Billboard, 0, std::move(em));
+    service.AddEmitter(1, 0, std::move(em));
     for (int frame = 0; frame < 30; ++frame) {
         raw->ApplyState(Sc2State(0, 120.0f));
         service.Simulate(1.0f / 60.0f);

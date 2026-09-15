@@ -15,7 +15,7 @@
 // ============================================================================
 
 #include "particle2_emitter.h"
-#include "particle_service.h"
+#include "particle_output.h"
 
 #include <functional>
 #include <vector>
@@ -36,6 +36,10 @@ public:
     void ApplyPE1State(const model::FrameState::PE1FrameState& st);
 
     void CollectOutputEvents(std::vector<ChildModelEvent>& out) override;
+
+    ChildModelEmitter* AsChildModel() override {
+        return this;
+    }
 
 protected:
     void OnPoolResized(usize capacity) override;
@@ -58,6 +62,11 @@ protected:
     // particle in its pending walk (RE §16.16), before the birth fires.
     virtual u32 PathIndexFor(u32 poolIndex) const {
         return 0;
+    }
+
+    // How the host builds the child. A PE1 names a staged child template.
+    virtual ChildModelEvent::Route BirthRoute() const {
+        return ChildModelEvent::Route::Pe1Template;
     }
 
     // Protected rather than private for the SC2 output, whose particles live
