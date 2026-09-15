@@ -30,41 +30,6 @@ inline f32 ResolveAlphaRef(const MatParams& mat) {
     return mat.alphaRef >= 0.0f ? mat.alphaRef : AlphaRefFor(mat.alpha);
 }
 
-// CGxDevice::m_sdOnHDLightCompensationValue, initialised to 0.3f at the tail of
-// CGxDevice::CGxDevice (Engine/Source/Gx/CGxDevice.cpp). IStateSync passes it to
-// CGxLightToShaderLight as ambLightModifier, but only for GxShaderID_SD_ON_HD;
-// every other shader gets 0.
-inline constexpr f32 kSdOnHdAmbientCompensation = 0.3f;
-
-// `ps/sd_on_hd.bls` reads lights[0]._pad.x (register 24) outside the light
-// loop, as a blend weight in the team-colour block:
-//     r6.y = hasTeamTex * (hasTeamTex + max(lights[0].diffuse.rgb)) * pad.x
-// and then lerps the team-colour result against the base by r6.y.
-//
-// The engine-side source of this value is unknown: the disassembled client
-// (Warcraft IIId.exe) predates the 64-byte ShaderLight and has no fourth
-// vec4 to write. 0 leaves the term inert, which is the behaviour we shipped
-// before — do not change it to a guess without a reference capture to
-// compare against.
-inline constexpr f32 kSdOnHdLight0BlendWeight = 0.0f;
-
-// `ps/hd.bls` reads the same register, and there it is *not* inert — it scales
-// the only NdotL-independent term in the lighting tail:
-//     r3.w  = iblRan * (iblRan + max(lights[0].diffuse.rgb)) * pad.x
-//     r12   = r3.w * irradiance
-//     r9    = saturate(dot(N,L)) * r9 + r12          <-- r12 survives at NdotL=0
-//     r9   += lights[0].ambient
-// so pad.x is what lets the env-probe irradiance reach an unlit surface. At 0
-// a back-facing pixel gets `lights[0].ambient` and nothing else, which on the
-// HD DNC rigs (ambientIntensity = 0) means pure black, and on the SD rigs
-// means a flat 0.3 with no probe contribution at all.
-//
-// Verified with BlsReflect over ps/hd.bls: register 24 is read by perms
-// 8, 9, 12, 13, 24 and 25 — every lit, non-prepass permutation, including
-// perm 9, the team-coloured unit perm. (Perms with lights=0 or prepass=1
-// have no lighting tail, which is why a spot-check of those reads nothing.)
-inline constexpr f32 kHdLight0BlendWeight = 0.15f;
-
 } // namespace
 
 void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat) {
@@ -83,103 +48,134 @@ void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat) {
         out.lights[i] = in.lights[i];
     for (i32 i = n; i < kMaxLights; ++i)
         out.lights[i] = {};
+
+    // The SD PS fogs on TEXCOORD1.z, which the engine's left-handed view makes
+    // the distance ahead of the camera. The SD passes draw with the right-handed
+    // camera, where that z is negative and every fog mode reads "no fog". Turn
+    // the view space half a turn about Y, the difference between the two
+    // cameras; the lights turn with it, so the per-vertex lighting is unchanged.
+    if (in.projection.data[2][3] < 0.0f) {
+        for (auto& row : out.world.data) {
+            row[0] = -row[0];
+            row[2] = -row[2];
+        }
+        for (i32 i = 0; i < n; ++i) {
+            out.lights[i].position.x = -out.lights[i].position.x;
+            out.lights[i].position.z = -out.lights[i].position.z;
+        }
+    }
+}
+
+f32 EngineFogLinear(f32 x) {
+    return x * (x * (0.305f * x + 0.682f) + 0.0125f);
+}
+
+i32 DrawFogMode(const FogParams& fog, const MatParams& mat) {
+    return mat.FogEnabled() ? std::clamp(fog.mode, 0, 6) : 0;
 }
 
 void BuildSdPsCbA(SdPsCbA& out, const FrameInputs& in, const MatParams& mat) {
     std::memset(&out, 0, sizeof(out));
     out.alphaRef = ResolveAlphaRef(mat);
-    out.fogParams = in.fogParams;
-    out.fogColor = in.fogColor;
+    const FogParams& f = in.fog;
+    out.fogColorStart = {f.colorSrgb.x, f.colorSrgb.y, f.colorSrgb.z, f.start};
+    out.fogEnd = f.end;
+    out.fogDensity = f.density;
 }
 
 void BuildHdVsCb(HdVsCb& out, const FrameInputs& in, const MatParams& mat) {
-
+    std::memset(&out, 0, sizeof(out));
     const Matrix44f wv = in.world * in.view;
-    const Matrix44f wvp = wv * in.projection;
 
     out.world = in.world;
     out.worldView = wv;
-    out.worldViewProj = wvp;
-
-    out.misc = {in.effectTime, mat.cornEffectsScale, 0.0f, 0.0f};
+    out.worldViewProj = wv * in.projection;
+    out.projection = in.projection;
+    out.effectTime = in.effectTime;
+    out.popcornScale = mat.cornEffectsScale;
+    // clipHeight / underWater stay 0: no water clip plane, so the PS never
+    // discards on it (and the depth prepass would, on anything but 0).
+    out.boneBufferBase = IntBits(in.boneBufferBase);
     out.diffuseColor = mat.diffuseColor;
     out.texMtx0 = in.texMtx0;
     out.texMtx1 = in.texMtx1;
 }
 
+i32 EngineBlendMode(GxMatAlpha alpha) {
+    switch (alpha) {
+    case GxMatAlpha::Opaque:
+        return 0;
+    case GxMatAlpha::AlphaKey:
+        return 1;
+    case GxMatAlpha::Blend:
+    case GxMatAlpha::BlendKeepDst:
+        return 2;
+    case GxMatAlpha::Add:
+    case GxMatAlpha::AddNoAlpha:
+        return 3;
+    case GxMatAlpha::Modulate:
+        return 4;
+    case GxMatAlpha::Modulate2X:
+        return 5;
+    case GxMatAlpha::PremulBlend:
+        return 6;
+    }
+    return 0;
+}
+
 void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
     std::memset(&out, 0, sizeof(out));
     out.alphaRef = ResolveAlphaRef(mat);
-    out.fogParams = in.fogParams;
-    out.fogColor = in.fogColor;
+    out.blendMode = IntBits(EngineBlendMode(mat.alpha));
+
+    const FogParams& f = in.fog;
+    out.fogColorStart = {EngineFogLinear(f.colorSrgb.x), EngineFogLinear(f.colorSrgb.y),
+                         EngineFogLinear(f.colorSrgb.z), f.start};
+    out.fogEnd = f.end;
+    out.fogDensity = f.density;
+    out.heightTop = f.heightTop;
+    out.heightBottom = f.heightBottom;
+    out.radialInner = f.radialInner;
+    out.radialOuter = f.radialOuter;
+    out.radialStrength = f.radialStrength;
+    out.fogEverywhere = IntBits(f.everywhere ? 1 : 0);
+
+    const Matrix44f invView = Matrix44f::inverse(in.view);
     out.worldView = in.world * in.view;
-    out.view = in.view;
+    out.invView = invView;
+    out.invProjection = Matrix44f::inverse(in.projection);
     out.projection = in.projection;
-    out.viewportRect = in.viewportRect;
-    out.effectTime = in.effectTime;
-    out.emissiveGain = mat.emissiveGain;
+    // The volumetric fog centre is the camera: (0,0,0,1) through the inverse view.
+    out.fogCentre = {invView.data[3][0], invView.data[3][1], invView.data[3][2], 1.0f};
+    out.depthUVRemap = {1.0f, 1.0f, 0.0f, 0.0f};
 
-    const i32 nLights = std::clamp(in.numLights, 0, kMaxLights);
-    const u32 countBits = static_cast<u32>(nLights);
-    std::memcpy(&out.lightCount, &countBits, sizeof(f32));
-
-    out.useNdf = in.useNdf ? 1.0f : 0.0f;
-
-    out.pixelParams1 = {mat.inverseSoftness, mat.cloakAmount, mat.fresnelTeamColor, 0.0f};
-
+    // Row 22.x is written 0/1 from flag 0x400 for the HD programs, and the PS
+    // multiplies its output alpha by it — every material draw has it set.
+    out.outputAlphaScale = 1.0f;
+    out.cloakAmount = mat.cloakAmount;
+    out.fresnelTeamColor = mat.fresnelTeamColor;
     out.fresnelColor = {mat.fresnelColor.x, mat.fresnelColor.y, mat.fresnelColor.z,
                         mat.fresnelOpacity};
 
-    out.envMapParams = {in.envFromMipEnd, in.envToMipEnd, in.envTransitionT, 0.0f};
+    out.envFromMipCount = in.envFromMipCount;
+    out.envToMipCount = in.envToMipCount;
+    out.envTransitionT = in.envTransitionT;
 
-    for (i32 i = 0; i < nLights; ++i)
-        out.lights[i] = in.lights[i];
-    for (i32 i = nLights; i < kMaxLights; ++i)
-        out.lights[i] = {};
+    out.effectTime = in.effectTime;
+    out.emissiveGain = mat.emissiveGain;
+    // GetShadowSettings()+65 picks 0.01 or 0.0001; only the cube shadows read it.
+    out.shadowDepthBias = 0.0001f;
+    out.useNdf = IntBits(in.useNdf ? 1 : 0);
+    // GetNormalStrengthSetting() defaults to 1.
+    out.normalStrength = 1.0f;
+    out.fogMode = IntBits(DrawFogMode(in.fog, mat));
 
-    // Only light 0's slot is read (register 24); see kHdLight0BlendWeight.
-    if (nLights > 0)
-        out.lights[0]._pad = {kHdLight0BlendWeight, 0.0f, 0.0f, 0.0f};
-}
-
-void BuildSdOnHdPsCb(SdOnHdPsCb& out, const FrameInputs& in, const MatParams& mat) {
-    std::memset(&out, 0, sizeof(out));
-    out.alphaRef = ResolveAlphaRef(mat);
-    out.fogParams = in.fogParams;
-    out.fogColor = in.fogColor;
-
-    const Matrix44f invView = Matrix44f::inverse(in.view);
-    out.invViewRow0 = {invView.data[0][0], invView.data[0][1], invView.data[0][2],
-                       invView.data[0][3]};
-    out.invViewRow1 = {invView.data[1][0], invView.data[1][1], invView.data[1][2],
-                       invView.data[1][3]};
-    out.invViewRow2 = {invView.data[2][0], invView.data[2][1], invView.data[2][2],
-                       invView.data[2][3]};
-
-    out.pixelParams1 = {1.0f, 0.0f, 0.0f, 0.0f};
-    out.envMapParams = {in.envFromMipEnd, in.envToMipEnd, in.envTransitionT, 0.0f};
-
-    const i32 n = std::clamp(in.numLights, 0, kMaxLights);
-    const u32 countBits = static_cast<u32>(n);
-    f32 countAsFloat;
-    std::memcpy(&countAsFloat, &countBits, sizeof(f32));
-    out.lightCountSlot = {0, 0, countAsFloat, 0};
-
-    // SD-on-HD is the one path where CGxLightToShaderLight's ambLightModifier
-    // is non-zero, so it is the only place the MDX ambient colour (KLBC)
-    // contributes: ambient = ambIntensity + modifier * ambColor.
-    for (i32 i = 0; i < n; ++i) {
-        const Vector3f& ac = in.lightAmbientColors[i];
-        out.lights[i] = in.lights[i];
-        out.lights[i].ambient.x += kSdOnHdAmbientCompensation * ac.x;
-        out.lights[i].ambient.y += kSdOnHdAmbientCompensation * ac.y;
-        out.lights[i].ambient.z += kSdOnHdAmbientCompensation * ac.z;
-    }
-    for (i32 i = n; i < kMaxLights; ++i)
-        out.lights[i] = {};
-
-    if (n > 0)
-        out.lights[0]._pad = {kSdOnHdLight0BlendWeight, 0.0f, 0.0f, 0.0f};
+    const MainLight& L = in.mainLight;
+    const bool lit = L.enabled && mat.LightingEnabled();
+    out.mainLightEnable = IntBits(lit ? 1 : 0);
+    out.ambient = {L.ambient.x, L.ambient.y, L.ambient.z, L.shadowIntensity};
+    out.lightColor = {L.color.x, L.color.y, L.color.z, 0.0f};
+    out.lightDirVS = {L.dirToLightVS.x, L.dirToLightVS.y, L.dirToLightVS.z, 0.0f};
 }
 
 void PackBone(ShaderBone& out, const Matrix44f& m) {

@@ -29,7 +29,19 @@ inline constexpr std::array<u32, 6> kBlizzardProbeFaceOrder = {0, 5, 2, 3, 4, 1}
 struct LoadedEnvProbe {
     gfx::TextureHandle handle = gfx::TextureHandle::Invalid;
     i32 mipCount = 0;
+    i32 faceSize = 0;
 };
+
+/// The mip count Warcraft III 3.0.0 hands the HD pixel shaders for a probe
+/// (PS cb2[25]): CGxDevice::ITexCreate sets CGxTex+0x48 to the FULL chain
+/// length, floor(log2(max(w, h))) + 1, whatever the file actually stores. The
+/// shader samples radiance at `count * roughness`.
+inline f32 EngineProbeMipCount(i32 faceSize) {
+    i32 count = 0;
+    for (i32 s = faceSize; s > 0; s >>= 1)
+        ++count;
+    return static_cast<f32>(count);
+}
 
 LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice& gfx, io::IContentProvider& content,
                             const std::string& relPath);

@@ -587,7 +587,7 @@ static int RunDrawTrace(
     whiteout::flakes::ProductId traceGame = whiteout::flakes::ProductId::Neutral,
     bool noDistortion = false, bool distortionBuffer = false,
     whiteout::models::wem::ProfileId wemProfile = whiteout::models::wem::ProfileId::Count,
-    f32 cameraYaw = 0.7f) {
+    f32 cameraYaw = 0.7f, bool shadows = false, i32 fogMode = 0) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -670,6 +670,33 @@ static int RunDrawTrace(
     // never coincide and the pass proves nothing.
     if (debugLight) {
         settings.SetDebugPointLight(true, {250.0f, -250.0f, 320.0f}, {2.0f, 1.8f, 1.4f}, 900.0f);
+    }
+
+    // The cascade-shadow A/B arm. Shadows are off by default, and only the
+    // golden can tell the arms apart — the lit draws trace the same either way
+    // apart from the permutation the cascade bit selects.
+    if (shadows) {
+        if (auto* svc = renderer.GetShadowService())
+            svc->SetEnabled(true);
+    }
+
+    // The world-fog arm: one fixed fog per shader mode, sized to the gate's
+    // 350-unit camera so every mode visibly moves the frame.
+    if (fogMode > 0) {
+        wf::renderer::RenderSettings::WorldFog fog;
+        fog.mode = fogMode;
+        fog.color[0] = 90;
+        fog.color[1] = 120;
+        fog.color[2] = 160;
+        fog.start = 200.0f;
+        fog.end = 700.0f;
+        fog.density = 0.002f;
+        fog.heightTop = 150.0f;
+        fog.heightBottom = 0.0f;
+        fog.radialInner = 50.0f;
+        fog.radialOuter = 400.0f;
+        fog.radialStrength = 0.6f;
+        settings.SetWorldFog(fog);
     }
 
     // The gate's perturbation arm: a different first handle puts every actor
@@ -1797,6 +1824,8 @@ int main(int argc, char* argv[]) {
     bool drawTraceNoMultiTex = false;
     bool drawTraceRefractionMask = false;
     bool drawTraceDebugLight = false;
+    bool drawTraceShadows = false;
+    i32 drawTraceFog = 0;
     bool drawTraceLazyAnim = false;
     bool drawTraceAllowLate = false;
     std::string drawTraceRecord;
@@ -2174,6 +2203,10 @@ int main(int argc, char* argv[]) {
             drawTraceNoMultiTex = true;
         } else if (std::strcmp(a, "--draw-trace-debug-light") == 0) {
             drawTraceDebugLight = true;
+        } else if (std::strcmp(a, "--draw-trace-shadows") == 0) {
+            drawTraceShadows = true;
+        } else if (std::strcmp(a, "--draw-trace-fog") == 0 && i + 1 < argc) {
+            drawTraceFog = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--draw-trace-allow-late-assets") == 0) {
             drawTraceAllowLate = true;
         } else if (std::strcmp(a, "--draw-trace-lazy-anim") == 0) {
@@ -2545,7 +2578,7 @@ int main(int argc, char* argv[]) {
                             drawTraceAnim, attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
                             drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId,
                             drawTraceNoDistortion, drawTraceDistortionBuffer, wemProfile,
-                            drawTraceCameraYaw);
+                            drawTraceCameraYaw, drawTraceShadows, drawTraceFog);
 
     // Export/attach/list runs load the model, do their work over a fixed tick
     // count and exit — they still need the full app (device, asset managers,

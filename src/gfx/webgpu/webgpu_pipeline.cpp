@@ -366,6 +366,341 @@ std::vector<VertexInputLocation> ScanVertexLocations(const char* src, usize len,
     return out;
 }
 
+// Parse the `(<int>)` argument of an attribute; returns false when absent.
+bool ParseAttrInt(const char*& p, const char* end, u32& out) {
+    p = SkipWsAndComments(p, end);
+    if (p >= end || *p != '(')
+        return false;
+    p = SkipWsAndComments(p + 1, end);
+    bool any = false;
+    out = 0;
+    while (p < end && *p >= '0' && *p <= '9') {
+        out = out * 10 + static_cast<u32>(*p - '0');
+        ++p;
+        any = true;
+    }
+    p = SkipWsAndComments(p, end);
+    if (p < end && *p == ')')
+        ++p;
+    return any;
+}
+
+bool StartsWith(const std::string& s, const char* prefix) {
+    return s.compare(0, std::strlen(prefix), prefix) == 0;
+}
+
+// Fill kind / sampleType / viewDimension from a WGSL resource type such as
+// `texture_depth_2d_array` or `texture_cube<f32>`. Returns false for types the
+// layout builder can't express (storage textures, external textures).
+bool ClassifyWgslResourceType(const std::string& qualifier, const std::string& type,
+                              WgslBinding& b) {
+    using Dim = wgpu::TextureViewDimension;
+    if (qualifier.find("uniform") != std::string::npos) {
+        b.kind = WgslBindingKind::Uniform;
+        return true;
+    }
+    if (qualifier.find("storage") != std::string::npos) {
+        b.kind = qualifier.find("read_write") != std::string::npos ? WgslBindingKind::Storage
+                                                                   : WgslBindingKind::ReadOnlyStorage;
+        return true;
+    }
+    if (type == "sampler") {
+        b.kind = WgslBindingKind::Sampler;
+        return true;
+    }
+    if (type == "sampler_comparison") {
+        b.kind = WgslBindingKind::ComparisonSampler;
+        return true;
+    }
+    if (!StartsWith(type, "texture_") || StartsWith(type, "texture_storage") ||
+        StartsWith(type, "texture_external"))
+        return false;
+
+    b.kind = WgslBindingKind::Texture;
+    std::string rest = type.substr(8);
+    if (StartsWith(rest, "depth_")) {
+        b.sampleType = wgpu::TextureSampleType::Depth;
+        rest = rest.substr(6);
+    } else {
+        const auto lt = type.find('<');
+        const std::string scalar = lt == std::string::npos ? "" : type.substr(lt + 1, 3);
+        b.sampleType = scalar == "i32"   ? wgpu::TextureSampleType::Sint
+                       : scalar == "u32" ? wgpu::TextureSampleType::Uint
+                                         : wgpu::TextureSampleType::Float;
+    }
+    if (StartsWith(rest, "multisampled_")) {
+        b.multisampled = true;
+        rest = rest.substr(13);
+    }
+    b.viewDimension = StartsWith(rest, "2d_array")     ? Dim::e2DArray
+                      : StartsWith(rest, "cube_array") ? Dim::CubeArray
+                      : StartsWith(rest, "cube")       ? Dim::Cube
+                      : StartsWith(rest, "3d")         ? Dim::e3D
+                      : StartsWith(rest, "1d")         ? Dim::e1D
+                                                       : Dim::e2D;
+    // Multisampled float textures can't be filtered.
+    if (b.multisampled && b.sampleType == wgpu::TextureSampleType::Float)
+        b.sampleType = wgpu::TextureSampleType::UnfilterableFloat;
+    return true;
+}
+
+// True when every use of `name` (other than its declaration at `declPos`) is
+// the first argument of textureLoad / textureDimensions / textureNumLevels /
+// textureNumLayers. Such a texture never meets a sampler, so its layout entry
+// can be UnfilterableFloat and accept R32F / RGBA32F targets. A texture passed
+// to a helper function counts as sampled.
+bool TextureIsOnlyLoaded(const char* src, const char* end, const std::string& name,
+                         const char* declPos) {
+    static constexpr const char* kLoadFns[] = {"textureLoad", "textureDimensions",
+                                               "textureNumLevels", "textureNumLayers"};
+    for (const char* p = src; p + name.size() <= end; ++p) {
+        if (std::memcmp(p, name.data(), name.size()) != 0)
+            continue;
+        if ((p > src && IsIdent(p[-1])) || (p + name.size() < end && IsIdent(p[name.size()])))
+            continue;
+        if (p == declPos) {
+            p += name.size();
+            continue;
+        }
+        // Walk back over `((`, then read the function identifier.
+        const char* q = p;
+        bool sawParen = false;
+        while (q > src && (q[-1] == '(' || q[-1] == ' ' || q[-1] == '\t' || q[-1] == '\n' ||
+                           q[-1] == '\r')) {
+            sawParen |= q[-1] == '(';
+            --q;
+        }
+        const char* identEnd = q;
+        while (q > src && IsIdent(q[-1]))
+            --q;
+        const std::string fn(q, identEnd - q);
+        bool isLoad = false;
+        for (const char* f : kLoadFns)
+            isLoad |= fn == f;
+        // And forward: the name must be the whole argument, not `name.member`.
+        const char* r = p + name.size();
+        while (r < end && (*r == ')' || *r == ' '))
+            ++r;
+        if (!sawParen || !isLoad || r >= end || (*r != ',' && r[-1] != ')'))
+            return false;
+        p += name.size();
+    }
+    return true;
+}
+
+// Every `@group(G) @binding(N) var[<q>] name : type;` in a WGSL module.
+std::vector<WgslBinding> ScanWgslBindings(const char* src, usize len) {
+    std::vector<WgslBinding> out;
+    if (!src || len == 0)
+        return out;
+    const char* end = src + len;
+    const char* p = src;
+    while (p < end) {
+        const char* at = static_cast<const char*>(std::memchr(p, '@', end - p));
+        if (!at)
+            break;
+        p = at;
+        bool haveGroup = false;
+        bool haveBinding = false;
+        WgslBinding b{};
+        // Consume a run of attributes.
+        while (p < end && *p == '@') {
+            const char* attrStart = ++p;
+            while (p < end && IsIdent(*p))
+                ++p;
+            const std::string attr(attrStart, p - attrStart);
+            const char* save = p;
+            u32 v = 0;
+            if (attr == "group" && ParseAttrInt(p, end, v)) {
+                b.group = v;
+                haveGroup = true;
+            } else if (attr == "binding" && ParseAttrInt(p, end, v)) {
+                b.binding = v;
+                haveBinding = true;
+            } else {
+                p = save;
+            }
+            p = SkipWsAndComments(p, end);
+        }
+        if (!haveGroup || !haveBinding)
+            continue;
+        if (end - p < 4 || std::memcmp(p, "var", 3) != 0 || IsIdent(p[3]))
+            continue;
+        p += 3;
+        std::string qualifier;
+        if (p < end && *p == '<') {
+            const char* close = static_cast<const char*>(std::memchr(p, '>', end - p));
+            if (!close)
+                break;
+            qualifier.assign(p + 1, close - p - 1);
+            p = close + 1;
+        }
+        p = SkipWsAndComments(p, end);
+        const char* nameStart = p;
+        while (p < end && IsIdent(*p))
+            ++p;
+        const std::string name(nameStart, p - nameStart);
+        p = SkipWsAndComments(p, end);
+        if (p >= end || *p != ':')
+            continue;
+        p = SkipWsAndComments(p + 1, end);
+        const char* typeStart = p;
+        while (p < end && *p != ';')
+            ++p;
+        std::string type(typeStart, p - typeStart);
+        type.erase(std::remove_if(type.begin(), type.end(),
+                                  [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }),
+                   type.end());
+        if (b.group >= kMaxBindGroups || b.binding >= kMaxBindingIndex ||
+            !ClassifyWgslResourceType(qualifier, type, b)) {
+            std::fprintf(stderr, "[wgpu] unsupported WGSL binding @group(%u) @binding(%u) %s : %s\n",
+                         b.group, b.binding, name.c_str(), type.c_str());
+            continue;
+        }
+        if (b.kind == WgslBindingKind::Texture && b.sampleType == wgpu::TextureSampleType::Float &&
+            TextureIsOnlyLoaded(src, end, name, nameStart))
+            b.sampleType = wgpu::TextureSampleType::UnfilterableFloat;
+        out.push_back(b);
+    }
+    return out;
+}
+
+// Merge the two stages' declarations into per-group layouts (deduplicated in
+// the device state) and a pipeline layout. Fails when the stages declare the
+// same binding with different types.
+wgpu::PipelineLayout ResolvePipelineLayout(WebGPUDeviceState& state, const ShaderEntry* vs,
+                                           const ShaderEntry* ps, PipelineEntry& pipe) {
+    struct Merged {
+        WgslBinding decl;
+        wgpu::ShaderStage visibility = wgpu::ShaderStage::None;
+    };
+    std::array<std::vector<Merged>, kMaxBindGroups> groups;
+    u32 groupCount = 0;
+    auto add = [&](const ShaderEntry* shader, wgpu::ShaderStage stage) {
+        if (!shader)
+            return true;
+        for (const WgslBinding& b : shader->bindings) {
+            auto& list = groups[b.group];
+            auto it = std::find_if(list.begin(), list.end(),
+                                   [&](const Merged& m) { return m.decl.binding == b.binding; });
+            if (it == list.end()) {
+                list.push_back({b, stage});
+            } else {
+                Merged& m = *it;
+                const bool texturePair = m.decl.kind == WgslBindingKind::Texture &&
+                                         b.kind == WgslBindingKind::Texture;
+                const bool floatPair = texturePair &&
+                                       (m.decl.sampleType == wgpu::TextureSampleType::Float ||
+                                        m.decl.sampleType == wgpu::TextureSampleType::UnfilterableFloat) &&
+                                       (b.sampleType == wgpu::TextureSampleType::Float ||
+                                        b.sampleType == wgpu::TextureSampleType::UnfilterableFloat);
+                const bool same = m.decl.kind == b.kind &&
+                                  (!texturePair || ((m.decl.sampleType == b.sampleType || floatPair) &&
+                                                    m.decl.viewDimension == b.viewDimension &&
+                                                    m.decl.multisampled == b.multisampled));
+                if (!same) {
+                    std::fprintf(stderr,
+                                 "[wgpu] VS and PS declare @group(%u) @binding(%u) with different types\n",
+                                 b.group, b.binding);
+                    return false;
+                }
+                // A sampled use in either stage makes the entry filterable.
+                if (floatPair && b.sampleType == wgpu::TextureSampleType::Float)
+                    m.decl.sampleType = wgpu::TextureSampleType::Float;
+                m.visibility |= stage;
+            }
+            groupCount = std::max(groupCount, b.group + 1);
+        }
+        return true;
+    };
+    if (!add(vs, wgpu::ShaderStage::Vertex) || !add(ps, wgpu::ShaderStage::Fragment))
+        return {};
+
+    u64 pipelineKey = groupCount;
+    for (u32 g = 0; g < groupCount; ++g) {
+        auto& list = groups[g];
+        std::sort(list.begin(), list.end(),
+                  [](const Merged& a, const Merged& b) { return a.decl.binding < b.decl.binding; });
+        std::string key;
+        std::vector<wgpu::BindGroupLayoutEntry> entries;
+        entries.reserve(list.size());
+        u8 kindMask = 0;
+        for (const Merged& m : list) {
+            wgpu::BindGroupLayoutEntry e{};
+            e.binding = m.decl.binding;
+            e.visibility = m.visibility;
+            switch (m.decl.kind) {
+            case WgslBindingKind::Uniform:
+                e.buffer.type = wgpu::BufferBindingType::Uniform;
+                kindMask |= kBindKindConstant;
+                break;
+            case WgslBindingKind::ReadOnlyStorage:
+                e.buffer.type = wgpu::BufferBindingType::ReadOnlyStorage;
+                kindMask |= kBindKindResource;
+                break;
+            case WgslBindingKind::Storage:
+                e.buffer.type = wgpu::BufferBindingType::Storage;
+                kindMask |= kBindKindResource;
+                break;
+            case WgslBindingKind::Texture:
+                e.texture.sampleType = m.decl.sampleType;
+                e.texture.viewDimension = m.decl.viewDimension;
+                e.texture.multisampled = m.decl.multisampled;
+                kindMask |= kBindKindResource;
+                break;
+            case WgslBindingKind::Sampler:
+                e.sampler.type = wgpu::SamplerBindingType::Filtering;
+                kindMask |= kBindKindSampler;
+                break;
+            case WgslBindingKind::ComparisonSampler:
+                e.sampler.type = wgpu::SamplerBindingType::Comparison;
+                kindMask |= kBindKindSampler;
+                break;
+            }
+            entries.push_back(e);
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%u:%u:%u:%u:%u:%u;", m.decl.binding,
+                          static_cast<u32>(m.decl.kind), static_cast<u32>(m.decl.sampleType),
+                          static_cast<u32>(m.decl.viewDimension), m.decl.multisampled ? 1u : 0u,
+                          static_cast<u32>(m.visibility));
+            key += buf;
+        }
+        u32 id = 0;
+        if (auto it = state.bindLayoutIds.find(key); it != state.bindLayoutIds.end()) {
+            id = it->second;
+        } else {
+            wgpu::BindGroupLayoutDescriptor d{};
+            d.label = "wf.bindLayout";
+            d.entryCount = entries.size();
+            d.entries = entries.empty() ? nullptr : entries.data();
+            WebGPUDeviceState::BindLayout layout{state.device.CreateBindGroupLayout(&d),
+                                                 std::move(entries), kindMask};
+            if (!layout.layout)
+                return {};
+            id = static_cast<u32>(state.bindLayouts.size());
+            state.bindLayouts.push_back(std::move(layout));
+            state.bindLayoutIds.emplace(std::move(key), id);
+        }
+        pipe.groupLayouts[g] = id;
+        pipelineKey |= static_cast<u64>(id & 0x7FFF) << (4 + 15 * g);
+    }
+    pipe.groupCount = groupCount;
+
+    if (auto it = state.pipelineLayouts.find(pipelineKey); it != state.pipelineLayouts.end())
+        return it->second;
+    std::array<wgpu::BindGroupLayout, kMaxBindGroups> layouts;
+    for (u32 g = 0; g < groupCount; ++g)
+        layouts[g] = state.bindLayouts[pipe.groupLayouts[g]].layout;
+    wgpu::PipelineLayoutDescriptor pld{};
+    pld.label = "wf.pipelineLayout";
+    pld.bindGroupLayoutCount = groupCount;
+    pld.bindGroupLayouts = groupCount ? layouts.data() : nullptr;
+    wgpu::PipelineLayout layout = state.device.CreatePipelineLayout(&pld);
+    if (layout)
+        state.pipelineLayouts.emplace(pipelineKey, layout);
+    return layout;
+}
+
 } // namespace
 
 ShaderHandle WebGPUDevice::CreateShader(ShaderStage stage, const void* bytecode, usize size) {
@@ -400,6 +735,7 @@ ShaderHandle WebGPUDevice::CreateShader(ShaderStage stage, const void* bytecode,
     entry.entryPoint = FindEntryPointName(asText, textLen, stage);
     if (stage == ShaderStage::Vertex)
         entry.vertexLocations = ScanVertexLocations(asText, textLen, entry.entryPoint);
+    entry.bindings = ScanWgslBindings(asText, textLen);
     return static_cast<ShaderHandle>(state.shaders.Insert(std::move(entry)));
 }
 
@@ -441,7 +777,7 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     // type so Dawn's type-compat check passes. Skipped silently when
     // zeroVertexBuffer didn't create (init.cpp logs separately).
     std::vector<VertexInputLocation> phantomFields;
-    std::vector<u32> phantomSlots;
+    i32 phantomSlot = -1;
     if (state.zeroVertexBuffer) {
         for (const auto& vl : vs->vertexLocations) {
             if (std::find(declaredLocations.begin(), declaredLocations.end(), vl.location) ==
@@ -450,11 +786,18 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         }
     }
 
-    std::vector<wgpu::VertexBufferLayout> buffers;
-    for (u32 i = 0; i < slotUsed.size(); ++i) {
+    // Buffer index == the gfx slot the renderer binds with BindVertexBuffer,
+    // so a slot the layout skips becomes an unused entry (Undefined step mode,
+    // no attributes) rather than shifting the slots after it down.
+    u32 realSlotCount = 0;
+    for (u32 i = 0; i < slotUsed.size(); ++i)
+        if (slotUsed[i])
+            realSlotCount = i + 1;
+    std::vector<wgpu::VertexBufferLayout> buffers(realSlotCount);
+    for (u32 i = 0; i < realSlotCount; ++i) {
         if (!slotUsed[i])
             continue;
-        wgpu::VertexBufferLayout vbl{};
+        wgpu::VertexBufferLayout& vbl = buffers[i];
         // Explicit stride wins over the inferred high-water mark — see
         // GraphicsPipelineDesc::inputSlotStrides.
         vbl.arrayStride = (i < kMaxVertexInputSlots && desc.inputSlotStrides[i] != 0)
@@ -463,24 +806,27 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         vbl.stepMode = wgpu::VertexStepMode::Vertex;
         vbl.attributeCount = static_cast<u32>(slotAttrs[i].size());
         vbl.attributes = slotAttrs[i].data();
-        buffers.push_back(vbl);
     }
-    // Phantom layouts: one VertexBufferLayout each, format derived from
-    // the VS field's declared WGSL type. The zero buffer reads as zero
-    // for every supported format, so accuracy beyond type-compat
-    // doesn't matter — Dawn just needs format & shader type to agree.
+    // Phantoms share one per-instance buffer right after the real slots, one
+    // 16-byte lane each, format derived from the VS field's declared WGSL
+    // type. The zero buffer reads as zero for every supported format, so
+    // accuracy beyond type-compat doesn't matter — Dawn just needs format &
+    // shader type to agree.
     std::vector<wgpu::VertexAttribute> phantomAttrs(phantomFields.size());
-    for (usize i = 0; i < phantomFields.size(); ++i) {
-        const u32 slot = static_cast<u32>(buffers.size());
-        phantomSlots.push_back(slot);
-        phantomAttrs[i].shaderLocation = phantomFields[i].location;
-        phantomAttrs[i].offset = 0;
-        phantomAttrs[i].format = PickPhantomFormat(phantomFields[i].typeName);
+    constexpr u64 kPhantomLane = 16;
+    if (!phantomFields.empty() && realSlotCount < kMaxVertexInputSlots &&
+        phantomFields.size() * kPhantomLane <= kZeroVertexBufferBytes) {
+        for (usize i = 0; i < phantomFields.size(); ++i) {
+            phantomAttrs[i].shaderLocation = phantomFields[i].location;
+            phantomAttrs[i].offset = i * kPhantomLane;
+            phantomAttrs[i].format = PickPhantomFormat(phantomFields[i].typeName);
+        }
         wgpu::VertexBufferLayout vbl{};
-        vbl.arrayStride = 16;
+        vbl.arrayStride = phantomFields.size() * kPhantomLane;
         vbl.stepMode = wgpu::VertexStepMode::Instance;
-        vbl.attributeCount = 1;
-        vbl.attributes = &phantomAttrs[i];
+        vbl.attributeCount = phantomAttrs.size();
+        vbl.attributes = phantomAttrs.data();
+        phantomSlot = static_cast<i32>(buffers.size());
         buffers.push_back(vbl);
     }
 
@@ -552,9 +898,14 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         depth.depthBiasClamp = desc.rasterizer.depthBiasClamp;
     }
 
+    PipelineEntry entry{};
+    wgpu::PipelineLayout layout = ResolvePipelineLayout(state, vs, ps, entry);
+    if (!layout)
+        return PipelineHandle::Invalid;
+
     wgpu::RenderPipelineDescriptor rpd{};
     rpd.label = "wf.gfxPipeline";
-    rpd.layout = state.pipelineLayout;
+    rpd.layout = layout;
     rpd.vertex.module = vs->module;
     rpd.vertex.entryPoint = vs->entryPoint.c_str();
     rpd.vertex.bufferCount = static_cast<u32>(buffers.size());
@@ -570,23 +921,18 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     if (!pso)
         return PipelineHandle::Invalid;
 
-    PipelineEntry entry{};
     entry.graphics = std::move(pso);
     entry.isCompute = false;
     entry.colorFormat = colorTargetCount ? colorTargets[0].format : wgpu::TextureFormat::Undefined;
-    entry.phantomVertexSlots = std::move(phantomSlots);
+    entry.phantomVertexSlot = phantomSlot;
     return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
 }
 
 PipelineHandle WebGPUDevice::CreateComputePipeline(const ComputePipelineDesc& desc) {
-    // The shared graphics pipelineLayout has Vertex|Fragment visibility on
-    // every binding and the wrong slot *types* for compute (uniform vs.
-    // storage). Building a compute PSO against it would fail Dawn
-    // validation noisily on every WebGPU launch. Dispatch() is also still
-    // a stub (see webgpu_command_list.cpp), so compute work is
-    // unreachable today. Return Invalid; FrameCapture::EnsureResources
-    // fail-soft handles this. Wire up a dedicated compute layout (and
-    // Dispatch) when a real compute path lands.
+    // Dispatch() is still a stub (see webgpu_command_list.cpp), so compute
+    // work is unreachable today. Return Invalid; FrameCapture::EnsureResources
+    // fail-soft handles this. ResolvePipelineLayout can build the compute
+    // layout when a real compute path lands.
     (void)desc;
     return PipelineHandle::Invalid;
 }
@@ -609,6 +955,7 @@ SamplerHandle WebGPUDevice::CreateSampler(const SamplerDesc& desc) {
 
     SamplerEntry entry{};
     entry.sampler = state.device.CreateSampler(&sd);
+    entry.comparison = desc.comparison;
     if (!entry.sampler)
         return SamplerHandle::Invalid;
     return static_cast<SamplerHandle>(state.samplers.Insert(std::move(entry)));

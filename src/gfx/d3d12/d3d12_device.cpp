@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,13 @@ const std::string& GetPreferredDevice();
 namespace whiteout::flakes::gfx::d3d12 {
 
 namespace {
+
+// Ring alignment for a CPU-writable buffer. A structured buffer's SRV names its
+// slot by element index, so the slot offset must be a multiple of the stride.
+u64 RingAlignment(const BufferDesc& desc) {
+    const u64 base = hasFlag(desc.usage, BufferUsage::Constant) ? 256 : 16;
+    return desc.elementStride > 0 ? std::lcm<u64>(base, desc.elementStride) : base;
+}
 
 // Same UTF-16 → UTF-8 conversion as in d3d11_device.cpp. Duplicated
 // rather than pulled into a shared header because gfx_factory.cpp is
@@ -101,6 +109,8 @@ D3D12Device::~D3D12Device() {
     uploadRing_.Release();
     cbvSrvUavRing_.Release();
     samplerRing_.Release();
+    samplerTables_.clear();
+    samplerTableHead_ = 0;
     cbvSrvUavPool_.Release();
     samplerPool_.Release();
     rtvPool_.Release();
@@ -260,7 +270,8 @@ bool D3D12Device::CreateDescriptorPools() {
     if (!samplerPool_.Init(device_, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 2048))
         return false;
 
-    if (!cbvSrvUavRing_.Init(device_, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 65536))
+    // Two 32-entry SRV tables per draw.
+    if (!cbvSrvUavRing_.Init(device_, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 262144))
         return false;
     if (!samplerRing_.Init(device_, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 2048))
         return false;
@@ -330,54 +341,12 @@ bool D3D12Device::CreateRootSignatures() {
             p.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         }
 
-        D3D12_STATIC_SAMPLER_DESC staticSamplers[7] = {};
-        auto MakeSampler = [](UINT shaderRegister, D3D12_TEXTURE_ADDRESS_MODE addressMode) {
-            D3D12_STATIC_SAMPLER_DESC s{};
-            s.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-            s.AddressU = addressMode;
-            s.AddressV = addressMode;
-            s.AddressW = addressMode;
-            s.MipLODBias = 0.0f;
-            s.MaxAnisotropy = 0;
-            s.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-            s.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-            s.MinLOD = 0.0f;
-            s.MaxLOD = D3D12_FLOAT32_MAX;
-            s.ShaderRegister = shaderRegister;
-            s.RegisterSpace = 0;
-            s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-            return s;
-        };
-        auto MakeShadowSampler = [](UINT shaderRegister) {
-            D3D12_STATIC_SAMPLER_DESC s{};
-            s.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-            s.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-            s.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-            s.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-            s.MipLODBias = 0.0f;
-            s.MaxAnisotropy = 0;
-            s.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-            s.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-            s.MinLOD = 0.0f;
-            s.MaxLOD = D3D12_FLOAT32_MAX;
-            s.ShaderRegister = shaderRegister;
-            s.RegisterSpace = 0;
-            s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-            return s;
-        };
-        staticSamplers[0] = MakeSampler(4, D3D12_TEXTURE_ADDRESS_MODE_WRAP);
-        staticSamplers[1] = MakeShadowSampler(10);
-        staticSamplers[2] = MakeShadowSampler(11);
-        staticSamplers[3] = MakeShadowSampler(12);
-        staticSamplers[4] = MakeSampler(13, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-        staticSamplers[5] = MakeSampler(14, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-        staticSamplers[6] = MakeSampler(15, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-
+        // No static samplers: a register can't sit in both a static sampler and
+        // the table, and 3.0.0 binds s4..s13 itself. Unbound slots read
+        // GetDefaultSamplerPs.
         D3D12_ROOT_SIGNATURE_DESC rsd{};
         rsd.NumParameters = static_cast<UINT>(GraphicsRP::Count);
         rsd.pParameters = params;
-        rsd.NumStaticSamplers = 7;
-        rsd.pStaticSamplers = staticSamplers;
         rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ID3DBlob* blob = nullptr;
@@ -412,7 +381,7 @@ bool D3D12Device::CreateRootSignatures() {
 
         D3D12_DESCRIPTOR_RANGE samplerRange{};
         samplerRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-        samplerRange.NumDescriptors = kSamplersPerStage;
+        samplerRange.NumDescriptors = kSamplersForCompute;
         samplerRange.BaseShaderRegister = 0;
         samplerRange.RegisterSpace = 0;
         samplerRange.OffsetInDescriptorsFromTableStart = 0;
@@ -496,7 +465,68 @@ bool D3D12Device::CreateNullDescriptors() {
     sampd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
     sampd.MaxLOD = D3D12_FLOAT32_MAX;
     device_->CreateSampler(&sampd, nullSampler_);
+
+    auto makeSampler = [&](D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE mode,
+                           D3D12_COMPARISON_FUNC func) {
+        D3D12_SAMPLER_DESC d{};
+        d.Filter = filter;
+        d.AddressU = mode;
+        d.AddressV = mode;
+        d.AddressW = mode;
+        d.ComparisonFunc = func;
+        d.BorderColor[0] = d.BorderColor[1] = d.BorderColor[2] = d.BorderColor[3] = 1.0f;
+        d.MaxLOD = D3D12_FLOAT32_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE h = samplerPool_.Allocate();
+        device_->CreateSampler(&d, h);
+        return h;
+    };
+    const auto wrap = makeSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                                  D3D12_COMPARISON_FUNC_NEVER);
+    const auto clamp = makeSampler(D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+                                   D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_COMPARISON_FUNC_NEVER);
+    const auto shadow = makeSampler(D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR,
+                                    D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+                                    D3D12_COMPARISON_FUNC_LESS_EQUAL);
+    defaultSamplersPs_.fill(nullSampler_);
+    defaultSamplersPs_[4] = wrap;
+    defaultSamplersPs_[9] = shadow;
+    defaultSamplersPs_[10] = shadow;
+    for (u32 i = 11; i < kSamplersPerStage; ++i)
+        defaultSamplersPs_[i] = clamp;
     return true;
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12Device::SamplerTable(const D3D12_CPU_DESCRIPTOR_HANDLE* samplers,
+                                                      u32 count) {
+    SamplerTableKey key{};
+    for (u32 i = 0; i < count; ++i)
+        key[i] = samplers[i].ptr;
+    key[kSamplersPerStage] = count;
+    if (auto it = samplerTables_.find(key); it != samplerTables_.end())
+        return it->second;
+
+    const u32 capacity = static_cast<u32>(samplerRing_.Heap()->GetDesc().NumDescriptors);
+    if (samplerTableHead_ + count > capacity) {
+        // Only reachable after ~128 distinct sets; reusing the heap can race a
+        // frame still in flight, so say so rather than fail silently.
+        std::fprintf(stderr, "[d3d12] sampler table cache full (%zu sets), recycling\n",
+                     samplerTables_.size());
+        samplerTables_.clear();
+        samplerTableHead_ = 0;
+    }
+
+    const u32 stride = samplerRing_.Stride();
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = samplerRing_.Heap()->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = samplerRing_.Heap()->GetGPUDescriptorHandleForHeapStart();
+    cpu.ptr += static_cast<SIZE_T>(samplerTableHead_) * stride;
+    gpu.ptr += static_cast<UINT64>(samplerTableHead_) * stride;
+    for (u32 i = 0; i < count; ++i) {
+        D3D12_CPU_DESCRIPTOR_HANDLE dst{cpu.ptr + static_cast<SIZE_T>(i) * stride};
+        device_->CopyDescriptorsSimple(1, dst, samplers[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    }
+    samplerTableHead_ += count;
+    samplerTables_.emplace(key, gpu);
+    return gpu;
 }
 
 bool D3D12Device::OpenCommandList() {
@@ -684,10 +714,7 @@ void D3D12Device::UpdateBuffer(BufferHandle h, const void* data, usize size) {
 
     if (hasFlag(e->desc.usage, BufferUsage::CpuWritable)) {
 
-        u64 align = hasFlag(e->desc.usage, BufferUsage::Constant) ? 256 : 16;
-        if (e->desc.elementStride > 0)
-            align = std::max<u64>(align, e->desc.elementStride);
-        auto alloc = uploadRing_.Allocate(size, align);
+        auto alloc = uploadRing_.Allocate(size, RingAlignment(e->desc));
         std::memcpy(alloc.cpu, data, size);
         e->cpuWritableVA = alloc.gpu;
         e->cpuWritablePtr = alloc.cpu;
@@ -742,10 +769,7 @@ void* D3D12Device::MapBuffer(BufferHandle h) {
     if (!hasFlag(e->desc.usage, BufferUsage::CpuWritable))
         return nullptr;
 
-    u64 align = hasFlag(e->desc.usage, BufferUsage::Constant) ? 256 : 16;
-    if (e->desc.elementStride > 0)
-        align = std::max<u64>(align, e->desc.elementStride);
-    auto alloc = uploadRing_.Allocate(e->desc.size, align);
+    auto alloc = uploadRing_.Allocate(e->desc.size, RingAlignment(e->desc));
     e->cpuWritableVA = alloc.gpu;
     e->cpuWritablePtr = alloc.cpu;
 
@@ -914,12 +938,35 @@ TextureHandle D3D12Device::CreateTexture(const TextureDesc& desc, const void* in
         entry.dsvCpu = dsvPool_.Allocate();
         D3D12_DEPTH_STENCIL_VIEW_DESC dd{};
         dd.Format = ToDXGI(desc.format);
-        dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        if (arraySlices > 1) {
+            dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+            dd.Texture2DArray.ArraySize = arraySlices;
+        } else {
+            dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        }
         device_->CreateDepthStencilView(entry.resource, &dd, entry.dsvCpu);
         entry.hasDsv = true;
     }
 
     return static_cast<TextureHandle>(textures_.Insert(std::move(entry)));
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12Device::DepthSliceDsv(TextureEntry& e, u32 slice) {
+    if (!e.resource || !e.hasDsv || slice >= static_cast<u32>(std::max(1, e.desc.arraySize)))
+        return D3D12_CPU_DESCRIPTOR_HANDLE{0};
+    if (e.sliceDsvs.size() <= slice)
+        e.sliceDsvs.resize(slice + 1, D3D12_CPU_DESCRIPTOR_HANDLE{0});
+    if (!e.sliceDsvs[slice].ptr) {
+        const D3D12_CPU_DESCRIPTOR_HANDLE h = dsvPool_.Allocate();
+        D3D12_DEPTH_STENCIL_VIEW_DESC dd{};
+        dd.Format = ToDXGI(e.desc.format);
+        dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        dd.Texture2DArray.FirstArraySlice = slice;
+        dd.Texture2DArray.ArraySize = 1;
+        device_->CreateDepthStencilView(e.resource, &dd, h);
+        e.sliceDsvs[slice] = h;
+    }
+    return e.sliceDsvs[slice];
 }
 
 void D3D12Device::Destroy(TextureHandle h) {
@@ -933,6 +980,9 @@ void D3D12Device::Destroy(TextureHandle h) {
             rtvPool_.Free(e->rtvCpu);
         if (e->hasDsv)
             dsvPool_.Free(e->dsvCpu);
+        for (const auto& slice : e->sliceDsvs)
+            if (slice.ptr)
+                dsvPool_.Free(slice);
 
         if (e->ownsResource) {
             DeferredRelease(e->resource);
@@ -1172,8 +1222,15 @@ void D3D12Device::Destroy(SamplerHandle h) {
         return;
     auto* e = samplers_.Get(static_cast<u64>(h));
     if (e) {
-        if (e->valid)
+        if (e->valid) {
+            // The freed CPU descriptor can come back as a different sampler, so
+            // forget every cached table keyed on it.
+            const SIZE_T freed = e->samplerCpu.ptr;
+            std::erase_if(samplerTables_, [&](const auto& kv) {
+                return std::find(kv.first.begin(), kv.first.end() - 1, freed) != kv.first.end() - 1;
+            });
             samplerPool_.Free(e->samplerCpu);
+        }
         e->Release();
     }
     samplers_.Remove(static_cast<u64>(h));

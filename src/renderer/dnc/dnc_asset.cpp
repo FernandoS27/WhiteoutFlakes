@@ -5,6 +5,7 @@
 
 #include <whiteout/vector_types.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -64,7 +65,10 @@ DncSample Sample(const DncAsset& asset, f32 todHours, f32 hoursPerDay, f32 ambMo
                                         asset.seqEndMs, L.ambientIntensity));
     s.ambient = {ambColor.x * ambModifier + ambI, ambColor.y * ambModifier + ambI,
                  ambColor.z * ambModifier + ambI};
-    s.ambientColor = ambColor;
+    s.ambientColor = {std::clamp(ambColor.x, 0.0f, 1.0f), std::clamp(ambColor.y, 0.0f, 1.0f),
+                      std::clamp(ambColor.z, 0.0f, 1.0f)};
+    s.ambientIntensity = ambI;
+    s.shadowIntensity = L.shadowIntensity;
 
     s.worldDir = whiteout::transform_normal(Vector3f{0.0f, 0.0f, -1.0f}, lightWorld);
     const f32 n2 =

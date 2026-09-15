@@ -17,6 +17,8 @@ public:
                          const f32 (*clearColors)[4], f32 clearDepth, u8 clearStencil) override;
     void BeginRenderPassLoad(TextureHandle color, TextureHandle depth, f32 clearDepth,
                              u8 clearStencil, bool loadDepth) override;
+    bool BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                             u8 clearStencil) override;
     void EndRenderPass() override;
 
     // GPU profiler zones are Vulkan-only today. Stubs keep the

@@ -1064,6 +1064,16 @@ FrameState MdxModelAdapter::Evaluate(const ::whiteout::flakes::PoseRequest& req)
         }
         ls.attenStart = L.attenuationStart;
         ls.attenEnd = L.attenuationEnd;
+        ls.quadraticFalloff = L.quadraticFalloff;
+        ls.linearFalloff = L.linearFalloff;
+        ls.damping = L.damping;
+        ls.shadowIntensity = L.shadowIntensity;
+        ls.shadowCasting = L.shadowCasting;
+        ls.shadowCastingStart = L.shadowCastingStart;
+        ls.shadowCastingEnd = L.shadowCastingEnd;
+        // EnvSet field 13: a light whose node is named Key_ShadowCast claims a
+        // point-shadow slot before any other caster.
+        ls.shadowPriority = L.node.name.find("Key_ShadowCast") != std::string::npos;
         fs.lights.push_back(ls);
     }
 

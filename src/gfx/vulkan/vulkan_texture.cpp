@@ -202,8 +202,9 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc, const void* i
     // an eCube here would have meant one shader declaration could not satisfy
     // both families; a one-element cube array satisfies all four. arraySize is
     // a multiple of 6 either way.
-    vk::ImageViewType viewType =
-        desc.isCube ? vk::ImageViewType::eCubeArray : vk::ImageViewType::e2D;
+    vk::ImageViewType viewType = desc.isCube            ? vk::ImageViewType::eCubeArray
+                                 : (desc.arraySize > 1) ? vk::ImageViewType::e2DArray
+                                                        : vk::ImageViewType::e2D;
     auto viewR = state.device.createImageView({
         .image = vk::Image(texture.image),
         .viewType = viewType,
@@ -228,6 +229,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc, const void* i
     texture.currentLayout = vk::ImageLayout::eUndefined;
     texture.width = desc.width;
     texture.height = desc.height;
+    texture.arrayLayers = static_cast<u32>(std::max(1, desc.arraySize));
     texture.ownsImage = true;
 
     const bool sampled = hasFlag(desc.usage, TextureUsage::ShaderResource);
@@ -322,6 +324,26 @@ TextureHandle VulkanDevice::CreateDepthTarget(i32 w, i32 h, Format f) {
     return CreateRenderTargetImage(
         *state_, w, h, fmt,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, aspect);
+}
+
+VkImageView DepthSliceView(VulkanDeviceState& state, TextureEntry& texture, u32 slice) {
+    if (!texture.image || slice >= texture.arrayLayers ||
+        !(texture.aspect & vk::ImageAspectFlagBits::eDepth))
+        return VK_NULL_HANDLE;
+    while (texture.sliceViews.size() <= slice)
+        texture.sliceViews.emplace_back(nullptr);
+    if (!*texture.sliceViews[slice]) {
+        auto viewR = state.device.createImageView({
+            .image = vk::Image(texture.image),
+            .viewType = vk::ImageViewType::e2D,
+            .format = texture.format,
+            .subresourceRange = {texture.aspect, 0, 1, slice, 1},
+        });
+        if (viewR.result != vk::Result::eSuccess)
+            return VK_NULL_HANDLE;
+        texture.sliceViews[slice] = std::move(viewR.value);
+    }
+    return *texture.sliceViews[slice];
 }
 
 void VulkanDevice::Destroy(TextureHandle h) {

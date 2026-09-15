@@ -278,6 +278,22 @@ void BindLayerAlbedo(gfx::IGFXCommandList* cmd, TextureAssetManager::ModelScope*
     cmd->BindSampler(gfx::ShaderStage::Pixel, slot, samplers.WrapVariant(wrapFlags));
 }
 
+bls::FogParams FogParamsFrom(const RenderSettings::WorldFog& fog) {
+    bls::FogParams out;
+    out.mode = std::clamp(fog.mode, 0, 6);
+    out.colorSrgb = {fog.color[0] / 255.0f, fog.color[1] / 255.0f, fog.color[2] / 255.0f};
+    out.start = fog.start;
+    out.end = fog.end;
+    out.density = fog.density;
+    out.heightTop = fog.heightTop;
+    out.heightBottom = fog.heightBottom;
+    out.radialInner = fog.radialInner;
+    out.radialOuter = fog.radialOuter;
+    out.radialStrength = fog.radialStrength;
+    out.everywhere = fog.everywhere;
+    return out;
+}
+
 void WriteCbPerFrame(gfx::IGFXDevice* gfx, gfx::BufferHandle cb, const CbPerFrameDesc& d) {
     if (!gfx || cb == gfx::BufferHandle::Invalid)
         return;

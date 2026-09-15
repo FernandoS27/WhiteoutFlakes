@@ -132,10 +132,10 @@ TextureHandle WebGPUDevice::CreateTexture(const TextureDesc& desc, const void* i
 
     wgpu::TextureViewDescriptor vd{};
     vd.format = fmt;
-    // CubeArray for every cube, a lone one included — the shared SRV layout
-    // types its cube slots CubeArray, and D3D builds TEXTURECUBEARRAY SRVs
-    // unconditionally, so one shader declaration has to serve both. Plain 2D /
-    // 2D-array otherwise.
+    // CubeArray for every cube, a lone one included: D3D builds
+    // TEXTURECUBEARRAY SRVs unconditionally and the shaders declare
+    // texture_cube_array. Plain 2D / 2D-array otherwise. A binding that
+    // declares another dimension gets an alternate view at bind time.
     if (desc.isCube) {
         vd.dimension = wgpu::TextureViewDimension::CubeArray;
     } else if (td.size.depthOrArrayLayers > 1) {
@@ -156,6 +156,7 @@ TextureHandle WebGPUDevice::CreateTexture(const TextureDesc& desc, const void* i
     TextureEntry entry{};
     entry.texture = std::move(tex);
     entry.view = std::move(view);
+    entry.viewDimension = vd.dimension;
     entry.format = fmt;
     entry.width = desc.width;
     entry.height = desc.height;

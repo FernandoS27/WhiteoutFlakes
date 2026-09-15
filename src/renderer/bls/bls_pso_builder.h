@@ -7,6 +7,7 @@
 #include "whiteout/flakes/types.h"
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace whiteout::flakes::renderer::bls {
@@ -109,6 +110,9 @@ public:
 private:
     gfx::IGFXDevice* device_ = nullptr;
     std::unordered_map<u64, gfx::PipelineHandle> cache_;
+    // (program, vs, ps) keys already reported out of range, so a permuter that
+    // disagrees with the loaded bundle says so once instead of every frame.
+    std::unordered_set<u64> reportedOutOfRange_;
     BlsPsoTrace* trace_ = nullptr;
     BlsPsoBuilderStats stats_{};
     bool inReplay_ = false;

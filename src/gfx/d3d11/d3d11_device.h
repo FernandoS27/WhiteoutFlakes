@@ -81,6 +81,8 @@ public:
     TextureEntry* GetTexture(TextureHandle h) {
         return textures_.Get(static_cast<u64>(h));
     }
+    // DSV of one slice of a depth texture array; null when out of range.
+    ID3D11DepthStencilView* DepthSliceView(TextureEntry& e, u32 slice);
     PipelineEntry* GetPipeline(PipelineHandle h) {
         return pipelines_.Get(static_cast<u64>(h));
     }

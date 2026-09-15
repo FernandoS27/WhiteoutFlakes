@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
 
 namespace whiteout::flakes::renderer::bls {
 
@@ -22,12 +23,14 @@ constexpr gfx::InputElement kMeshSDTc2[] = {
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 32, 0},
 };
 
+// Skinning streams carry weights at offset 0 and bone indices at offset 4.
+// 3.0.0 swapped the semantics: indices are ATTR5 (uint), weights ATTR6 (float).
 constexpr gfx::InputElement kMeshSDSkinned[] = {
     {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
     {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
 };
 
 constexpr gfx::InputElement kParticleSD[] = {
@@ -42,8 +45,8 @@ constexpr gfx::InputElement kParticleSDSkinned[] = {
     {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
 };
 
 constexpr gfx::InputElement kMeshHDTangent[] = {
@@ -60,8 +63,8 @@ constexpr gfx::InputElement kMeshHDSkinned[] = {
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 2},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 2},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 2},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 2},
 };
 
 constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
@@ -69,8 +72,8 @@ constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
     {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
 };
 
 // CornEffects (BasicUV-mode subset). Matches the corn fx VS HAS_VC=1 /
@@ -111,8 +114,8 @@ constexpr gfx::InputElement kMeshSDFull[] = {
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
 };
 
@@ -122,8 +125,8 @@ constexpr gfx::InputElement kMeshSDTc2Full[] = {
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 32, 0},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
 };
 
@@ -131,8 +134,8 @@ constexpr gfx::InputElement kMeshSDSkinnedFull[] = {
     {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
     {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
@@ -145,8 +148,8 @@ constexpr gfx::InputElement kMeshHDTangentFull[] = {
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},   // aliased
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0}, // aliased
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},  // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 0}, // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 0, 0},  // aliased
 };
 
 constexpr gfx::InputElement kMeshHDSkinnedFull[] = {
@@ -155,8 +158,8 @@ constexpr gfx::InputElement kMeshHDSkinnedFull[] = {
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 2},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 2},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 2},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 2},
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0}, // aliased
 };
 
@@ -165,8 +168,8 @@ constexpr gfx::InputElement kMeshHDSkinnedNoTangentFull[] = {
     {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
 };
@@ -182,8 +185,8 @@ constexpr gfx::InputElement kParticleSDFull[] = {
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
 };
 
@@ -192,8 +195,8 @@ constexpr gfx::InputElement kParticleSDSkinnedFull[] = {
     {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
     {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
-    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
-    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
     {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
 };
@@ -376,6 +379,16 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
     }
     if (request.vsIndex >= request.program->vs->PermuteCount() ||
         request.psIndex >= request.program->ps->PermuteCount()) {
+        const u64 key = (u64(request.program->id) << 48) | (u64(request.vsIndex) << 24) |
+                        u64(request.psIndex);
+        if (reportedOutOfRange_.insert(key).second) {
+            std::fprintf(stderr,
+                         "[bls] program %u: permutation vs=%u/%u ps=%u/%u out of range — "
+                         "the permuter and the loaded bundle disagree\n",
+                         static_cast<u32>(request.program->id), request.vsIndex,
+                         static_cast<u32>(request.program->vs->PermuteCount()), request.psIndex,
+                         static_cast<u32>(request.program->ps->PermuteCount()));
+        }
         return gfx::PipelineHandle::Invalid;
     }
 

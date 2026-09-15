@@ -303,6 +303,14 @@ wdx_add_test(anim_math_test         anim_math_test.cpp)
 wdx_add_test(draw_trace_test        draw_trace_test.cpp)
 wdx_add_test(render_profile_test    render_profile_test.cpp)
 wdx_add_test(wc3_classify_test      wc3_classify_test.cpp)
+# The 3.0.0 BLS permuters against the shader repo's own permutation labels
+# (generated/wc3_perm_labels.inc, from tools/gen_wc3_perm_labels.py).
+wdx_add_test(bls_permuter_test      bls_permuter_test.cpp)
+# The 3.0.0 HD lighting inputs: cull radius, cluster records, main light rows.
+wdx_add_test(wc3_lighting_frame_test wc3_lighting_frame_test.cpp)
+target_include_directories(bls_permuter_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/src/renderer/corn_effects"
+                           "${WhiteoutFlakes_SOURCE_DIR}/src/renderer/corn_effects/cornflakes/internal")
 wdx_add_test(particle_curve_test    particle_curve_test.cpp)
 # The WC3/WoW dialect POD. Pins Wc3()'s defaults, which are the MDX contract
 # every "this did not move WC3" claim rests on.

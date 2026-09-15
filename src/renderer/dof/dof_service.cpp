@@ -213,7 +213,8 @@ void DofService::Run(gfx::IGFXCommandList* cmd, RenderTarget& target) {
         cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
         cmd->BindPipeline(gatherPso_);
         cmd->BindVertexBuffer(0, spriteVb_, spriteStride);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, cb_);
+        // 3.0.0 depthoffield reads its bank at b3 (b1 in 2.0.0).
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, cb_);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 1, target.linearDepth);
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, linearSampler_);

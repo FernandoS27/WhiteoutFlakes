@@ -2,9 +2,9 @@
 // fresh CommandEncoder; subsequent passes keep recording into it until
 // Present submits.
 //
-// FlushBindings translates the per-stage pending arrays into three
-// BindGroups (CB with dynamic offsets / SRV / sampler) at every draw —
-// the WebGPU equivalent of vulkan_command_list.cpp's FlushDescriptors.
+// FlushBindings translates the pending arrays into one BindGroup per group
+// of the bound pipeline's layout at every draw — the WebGPU equivalent of
+// vulkan_command_list.cpp's FlushDescriptors.
 
 #include "webgpu_command_list.h"
 #include "webgpu_device.h"
@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <unordered_set>
 #include <vector>
 
 namespace whiteout::flakes::gfx::webgpu {
@@ -50,6 +51,145 @@ inline u64 HashMix(u64 h, u64 v) {
     return h;
 }
 constexpr u64 kFnv1aOffsetBasis = 0xcbf29ce484222325ull;
+
+// Bound size for an unfilled uniform entry: covers the largest cbuffer the
+// shaders declare (WC3 HD PS b1 is 2352 B).
+constexpr u64 kUniformHoleBytes = 8192;
+
+// Log a binding mismatch once per (binding, reason) so a bad slot shows up
+// without flooding stderr every draw.
+void WarnOnce(u32 binding, u32 reason, const char* what) {
+    static std::unordered_set<u64> seen;
+    if (!seen.insert((static_cast<u64>(reason) << 32) | binding).second)
+        return;
+    std::fprintf(stderr, "[wgpu] @binding(%u): %s; binding a default instead\n", binding, what);
+}
+
+bool HasStencilAspect(wgpu::TextureFormat f) {
+    return f == wgpu::TextureFormat::Depth24PlusStencil8 ||
+           f == wgpu::TextureFormat::Depth32FloatStencil8 || f == wgpu::TextureFormat::Stencil8;
+}
+
+bool IsDepthFormat(wgpu::TextureFormat f) {
+    return f == wgpu::TextureFormat::Depth16Unorm || f == wgpu::TextureFormat::Depth24Plus ||
+           f == wgpu::TextureFormat::Depth32Float || HasStencilAspect(f);
+}
+
+// Whether a texture of format `f` may fill a layout entry of sample type `want`.
+bool SampleTypeAccepts(wgpu::TextureSampleType want, wgpu::TextureFormat f, bool float32Filterable) {
+    using F = wgpu::TextureFormat;
+    using S = wgpu::TextureSampleType;
+    S native = S::Float;
+    switch (f) {
+    case F::Depth16Unorm:
+    case F::Depth24Plus:
+    case F::Depth24PlusStencil8:
+    case F::Depth32Float:
+    case F::Depth32FloatStencil8:
+        native = S::Depth;
+        break;
+    case F::Stencil8:
+    case F::R8Uint:
+    case F::R16Uint:
+    case F::R32Uint:
+    case F::RG8Uint:
+    case F::RG16Uint:
+    case F::RG32Uint:
+    case F::RGBA8Uint:
+    case F::RGBA16Uint:
+    case F::RGBA32Uint:
+    case F::RGB10A2Uint:
+        native = S::Uint;
+        break;
+    case F::R8Sint:
+    case F::R16Sint:
+    case F::R32Sint:
+    case F::RG8Sint:
+    case F::RG16Sint:
+    case F::RG32Sint:
+    case F::RGBA8Sint:
+    case F::RGBA16Sint:
+    case F::RGBA32Sint:
+        native = S::Sint;
+        break;
+    case F::R32Float:
+    case F::RG32Float:
+    case F::RGBA32Float:
+        native = float32Filterable ? S::Float : S::UnfilterableFloat;
+        break;
+    default:
+        break;
+    }
+    if (want == S::UnfilterableFloat)
+        return native == S::Float || native == S::UnfilterableFloat || native == S::Depth;
+    return want == native;
+}
+
+u32 LayerCountFor(wgpu::TextureViewDimension dim, u32 layers) {
+    switch (dim) {
+    case wgpu::TextureViewDimension::Cube:
+        return 6;
+    case wgpu::TextureViewDimension::e2DArray:
+    case wgpu::TextureViewDimension::CubeArray:
+        return layers;
+    default:
+        return 1;
+    }
+}
+
+// 1x1 default of the declared sample type and dimension (textures from
+// CreateDefaultResources), cached per combination.
+wgpu::TextureView DefaultView(WebGPUDeviceState& state, const wgpu::TextureBindingLayout& tl) {
+    const u32 key = (static_cast<u32>(tl.sampleType) << 8) | static_cast<u32>(tl.viewDimension);
+    if (auto it = state.defaultViews.find(key); it != state.defaultViews.end())
+        return it->second;
+    using S = wgpu::TextureSampleType;
+    wgpu::Texture tex = tl.viewDimension == wgpu::TextureViewDimension::e3D ? state.defaultTexture3D
+                        : tl.sampleType == S::Depth                         ? state.defaultDepthTexture
+                        : tl.sampleType == S::Uint                          ? state.defaultUintTexture
+                        : tl.sampleType == S::Sint                          ? state.defaultSintTexture
+                                                                            : state.defaultTexture;
+    wgpu::TextureViewDescriptor vd{};
+    vd.dimension = tl.viewDimension;
+    if (tl.viewDimension != wgpu::TextureViewDimension::e3D)
+        vd.arrayLayerCount = LayerCountFor(tl.viewDimension, 6);
+    if (tl.sampleType == S::Depth)
+        vd.aspect = wgpu::TextureAspect::DepthOnly;
+    wgpu::TextureView view = tex.CreateView(&vd);
+    state.defaultViews.emplace(key, view);
+    return view;
+}
+
+// View of `tex` that satisfies a layout entry, or null when the texture can't
+// (wrong sample type, too few layers for a cube, a 3D request). Views of
+// another dimension than the texture's own, and depth-only views of
+// depth-stencil textures, are created once and cached on the entry.
+wgpu::TextureView ViewFor(WebGPUDeviceState& state, TextureEntry& tex,
+                          const wgpu::TextureBindingLayout& tl) {
+    if (!tex.view || !SampleTypeAccepts(tl.sampleType, tex.format, state.float32Filterable))
+        return nullptr;
+    const bool depthOnly = HasStencilAspect(tex.format);
+    if (tl.viewDimension == tex.viewDimension && !depthOnly)
+        return tex.view;
+    if (!tex.ownsTexture || !tex.texture)
+        return nullptr;
+    const u32 layers = static_cast<u32>(std::max(1, tex.arraySize));
+    const auto dim = tl.viewDimension;
+    if (dim == wgpu::TextureViewDimension::e3D || dim == wgpu::TextureViewDimension::e1D ||
+        (dim == wgpu::TextureViewDimension::Cube && layers < 6) ||
+        (dim == wgpu::TextureViewDimension::CubeArray && layers % 6 != 0))
+        return nullptr;
+    auto& slot = tex.altViews[static_cast<u32>(dim) % tex.altViews.size()];
+    if (!slot) {
+        wgpu::TextureViewDescriptor vd{};
+        vd.format = tex.format;
+        vd.dimension = dim;
+        vd.arrayLayerCount = LayerCountFor(dim, layers);
+        vd.aspect = depthOnly ? wgpu::TextureAspect::DepthOnly : wgpu::TextureAspect::All;
+        slot = tex.texture.CreateView(&vd);
+    }
+    return slot;
+}
 
 } // namespace
 
@@ -126,7 +266,10 @@ void WebGPUCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
 
     wgpu::RenderPassDepthStencilAttachment depthAttach{};
     if (depthTex && depthTex->view) {
-        depthAttach.view = depthTex->view;
+        // BeginDepthSlicePass routes through here with a slice selected.
+        depthAttach.view = (depthSlice_ < depthTex->sliceViews.size())
+                               ? depthTex->sliceViews[depthSlice_]
+                               : depthTex->view;
         depthAttach.depthLoadOp = wgpu::LoadOp::Clear;
         depthAttach.depthStoreOp = wgpu::StoreOp::Store;
         depthAttach.depthClearValue = clearDepth;
@@ -183,16 +326,43 @@ void WebGPUCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
 
     // Fresh pass: bind groups must be re-emitted; previous draw's state
     // doesn't carry across.
-    cbSetDirty_ = true;
-    srvSetDirty_ = true;
-    samplerSetDirty_ = true;
+    ResetPassState();
+}
+
+void WebGPUCommandList::ResetPassState() {
+    dirtyKinds_ = kBindKindConstant | kBindKindResource | kBindKindSampler;
     lastBoundPipeline_ = PipelineHandle::Invalid;
-    for (auto& v : lastVBs_) v = {};
+    groupCount_ = 0;
+    requestedVBs_ = {};
+    encoderVBs_ = {};
+    phantomSlot_ = -1;
     lastIndexBuffer_ = BufferHandle{};
     lastIndexOffset_ = 0;
-    lastCbKeySet_ = false;
-    lastSrvKeySet_ = false;
-    lastSamplerKeySet_ = false;
+    lastGroupKeySet_ = {};
+}
+
+bool WebGPUCommandList::BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                                            u8 clearStencil) {
+    auto& state = device_.State();
+    auto* tex = state.textures.Get(static_cast<u64>(depth));
+    if (!tex || !tex->texture || !IsDepthFormat(tex->format) ||
+        arraySlice >= static_cast<u32>(std::max(1, tex->arraySize)))
+        return false;
+    if (tex->sliceViews.size() <= arraySlice)
+        tex->sliceViews.resize(arraySlice + 1);
+    if (!tex->sliceViews[arraySlice]) {
+        wgpu::TextureViewDescriptor vd{};
+        vd.format = tex->format;
+        vd.dimension = wgpu::TextureViewDimension::e2D;
+        vd.baseArrayLayer = arraySlice;
+        vd.arrayLayerCount = 1;
+        vd.mipLevelCount = 1;
+        tex->sliceViews[arraySlice] = tex->texture.CreateView(&vd);
+    }
+    depthSlice_ = arraySlice;
+    BeginRenderPass(nullptr, 0, depth, nullptr, clearDepth, clearStencil);
+    depthSlice_ = kNoDepthSlice;
+    return true;
 }
 
 void WebGPUCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
@@ -248,17 +418,7 @@ void WebGPUCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle d
     rpd.colorAttachments = colorTex ? &colorAttach : nullptr;
     rpd.depthStencilAttachment = hasDepthAttach ? &depthAttach : nullptr;
     pass_ = frame.encoder.BeginRenderPass(&rpd);
-
-    cbSetDirty_ = true;
-    srvSetDirty_ = true;
-    samplerSetDirty_ = true;
-    lastBoundPipeline_ = PipelineHandle::Invalid;
-    for (auto& v : lastVBs_) v = {};
-    lastIndexBuffer_ = BufferHandle{};
-    lastIndexOffset_ = 0;
-    lastCbKeySet_ = false;
-    lastSrvKeySet_ = false;
-    lastSamplerKeySet_ = false;
+    ResetPassState();
 }
 
 void WebGPUCommandList::EndRenderPass() {
@@ -269,7 +429,7 @@ void WebGPUCommandList::EndRenderPass() {
     activeColorAttachment_ = TextureHandle::Invalid;
     activeDepthAttachment_ = TextureHandle::Invalid;
     // Drop every pending SRV / sampler so the next pass starts with a
-    // clean slate. FlushBindings materializes ALL 28 layout slots into
+    // clean slate. FlushBindings materializes every layout entry into
     // the bind group on every draw; leftover handles from this pass
     // would otherwise leak into the next one and trigger usage-scope
     // conflicts when the renderer re-targets a sampled texture as a
@@ -281,9 +441,7 @@ void WebGPUCommandList::EndRenderPass() {
         s = {};
     for (auto& c : pendingCBs_)
         c = {};
-    cbSetDirty_ = true;
-    srvSetDirty_ = true;
-    samplerSetDirty_ = true;
+    dirtyKinds_ = kBindKindConstant | kBindKindResource | kBindKindSampler;
 }
 
 void WebGPUCommandList::SetViewport(const Viewport& vp) {
@@ -308,35 +466,58 @@ void WebGPUCommandList::BindPipeline(PipelineHandle h) {
     if (!pass_)
         return;
     pass_.SetPipeline(pipe->graphics);
-    // Feed the zero buffer into every phantom vertex slot the pipeline
-    // synthesized (see CreateGraphicsPipeline). The renderer never
-    // touches these slots via BindVertexBuffer, so Dawn would otherwise
-    // reject the draw for missing vertex-buffer state.
-    if (state.zeroVertexBuffer) {
-        for (u32 slot : pipe->phantomVertexSlots)
-            pass_.SetVertexBuffer(slot, state.zeroVertexBuffer, 0, wgpu::kWholeSize);
+    // FlushBindings compares each group's key, which starts with the layout
+    // id, so a pipeline with other layouts re-sets exactly the groups that differ.
+    if (groupCount_ != pipe->groupCount || groupLayouts_ != pipe->groupLayouts)
+        dirtyKinds_ = kBindKindConstant | kBindKindResource | kBindKindSampler;
+    groupCount_ = pipe->groupCount;
+    groupLayouts_ = pipe->groupLayouts;
+    // The phantom slot (see CreateGraphicsPipeline) gets the zero buffer. It
+    // can be a slot the renderer bound real data to for another pipeline —
+    // a rigid PSO's phantoms land on the skinned PSOs' bone slot — and D3D
+    // keeps that binding across pipeline changes, so the renderer won't
+    // rebind it. Put the requested buffer back when the slot stops being
+    // this pipeline's phantom.
+    const i32 previousPhantom = phantomSlot_;
+    phantomSlot_ = state.zeroVertexBuffer ? pipe->phantomVertexSlot : -1;
+    if (previousPhantom >= 0 && previousPhantom != phantomSlot_)
+        ApplyVertexBuffer(static_cast<u32>(previousPhantom));
+    if (phantomSlot_ >= 0) {
+        auto& have = encoderVBs_[phantomSlot_];
+        if (!have.zero) {
+            pass_.SetVertexBuffer(static_cast<u32>(phantomSlot_), state.zeroVertexBuffer, 0,
+                                  wgpu::kWholeSize);
+            have = {BufferHandle{}, 0, true};
+        }
     }
     lastBoundPipeline_ = h;
+}
+
+void WebGPUCommandList::ApplyVertexBuffer(u32 slot) {
+    const VbBinding& want = requestedVBs_[slot];
+    VbBinding& have = encoderVBs_[slot];
+    if (!have.zero && have.buffer == want.buffer && have.offset == want.offset)
+        return;
+    auto* buf = device_.State().buffers.Get(static_cast<u64>(want.buffer));
+    if (!buf)
+        return;
+    pass_.SetVertexBuffer(slot, buf->buffer, want.offset, wgpu::kWholeSize);
+    have = want;
 }
 
 void WebGPUCommandList::BindVertexBuffer(u32 slot, BufferHandle h, u32 /*stride*/, u32 offset) {
     auto& state = device_.State();
     auto* buf = state.buffers.Get(static_cast<u64>(h));
-    if (!buf || !pass_)
+    if (!buf || !pass_ || slot >= requestedVBs_.size())
         return;
     // currentOffset() = baseOffset + slotStride*currentSlot. For ring
     // sub-allocs the active slot rotates on every Map/UpdateBuffer; we
     // must reference the same slot the data was just written into,
     // not the ring base. Dedicated (non-ring) buffers have slotCount=1
     // so currentOffset() == baseOffset == 0.
-    const u64 off = buf->currentOffset() + offset;
-    if (slot < lastVBs_.size()) {
-        auto& last = lastVBs_[slot];
-        if (last.buffer == h && last.offset == off) return;
-        last.buffer = h;
-        last.offset = off;
-    }
-    pass_.SetVertexBuffer(slot, buf->buffer, off, wgpu::kWholeSize);
+    requestedVBs_[slot] = {h, buf->currentOffset() + offset, false};
+    if (static_cast<i32>(slot) != phantomSlot_)
+        ApplyVertexBuffer(slot);
 }
 
 void WebGPUCommandList::BindIndexBuffer(BufferHandle h, Format fmt) {
@@ -361,7 +542,7 @@ void WebGPUCommandList::BindConstantBuffer(ShaderStage stage, u32 slot, BufferHa
     if (!buf)
         return;
     const u32 idx = (stage == ShaderStage::Pixel) ? (slot + kPsCbBindingOffsetWgsl) : slot;
-    if (idx >= kCbBindingCount)
+    if (idx >= kMaxBindingIndex)
         return;
     const u64 off = buf->currentOffset();
     const u64 sz  = buf->desc.size;
@@ -370,29 +551,34 @@ void WebGPUCommandList::BindConstantBuffer(ShaderStage stage, u32 slot, BufferHa
     auto& cur = pendingCBs_[idx];
     if (cur.buffer == h && cur.offset == off && cur.size == sz) return;
     cur = {h, off, sz};
-    cbSetDirty_ = true;
+    dirtyKinds_ |= kBindKindConstant;
 }
 
 void WebGPUCommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureHandle h) {
     const u32 idx = SlotIndex(stage, slot);
+    if (idx >= kMaxBindingIndex)
+        return;
     auto& cur = pendingSRVs_[idx];
     if (!cur.isBuffer && cur.texture == h) return;
-    cur = {h, BufferHandle::Invalid, false};
-    srvSetDirty_ = true;
+    cur = {h, BufferHandle::Invalid, 0, false};
+    dirtyKinds_ |= kBindKindResource;
 }
 
+// Structured buffers land on `var<storage, read>` entries: a PS buffer on the
+// binding a texture of its register would use, a VS buffer past both stages'
+// texture ranges (VsBufferBindingOffset in cb_structs.slang), since VS t16
+// would otherwise share PS t4's binding.
 void WebGPUCommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHandle h) {
-    // Storage-buffer SRV binding. WebGPU's layout encodes binding type at
-    // the BindGroupLayout level, so a mixed "SRV is either texture or
-    // storage buffer" group needs split layouts — for now record it as a
-    // texture-hole entry and emit a warning. Phase-follow-up.
-    (void)stage;
-    (void)slot;
-    (void)h;
-    std::fprintf(stderr,
-                 "[wgpu] BindShaderResource(buffer) not yet implemented "
-                 "(slot %u, stage %d)\n",
-                 slot, static_cast<int>(stage));
+    const u32 idx = (stage == ShaderStage::Pixel) ? SlotIndex(stage, slot)
+                                                  : 2 * kStageBindingShift + slot;
+    if (idx >= kMaxBindingIndex)
+        return;
+    auto* buf = device_.State().buffers.Get(static_cast<u64>(h));
+    const u64 off = buf ? buf->currentOffset() : 0;
+    auto& cur = pendingSRVs_[idx];
+    if (cur.isBuffer && cur.storage == h && cur.storageOffset == off) return;
+    cur = {TextureHandle::Invalid, h, off, true};
+    dirtyKinds_ |= kBindKindResource;
 }
 
 void WebGPUCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
@@ -403,10 +589,12 @@ void WebGPUCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
 
 void WebGPUCommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle h) {
     const u32 idx = SlotIndex(stage, slot);
+    if (idx >= kMaxBindingIndex)
+        return;
     auto& cur = pendingSamplers_[idx];
     if (cur.sampler == h) return;
     cur = {h};
-    samplerSetDirty_ = true;
+    dirtyKinds_ |= kBindKindSampler;
 }
 
 void WebGPUCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clearStencil) {
@@ -463,24 +651,31 @@ void WebGPUCommandList::CopyBuffer(BufferHandle dst, BufferHandle src) {
 }
 
 void WebGPUCommandList::FlushBindings() {
-    if (!pass_)
+    if (!pass_ || groupCount_ == 0)
         return;
     auto& state = device_.State();
 
-    // ---- Group 0: constant buffers (per-draw rebuild, embedded offset)
-    // We can't use dynamic offsets — the WebGPU spec caps
-    // maxDynamicUniformBuffersPerPipelineLayout at ~8-11 across the whole
-    // layout, well below our 32 CB slots. Instead we bake the captured
-    // ring-slot offset into BindGroupEntry::offset and rebuild a fresh
-    // BindGroup whenever any CB binding changes.
-    if (cbSetDirty_) {
-        u64 key = kFnv1aOffsetBasis;
-        for (u32 i = 0; i < kCbBindingCount; ++i) {
-            wgpu::BindGroupEntry& e = scratchCbEntries_[i];
-            e.binding = i;
-            const auto& pending = pendingCBs_[i];
-            u64 bufKey = 0; // 0 == "use shared ring at offset 0, size minAlign"
-            if (pending.buffer != BufferHandle{}) {
+    // One bind group per layout group. Uniform entries bake the ring-slot
+    // offset into BindGroupEntry::offset instead of using dynamic offsets
+    // (maxDynamicUniformBuffersPerPipelineLayout is ~8-11), so a group is
+    // re-resolved whenever a family it draws from changed.
+    for (u32 g = 0; g < groupCount_; ++g) {
+        const u32 layoutId = groupLayouts_[g];
+        const auto& layout = state.bindLayouts[layoutId];
+        if (lastGroupKeySet_[g] && (layout.kindMask & dirtyKinds_) == 0)
+            continue;
+
+        u64 key = HashMix(kFnv1aOffsetBasis, layoutId);
+        const u32 count = static_cast<u32>(layout.entries.size());
+        for (u32 i = 0; i < count; ++i) {
+            const wgpu::BindGroupLayoutEntry& le = layout.entries[i];
+            wgpu::BindGroupEntry& e = scratchEntries_[i];
+            e = {};
+            e.binding = le.binding;
+            u64 resKey = 0; // 0 == this entry's default
+
+            if (le.buffer.type == wgpu::BufferBindingType::Uniform) {
+                const auto& pending = pendingCBs_[le.binding];
                 auto* buf = state.buffers.Get(static_cast<u64>(pending.buffer));
                 if (buf) {
                     e.buffer = buf->buffer;
@@ -495,146 +690,77 @@ void WebGPUCommandList::FlushBindings() {
                     // is < shader-expected size; the extra padding bytes
                     // belong to this sub-alloc's slot so it's safe.
                     e.size = std::max<u64>(buf->slotStride, 16);
-                    bufKey = static_cast<u64>(pending.buffer);
+                    resKey = static_cast<u64>(pending.buffer);
                 } else {
+                    // Hole — point at the shared ring base, sized for the
+                    // largest uniform struct a shader declares.
                     e.buffer = state.sharedCbBuffer;
                     e.offset = 0;
-                    e.size = 16;
+                    e.size = kUniformHoleBytes;
+                }
+            } else if (le.buffer.type != wgpu::BufferBindingType::BindingNotUsed) {
+                const auto& pending = pendingSRVs_[le.binding];
+                auto* buf = pending.isBuffer ? state.buffers.Get(static_cast<u64>(pending.storage))
+                                             : nullptr;
+                if (buf && buf->desc.size >= 4) {
+                    e.buffer = buf->buffer;
+                    e.offset = pending.storageOffset;
+                    e.size = buf->desc.size & ~u64{3}; // storage bindings are 4-byte aligned
+                    resKey = static_cast<u64>(pending.storage);
+                } else {
+                    e.buffer = state.defaultStorageBuffer;
+                    e.offset = 0;
+                    e.size = kDefaultStorageBufferBytes;
+                }
+            } else if (le.sampler.type != wgpu::SamplerBindingType::BindingNotUsed) {
+                const bool wantCompare = le.sampler.type == wgpu::SamplerBindingType::Comparison;
+                e.sampler = wantCompare ? state.defaultComparisonSampler : state.defaultSampler;
+                const auto& pending = pendingSamplers_[le.binding];
+                if (auto* s = state.samplers.Get(static_cast<u64>(pending.sampler))) {
+                    if (s->sampler && s->comparison == wantCompare) {
+                        e.sampler = s->sampler;
+                        resKey = static_cast<u64>(pending.sampler);
+                    } else if (s->sampler) {
+                        WarnOnce(le.binding, 1, "sampler comparison mode doesn't match the shader");
+                    }
                 }
             } else {
-                // Hole — point at the shared ring base. WebGPU requires
-                // every binding slot to be populated.
-                e.buffer = state.sharedCbBuffer;
-                e.offset = 0;
-                e.size = std::max<u64>(state.minUniformBufferAlign, 16);
+                const auto& pending = pendingSRVs_[le.binding];
+                wgpu::TextureView view;
+                if (!pending.isBuffer) {
+                    if (auto* tex = state.textures.Get(static_cast<u64>(pending.texture))) {
+                        view = ViewFor(state, *tex, le.texture);
+                        if (view)
+                            resKey = static_cast<u64>(pending.texture);
+                        else
+                            WarnOnce(le.binding, 2, "texture format/dimension doesn't match the shader");
+                    }
+                }
+                e.textureView = view ? view : DefaultView(state, le.texture);
             }
-            // Clear unused fields so leftover data from a previous flush
-            // (e.g. a textureView when this slot was last an SRV-style
-            // binding — can't happen with the current layout but defensive)
-            // doesn't pollute the descriptor.
-            e.textureView = nullptr;
-            e.sampler = nullptr;
-            key = HashMix(key, bufKey);
+            key = HashMix(key, le.binding);
+            key = HashMix(key, resKey);
             key = HashMix(key, e.offset);
-            key = HashMix(key, e.size);
         }
-        // If the key matches what's already bound on this pass, skip
-        // both the cache lookup-or-create AND the SetBindGroup call.
-        // Otherwise resolve the bind group (cache hit or fresh create)
-        // and set it on the pass.
-        if (!(lastCbKeySet_ && key == lastCbKey_)) {
-            wgpu::BindGroup bg = state.bgCacheCb.Get(key);
-            if (!bg) {
-                wgpu::BindGroupDescriptor bgd{};
-                bgd.label = "wf.cb";
-                bgd.layout = state.cbBgLayout;
-                bgd.entryCount = kCbBindingCount;
-                bgd.entries = scratchCbEntries_.data();
-                bg = state.device.CreateBindGroup(&bgd);
-                state.bgCacheCb.Put(key, bg);
-            }
-            pass_.SetBindGroup(0, bg, 0, nullptr);
-            lastCbKey_ = key;
-            lastCbKeySet_ = true;
-        }
-        cbSetDirty_ = false;
-    }
 
-    // Slot-specific defaults: shadow PS slots need the Depth32Float
-    // texture + comparison sampler; IBL probe slots need the
-    // cube-array view; everything else falls back to the 2D Float
-    // default. Picking the wrong default trips Dawn's sampleType /
-    // viewDimension layout match.
-    auto defaultTexFor = [&](u32 i) -> wgpu::TextureView {
-        if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
-            return state.defaultDepthTextureView;
-        if (i == kPsIblCubeFromBinding || i == kPsIblCubeToBinding)
-            return state.defaultCubeArrayTextureView;
-        return state.defaultTextureView;
-    };
-    auto defaultSmpFor = [&](u32 i) -> wgpu::Sampler {
-        if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
-            return state.defaultComparisonSampler;
-        return state.defaultSampler;
-    };
-
-    // ---- Group 1: SRVs (textures) -------------------------------------
-    if (srvSetDirty_) {
-        u64 key = kFnv1aOffsetBasis;
-        for (u32 i = 0; i < kSrvBindingCount; ++i) {
-            wgpu::BindGroupEntry& e = scratchSrvEntries_[i];
-            e.binding = i;
-            const auto& pending = pendingSRVs_[i];
-            wgpu::TextureView view = defaultTexFor(i);
-            u64 texKey = 0; // 0 == default-for-this-slot
-            if (!pending.isBuffer && pending.texture != TextureHandle{}) {
-                if (auto* tex = state.textures.Get(static_cast<u64>(pending.texture)))
-                    if (tex->view) {
-                        view = tex->view;
-                        texKey = static_cast<u64>(pending.texture);
-                    }
-            }
-            e.textureView = view;
-            e.buffer = nullptr;
-            e.sampler = nullptr;
-            key = HashMix(key, texKey);
+        if (lastGroupKeySet_[g] && key == lastGroupKey_[g])
+            continue;
+        auto& cache = state.bgCaches[g];
+        wgpu::BindGroup bg = cache.Get(key);
+        if (!bg) {
+            wgpu::BindGroupDescriptor bgd{};
+            bgd.label = "wf.bindGroup";
+            bgd.layout = layout.layout;
+            bgd.entryCount = count;
+            bgd.entries = count ? scratchEntries_.data() : nullptr;
+            bg = state.device.CreateBindGroup(&bgd);
+            cache.Put(key, bg);
         }
-        if (!(lastSrvKeySet_ && key == lastSrvKey_)) {
-            wgpu::BindGroup bg = state.bgCacheSrv.Get(key);
-            if (!bg) {
-                wgpu::BindGroupDescriptor bgd{};
-                bgd.label = "wf.srv";
-                bgd.layout = state.srvBgLayout;
-                bgd.entryCount = kSrvBindingCount;
-                bgd.entries = scratchSrvEntries_.data();
-                bg = state.device.CreateBindGroup(&bgd);
-                state.bgCacheSrv.Put(key, bg);
-            }
-            pass_.SetBindGroup(1, bg, 0, nullptr);
-            lastSrvKey_ = key;
-            lastSrvKeySet_ = true;
-        }
-        srvSetDirty_ = false;
+        pass_.SetBindGroup(g, bg, 0, nullptr);
+        lastGroupKey_[g] = key;
+        lastGroupKeySet_[g] = true;
     }
-
-    // ---- Group 2: samplers --------------------------------------------
-    if (samplerSetDirty_) {
-        u64 key = kFnv1aOffsetBasis;
-        for (u32 i = 0; i < kSamplerBindingCount; ++i) {
-            wgpu::BindGroupEntry& e = scratchSamplerEntries_[i];
-            e.binding = i;
-            const auto& pending = pendingSamplers_[i];
-            wgpu::Sampler smp = defaultSmpFor(i);
-            u64 smpKey = 0;
-            if (pending.sampler != SamplerHandle{}) {
-                if (auto* s = state.samplers.Get(static_cast<u64>(pending.sampler)))
-                    if (s->sampler) {
-                        smp = s->sampler;
-                        smpKey = static_cast<u64>(pending.sampler);
-                    }
-            }
-            e.sampler = smp;
-            e.buffer = nullptr;
-            e.textureView = nullptr;
-            key = HashMix(key, smpKey);
-        }
-        if (!(lastSamplerKeySet_ && key == lastSamplerKey_)) {
-            wgpu::BindGroup bg = state.bgCacheSampler.Get(key);
-            if (!bg) {
-                wgpu::BindGroupDescriptor bgd{};
-                bgd.label = "wf.sampler";
-                bgd.layout = state.samplerBgLayout;
-                bgd.entryCount = kSamplerBindingCount;
-                bgd.entries = scratchSamplerEntries_.data();
-                bg = state.device.CreateBindGroup(&bgd);
-                state.bgCacheSampler.Put(key, bg);
-            }
-            pass_.SetBindGroup(2, bg, 0, nullptr);
-            lastSamplerKey_ = key;
-            lastSamplerKeySet_ = true;
-        }
-        samplerSetDirty_ = false;
-    }
+    dirtyKinds_ = 0;
 }
 
 void WebGPUCommandList::Draw(u32 vertexCount, u32 firstVertex) {

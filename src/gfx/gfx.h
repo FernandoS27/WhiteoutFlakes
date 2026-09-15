@@ -74,6 +74,19 @@ public:
         BeginRenderPass(color, depth, kZero, clearDepth, clearStencil);
     }
 
+    // Depth-only pass into one slice of a depth texture array (created with
+    // arraySize > 1 and TextureUsage::DepthStencil), clearing that slice.
+    // Cascade shadow maps render this way, one slice per cascade, and the
+    // lit pass samples the whole array. Returns false — no pass begun — when
+    // the backend can't target a slice; the default handles only slice 0.
+    virtual bool BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                                     u8 clearStencil) {
+        if (arraySlice != 0)
+            return false;
+        BeginRenderPass(TextureHandle::Invalid, depth, nullptr, clearDepth, clearStencil);
+        return true;
+    }
+
     virtual void EndRenderPass() = 0;
 
     // Tracy-backed GPU profiler zone. Bracket GPU work with a named

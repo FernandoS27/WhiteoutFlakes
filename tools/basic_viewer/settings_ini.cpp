@@ -192,6 +192,43 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
             }
         }
     }
+    {
+        RenderSettings::WorldFog fog = service.Settings().GetWorldFog();
+        if (auto* s = ini.Get(KeyOf("FogMode"))) {
+            i32 v = 0;
+            if (ParseInt(*s, v) && v >= 0 && v <= 6)
+                fog.mode = v;
+        }
+        if (auto* s = ini.Get(KeyOf("FogColor"))) {
+            i32 v = 0;
+            if (ParseInt(*s, v) && v >= 0 && v <= 0xFFFFFF) {
+                fog.color[0] = static_cast<u8>(v >> 16);
+                fog.color[1] = static_cast<u8>(v >> 8);
+                fog.color[2] = static_cast<u8>(v);
+            }
+        }
+        auto loadFogFloat = [&](const char* key, f32& out) {
+            if (auto* s = ini.Get(KeyOf(key))) {
+                f32 v = 0.0f;
+                if (ParseFloat(*s, v))
+                    out = v;
+            }
+        };
+        loadFogFloat("FogStart", fog.start);
+        loadFogFloat("FogEnd", fog.end);
+        loadFogFloat("FogDensity", fog.density);
+        loadFogFloat("FogHeightTop", fog.heightTop);
+        loadFogFloat("FogHeightBottom", fog.heightBottom);
+        loadFogFloat("FogRadialInner", fog.radialInner);
+        loadFogFloat("FogRadialOuter", fog.radialOuter);
+        loadFogFloat("FogRadialStrength", fog.radialStrength);
+        if (auto* s = ini.Get(KeyOf("FogEverywhere"))) {
+            bool v = false;
+            if (ParseBool(*s, v))
+                fog.everywhere = v;
+        }
+        service.Settings().SetWorldFog(fog);
+    }
     if (auto* s = ini.Get(KeyOf("M2LazyAnimations"))) {
         bool v = false;
         if (ParseBool(*s, v))
@@ -369,6 +406,21 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         const i32 cascades =
             shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 1, 3) : 0;
         ini.Set(KeyOf("ShadowCascades"), ToString(cascades));
+    }
+    {
+        const RenderSettings::WorldFog& fog = service.Settings().GetWorldFog();
+        ini.Set(KeyOf("FogMode"), ToString(fog.mode));
+        ini.Set(KeyOf("FogColor"),
+                ToString(static_cast<i32>((fog.color[0] << 16) | (fog.color[1] << 8) | fog.color[2])));
+        ini.Set(KeyOf("FogStart"), FloatToString(fog.start));
+        ini.Set(KeyOf("FogEnd"), FloatToString(fog.end));
+        ini.Set(KeyOf("FogDensity"), FloatToString(fog.density));
+        ini.Set(KeyOf("FogHeightTop"), FloatToString(fog.heightTop));
+        ini.Set(KeyOf("FogHeightBottom"), FloatToString(fog.heightBottom));
+        ini.Set(KeyOf("FogRadialInner"), FloatToString(fog.radialInner));
+        ini.Set(KeyOf("FogRadialOuter"), FloatToString(fog.radialOuter));
+        ini.Set(KeyOf("FogRadialStrength"), FloatToString(fog.radialStrength));
+        ini.Set(KeyOf("FogEverywhere"), fog.everywhere ? "1" : "0");
     }
     ini.Set(KeyOf("M2LazyAnimations"), service.Settings().M2LazyAnimations() ? "1" : "0");
     ini.Set(KeyOf("M2DistanceSortGeometry"),

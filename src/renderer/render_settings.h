@@ -611,6 +611,31 @@ public:
         return iblModeDirty_.exchange(false);
     }
 
+    // ---- World fog (WC3 3.0.0 HD and SD banks) ----
+    // A viewer choice: the game takes fog from the map, and a model viewer has
+    // none, so it is off until the host sets it. `mode` is the shader's (see
+    // bls::FogParams); distances are world units, the colour 8-bit sRGB.
+    // Plain fields like the display flags: a torn read costs one frame.
+    struct WorldFog {
+        i32 mode = 0;
+        u8 color[3] = {128, 128, 128};
+        f32 start = 1000.0f;
+        f32 end = 4000.0f;
+        f32 density = 0.5f;
+        f32 heightTop = 500.0f;
+        f32 heightBottom = 0.0f;
+        f32 radialInner = 1000.0f;
+        f32 radialOuter = 3000.0f;
+        f32 radialStrength = 0.5f;
+        bool everywhere = false;
+    };
+    const WorldFog& GetWorldFog() const {
+        return worldFog_;
+    }
+    void SetWorldFog(const WorldFog& fog) {
+        worldFog_ = fog;
+    }
+
     // ---- Tonemap ----
     f32 GetTonemapExposure() const {
         return tonemapExposure_;
@@ -690,6 +715,7 @@ private:
     bool clothDeform_ = true;
     bool physicsSubstepping_ = true;
     bool poseSolvers_ = true;
+    WorldFog worldFog_;
     GroundQuery groundQuery_;
     u32 groundQueryGeneration_ = 0;
 

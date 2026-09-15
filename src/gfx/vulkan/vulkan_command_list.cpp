@@ -242,8 +242,12 @@ void VulkanCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
         };
         depthTex->currentLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
+        // BeginDepthSlicePass routes through here with a slice selected.
+        const VkImageView depthView = (depthSlice_ != kNoDepthSlice)
+                                          ? DepthSliceView(state, *depthTex, depthSlice_)
+                                          : depthTex->view;
         depthAttach = vk::RenderingAttachmentInfo{
-            .imageView = vk::ImageView(depthTex->view),
+            .imageView = vk::ImageView(depthView),
             .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
             .loadOp = vk::AttachmentLoadOp::eClear,
             .storeOp = vk::AttachmentStoreOp::eStore,
@@ -287,6 +291,18 @@ void VulkanCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
     currentVpY_ = 0.0f;
     currentVpW_ = static_cast<f32>(width);
     currentVpH_ = static_cast<f32>(height);
+}
+
+bool VulkanCommandList::BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                                            u8 clearStencil) {
+    auto& state = device_.State();
+    auto* depthTex = state.textures.Get(static_cast<u64>(depth));
+    if (!depthTex || DepthSliceView(state, *depthTex, arraySlice) == VK_NULL_HANDLE)
+        return false;
+    depthSlice_ = arraySlice;
+    BeginRenderPass(nullptr, 0, depth, nullptr, clearDepth, clearStencil);
+    depthSlice_ = kNoDepthSlice;
+    return true;
 }
 
 void VulkanCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
@@ -603,8 +619,23 @@ void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureH
     srvSetDirty_ = true;
 }
 
-// Buffer SRVs not yet wired up.
-void VulkanCommandList::BindShaderResource(ShaderStage, u32, BufferHandle) {}
+// Structured buffers land on the storage bindings of set 1 (kStorageBindings).
+static_assert(kStorageBindingCount == 5, "resize VulkanCommandList::pendingStorage_");
+void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHandle handle) {
+    const u32 binding = StorageBindingFor(stage, slot);
+    for (u32 i = 0; i < kStorageBindingCount; ++i) {
+        if (kStorageBindings[i] != binding)
+            continue;
+        auto* entry = device_.State().buffers.Get(static_cast<u64>(handle));
+        const u64 off = entry ? entry->currentOffset() : 0;
+        auto& cur = pendingStorage_[i];
+        if (cur.buffer == handle && cur.offset == off)
+            return;
+        cur = {handle, off};
+        srvSetDirty_ = true;
+        return;
+    }
+}
 
 // UAV slot 0 feeds the compute Dispatch's storage-buffer binding.
 void VulkanCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
@@ -688,10 +719,28 @@ void VulkanCommandList::FlushDescriptors() {
         // ---- Set 1: SRVs ----
         {
             std::array<vk::DescriptorImageInfo, kSrvBindingCount> infos{};
-            std::array<vk::WriteDescriptorSet, kSrvBindingCount> writes{};
+            std::array<vk::DescriptorBufferInfo, kStorageBindingCount> bufferInfos{};
+            std::array<vk::WriteDescriptorSet, kSrvBindingCount + kStorageBindingCount> writes{};
             u32 count = 0;
             VkDescriptorSet set = allocSet(*state.srvSetLayout);
             if (set != VK_NULL_HANDLE) {
+                for (u32 i = 0; i < kStorageBindingCount; ++i) {
+                    auto* buffer = state.buffers.Get(static_cast<u64>(pendingStorage_[i].buffer));
+                    if (!buffer)
+                        continue;
+                    bufferInfos[i] = vk::DescriptorBufferInfo{
+                        .buffer = vk::Buffer(buffer->buffer),
+                        .offset = pendingStorage_[i].offset,
+                        .range = buffer->desc.size,
+                    };
+                    writes[count++] = vk::WriteDescriptorSet{
+                        .dstSet = vk::DescriptorSet(set),
+                        .dstBinding = kStorageBindings[i],
+                        .descriptorCount = 1,
+                        .descriptorType = vk::DescriptorType::eStorageBuffer,
+                        .pBufferInfo = &bufferInfos[i],
+                    };
+                }
                 for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
                     auto* texture = state.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
                     if (!texture)

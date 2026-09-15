@@ -19,9 +19,10 @@ namespace {
 constexpr f32 kLightCellSize = 1024.0f;
 constexpr f32 kLightApronSize = 896.0f;
 
-// The same quadratic the shaders use for per-pixel falloff (`ps/hd.bls`,
-// `ps/sd_on_hd.bls` and `vs/sd_highspec.bls` all inline `1/(1 + 5e-4*d^2)`), so
-// a light is culled right about where its contribution stops being visible.
+// The quadratic the SD highspec VS inlines for its per-vertex falloff
+// (`1/(1 + 5e-4*d^2)`), so a light is culled right about where its contribution
+// stops being visible. Only the SD palette uses this selection in 3.0.0; the HD
+// families read the clustered light set instead.
 constexpr f32 kLightQuadraticAtten = 0.00050000002f;
 constexpr f32 kMinLightFitness = 0.0015f;
 
@@ -185,18 +186,18 @@ i32 BuildLightPalette(FrameInputs& frame, const LightingContext& ctx, const Matr
 }
 
 RenderState MakeSdMeshRenderState(const MatParams& mat, i32 activeLights, bool unlit,
-                                  bool hasBones) {
+                                  bool hasBones, i32 fogMode) {
     RenderState rs;
     rs.shaderId = GxShaderID::SD;
     rs.alphaMode = static_cast<u8>(mat.alpha);
     rs.numColors = 1;
     rs.numTexCoords = 1;
+    rs.sdFogMode = static_cast<u8>(std::clamp(fogMode, 0, 6));
 
     rs.numWeights = static_cast<u8>(hasBones ? 4 : 0);
-    rs.numLights = static_cast<u8>(activeLights);
-    rs.fogEnabled = false;
-    rs.depthWrite = mat.DepthWriteEnabled();
-    rs.lightingEnabled = !unlit && activeLights > 0;
+    // The SD highspec VS's light digit is the count it loops over; unlit
+    // layers get the zero-light program.
+    rs.numLights = static_cast<u8>(unlit ? 0 : activeLights);
     return rs;
 }
 

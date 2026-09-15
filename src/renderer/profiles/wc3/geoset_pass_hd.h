@@ -1,24 +1,32 @@
 #pragma once
 
-// GeosetPassHd — relocated verbatim from render_pipeline.cpp (P1). The class body is
-// unchanged; only its file moved. It stays a header-only class because
-// RenderPipeline instantiates it directly and it is a friend of RenderPipeline
-// (see render_pipeline.h), which is what gives it `impl_` access.
+// GeosetPassHd — the Warcraft III 3.0.0 HD mesh submission (HD, SD_on_HD and
+// Crystal). It stays a header-only class because RenderPipeline instantiates it
+// directly and it is a friend of RenderPipeline (see render_pipeline.h), which
+// is what gives it `impl_` access.
+//
+// 3.0.0 binds lighting per PASS, not per draw: the main light and IBL ride in
+// the per-draw PS bank, but every point light lives in the clustered set
+// (PS t16-t18 + b1) that BindPassResources uploads once. See
+// WC3_30_LIGHTING_DESIGN.md.
 
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/core/surface_pass_base.h"
 #include "renderer/debug/draw_trace_hooks.h"
+#include "renderer/profiles/wc3/wc3_lighting_frame.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
 #include "renderer/profiles/wc3/wc3_surface_table.h"
 #include "renderer/shading/shading_model.h"
 #include "renderer/shadow/shadow_service.h"
 
+#include <span>
+
 namespace whiteout::flakes::renderer {
 
 // The using-directives the class body relied on while it lived in
-// render_pipeline.cpp. Kept so the body itself is byte-identical to what moved.
+// render_pipeline.cpp.
 using namespace ::whiteout::flakes::renderer::model;
 using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
@@ -26,6 +34,12 @@ using namespace ::whiteout::flakes::renderer::render_detail;
 using profiles::wc3::ComputeSunDirWS;
 using profiles::wc3::UnpackedLayer;
 using profiles::wc3::Wc3SurfaceTable;
+
+// The constant-baseline sun's ShadowIntensity (PS cb2[28].w, the IBL scale).
+// A viewer choice for when no day/night rig is loaded: 0.15 is the value the
+// 2.0.0 path shipped as `kHdLight0BlendWeight`, which lands the probe at the
+// brightness the viewer was tuned against. A loaded rig supplies its own.
+inline constexpr f32 kHdBaselineShadowIntensity = 0.15f;
 
 class GeosetPassHd : public BlsGeosetPass<GeosetPassHd> {
 public:
@@ -45,149 +59,114 @@ public:
         proj = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
     }
 
-    void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {
+    void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame,
+                           const bls::LightingContext& lighting) {
+        auto* impl = rs_.Pipeline().impl_.get();
+        const auto& defs = rs_.Textures().GetDefaults();
 
-        const bool useDayNight = rs_.Pipeline().impl_->iblDayNightLoaded_ &&
-                                 rs_.GetDncService() != nullptr &&
-                                 rs_.Settings().GetLightingMode() == LightingMode::InGame;
-        if (useDayNight) {
-            const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
-
-            const bool dayPrimary = blend.isDaytime;
-            frame.envFromMipEnd = dayPrimary ? rs_.Pipeline().impl_->iblDayMipEnd_
-                                             : rs_.Pipeline().impl_->iblNightMipEnd_;
-            frame.envToMipEnd = dayPrimary ? rs_.Pipeline().impl_->iblNightMipEnd_
-                                           : rs_.Pipeline().impl_->iblDayMipEnd_;
-            frame.envTransitionT = blend.transitionT;
-        } else {
-            frame.envFromMipEnd = rs_.Pipeline().impl_->iblProbeMipEnd_;
-            frame.envToMipEnd = rs_.Pipeline().impl_->iblProbeMipEnd_;
-            frame.envTransitionT = 0.75f;
-        }
+        BindIbl(cmd, frame);
 
         const gfx::SamplerHandle linWrap = rs_.Samplers().LinearWrap();
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 1, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 2, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 3, linWrap);
-        // The HD pixel shader also samples s_teamColor (s4) and the IBL
-        // probes / BRDF LUT at s13..s15. They were never bound explicitly
-        // — d3d11/d3d12 forgive the missing slots silently, but Vulkan
-        // fires VUID-vkCmdDrawIndexed-None-08114 the first time a draw
-        // touches the unbound descriptor.
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 4, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 13, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 14, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 15, linWrap);
+        const gfx::SamplerHandle linClamp = rs_.Samplers().WrapVariant(WrapMode::ClampClamp);
+        for (u32 s : {1u, 2u, 3u, 4u})
+            cmd->BindSampler(gfx::ShaderStage::Pixel, s, linWrap);
 
-        gfx::TextureHandle from = gfx::TextureHandle::Invalid;
-        gfx::TextureHandle to = gfx::TextureHandle::Invalid;
-        if (useDayNight) {
-            const auto day = rs_.Textures().GetOwned(RenderPipeline::kIblDayProbeName);
-            const auto night = rs_.Textures().GetOwned(RenderPipeline::kIblNightProbeName);
-            const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
-            from = blend.isDaytime ? day : night;
-            to = blend.isDaytime ? night : day;
-        } else {
-            from = rs_.Textures().GetOwned(RenderPipeline::kIblFromProbeName);
-            to = rs_.Textures().GetOwned(RenderPipeline::kIblToProbeName);
-            if (to == gfx::TextureHandle::Invalid)
-                to = from;
+        // Blight mask + ramp (t6 / t8) and the manual depth-test target (t7).
+        // Both features are off (cb2[22].w / [23].w stay 0), but the colour
+        // permutations declare the textures, and backends that validate
+        // descriptors want something bound.
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 6, defs.Black);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 7, defs.Black);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 8, defs.Black);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 6, linClamp);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 8, linClamp);
+
+        frame.mainLight = SelectMainLight(lighting, frame.view);
+
+        // Point-light shadows: only slots the shadow pass drew this frame count,
+        // and lights record their slot through the cluster set below.
+        const shadow::ShadowService* shadows = rs_.GetShadowService();
+        const bool shadowsOn = shadows && shadows->IsEnabled();
+        pointShadows_ = (shadowsOn && shadows->PointShadowArray() != gfx::TextureHandle::Invalid)
+                            ? std::min<i32>(shadows->RenderedPointShadows(),
+                                            static_cast<i32>(shadows->PointShadows().size()))
+                            : 0;
+        std::array<Vector3f, shadow::kPointShadowSlots> slotPositions{};
+        for (i32 s = 0; s < pointShadows_; ++s)
+            slotPositions[s] = shadows->PointShadows()[s].position;
+        if (pointShadows_ > 0) {
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 9, shadows->PointShadowArray());
+            cmd->BindSampler(gfx::ShaderStage::Pixel, 9, rs_.Samplers().ShadowComparison());
         }
-        if (from != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, from);
-        if (to != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 14, to);
-        const gfx::TextureHandle lut = rs_.Textures().GetOwned(RenderPipeline::kIblSplitSumLutName);
-        if (lut != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, lut);
 
-        if (auto* shadowSvc = rs_.GetShadowService()) {
-            // The HD opaque PS samples each cascade with `SampleCmpLevelZero`
-            // which REQUIRES a hardware comparison sampler. Without binding
-            // one, WebGPU falls back to its default-Always comparison
-            // sampler (no shadows) and D3D12/Vulkan are undefined (the
-            // user-visible symptom is "everything darker when shadows are
-            // on"). Bind the LessEqual comparison sampler at the same slots
-            // as the depth targets.
-            const gfx::SamplerHandle cmpSmp = rs_.Samplers().ShadowComparison();
-            for (i32 c = 0; c < 3; ++c) {
-                const gfx::TextureHandle sh = shadowSvc->depthTarget(c);
-                if (sh != gfx::TextureHandle::Invalid) {
-                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 10 + static_cast<u32>(c), sh);
+        // The clustered light set, binned into the engine's ~16-px tiles
+        // (WC3_30_LIGHTING_DESIGN.md D5 step 2).
+        static const std::vector<FrameState::LightState> kNoLights;
+        const auto& sceneLights = lighting.sceneLights ? *lighting.sceneLights : kNoLights;
+        profiles::wc3::BuildBinnedClusterSet(
+            sceneLights, frame.view, frame.projection, static_cast<u32>(rs_.Pipeline().Width()),
+            static_cast<u32>(rs_.Pipeline().Height()), clusterSet_,
+            std::span<const Vector3f>(slotPositions.data(), static_cast<usize>(pointShadows_)));
+        clusterLightCount_ = std::min(clusterSet_.lightCount, bls::kClusterMaxCount);
+        UploadStructured(impl->blsHdLightsSb_, impl->blsHdLightsCapacity_,
+                         std::span<const bls::HdClusterLight>(clusterSet_.lights));
+        UploadStructured(impl->blsHdLightIndicesSb_, impl->blsHdLightIndicesCapacity_,
+                         std::span<const u32>(clusterSet_.indices));
+        UploadStructured(impl->blsHdClustersSb_, impl->blsHdClustersCapacity_,
+                         std::span<const u32>(clusterSet_.tiles));
+        if (impl->blsHdLightsSb_ != gfx::BufferHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 16, impl->blsHdLightsSb_);
+        if (impl->blsHdLightIndicesSb_ != gfx::BufferHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 17, impl->blsHdLightIndicesSb_);
+        if (impl->blsHdClustersSb_ != gfx::BufferHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 18, impl->blsHdClustersSb_);
+
+        // VS b1: no blight map, so a zero rect (the lookup clamps to its border).
+        if (impl->blsHdVsBlightCb_ != gfx::BufferHandle::Invalid) {
+            if (auto cb = bls::ScopedCb<bls::HdVsBlightCb>(rs_.Pipeline().Gfx(),
+                                                           impl->blsHdVsBlightCb_)) {
+                *cb = bls::HdVsBlightCb{};
+            }
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, impl->blsHdVsBlightCb_);
+        }
+
+        // Cascade shadows: the array at t10 with its comparison sampler at s10,
+        // sampled only when this frame's shadow pass filled at least one
+        // cascade (the count gates the SHADOW_CASCADE permutation per draw).
+        shadowCascades_ = (shadowsOn && shadows->DepthArray() != gfx::TextureHandle::Invalid)
+                              ? shadows->RenderedCascades()
+                              : 0;
+        if (shadowCascades_ > 0) {
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 10, shadows->DepthArray());
+            cmd->BindSampler(gfx::ShaderStage::Pixel, 10, rs_.Samplers().ShadowComparison());
+        }
+
+        // PS b1: cascades and the cluster grid. Only set 2's matrices are
+        // meaningful (see shadow_service.h); the other rows stay identity.
+        if (impl->blsHdClusteredCb_ != gfx::BufferHandle::Invalid) {
+            if (auto cb = bls::ScopedCb<bls::HdPsClusteredCb>(rs_.Pipeline().Gfx(),
+                                                              impl->blsHdClusteredCb_)) {
+                std::memset(&*cb, 0, sizeof(bls::HdPsClusteredCb));
+                for (auto& m : cb->cascadeSets)
+                    m = Matrix44f::identity();
+                for (i32 c = 0; c < shadowCascades_; ++c)
+                    cb->cascadeSets[shadow::kRenderedCascadeSet * shadow::kCascadeSets + c] =
+                        shadows->cascadeVP(c);
+                cb->cascadeCount = bls::IntBits(shadowCascades_);
+                cb->shadowLightCount = bls::IntBits(pointShadows_);
+                for (i32 s = 0; s < pointShadows_; ++s) {
+                    const shadow::PointShadow& ps = shadows->PointShadows()[s];
+                    bls::HdCubeShadow& rec = cb->cubeShadows[s];
+                    rec.position = {ps.position.x, ps.position.y, ps.position.z, 1.0f};
+                    rec.range = {ps.nearZ, ps.farZ, ps.strength, 0.0f};
+                    for (i32 f = 0; f < 6; ++f)
+                        rec.faces[f] = ps.faceViewProj[f];
                 }
-                if (cmpSmp != gfx::SamplerHandle::Invalid)
-                    cmd->BindSampler(gfx::ShaderStage::Pixel, 10 + static_cast<u32>(c), cmpSmp);
+                profiles::wc3::FillClusterConstants(clusterSet_,
+                                                    static_cast<f32>(rs_.Pipeline().Width()),
+                                                    static_cast<f32>(rs_.Pipeline().Height()), *cb);
             }
-        }
-
-        // Hoist pass-constant CBs out of the per-draw lambda. The HD draw
-        // path used to write + bind HdShadowCascadesCb, HdDebugVisCb, and
-        // SdOnHdShadowCascadeCountCb on EVERY draw, even though their
-        // contents are constant across the entire pass (cascade VPs,
-        // global debug mode, cascade count). On Firefox each ScopedCb
-        // costs ~50µs IPC; with 60 draws/frame this was ~9 ms wasted.
-        // Now: write+bind once per pass, the inner loop only writes the
-        // genuinely per-draw HdVsCb and HdPsCb.
-        if (rs_.GetShadowService() &&
-            rs_.Pipeline().impl_->blsHdShadowCb_ != gfx::BufferHandle::Invalid) {
-            if (auto sc = bls::ScopedCb<bls::HdShadowCascadesCb>(
-                    rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdShadowCb_)) {
-                rs_.GetShadowService()->FillVsCb(*sc);
-            }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1,
-                                    rs_.Pipeline().impl_->blsHdShadowCb_);
-        }
-        if (rs_.Pipeline().impl_->blsHdShadowCountCb_ != gfx::BufferHandle::Invalid) {
-            if (auto cnt = bls::ScopedCb<bls::SdOnHdShadowCascadeCountCb>(
-                    rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdShadowCountCb_)) {
-                const i32 n = (rs_.GetShadowService() && rs_.GetShadowService()->IsEnabled())
-                                  ? rs_.GetShadowService()->cascadeCount()
-                                  : 0;
-                const u32 bits = static_cast<u32>(n);
-                std::memcpy(&cnt->numCascades, &bits, sizeof(f32));
-                cnt->_pad[0] = cnt->_pad[1] = cnt->_pad[2] = 0.0f;
-            }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1,
-                                    rs_.Pipeline().impl_->blsHdShadowCountCb_);
-        }
-        if (rs_.Pipeline().impl_->blsHdDebugVisCb_ != gfx::BufferHandle::Invalid) {
-            if (auto dbg = bls::ScopedCb<bls::DebugVisCb>(
-                    rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdDebugVisCb_)) {
-                const i32 dbgMode = rs_.Settings().HdDebugMode();
-                u32 enabled = 0;
-                i32 psMode = dbgMode;
-                Vector3f overrideA = {0, 0, 0};
-                Vector3f overrideO = {0, 0, 0};
-                if (dbgMode >= 5 && dbgMode <= 7) {
-                    enabled = 1;
-                    psMode = 0;
-                    overrideA = (dbgMode == 5)   ? Vector3f{1, 1, 1}
-                                : (dbgMode == 6) ? Vector3f{0.5f, 0.5f, 0.5f}
-                                                 : Vector3f{0, 0, 0};
-                } else if (dbgMode == 8) {
-                    // ORM stub from texture_asset_manager (NeutralOrm 0x0000FFFFu):
-                    // AO=1, Roughness=1, Metallic=0. Shader reads .yz for
-                    // (roughness, metalness); .x feeds crystal refractMask.
-                    enabled = 2;
-                    psMode = 0;
-                    overrideO = {1.0f, 1.0f, 0.0f};
-                } else if (dbgMode == 9) {
-                    // "AO Only" — BLS state stays at default; the GTAO
-                    // apply pass overwrites hdrColor with the AO factor
-                    // (see GtaoService::SetDebugAoOnly below).
-                    psMode = 0;
-                }
-                dbg->enabledShaders = enabled;
-                const u32 modeBits = static_cast<u32>(psMode);
-                std::memcpy(&dbg->debugMode, &modeBits, sizeof(f32));
-                dbg->_p0[0] = dbg->_p0[1] = 0.0f;
-                dbg->overrideAlbedo = overrideA;
-                dbg->_p1 = 0.0f;
-                dbg->overrideOrm = overrideO;
-                dbg->_p2 = 0.0f;
-            }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3,
-                                    rs_.Pipeline().impl_->blsHdDebugVisCb_);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, impl->blsHdClusteredCb_);
         }
     }
 
@@ -198,22 +177,38 @@ public:
             const auto sample = dnc->SampleNow();
             if (sample.valid) {
                 // Front-biased sun (matches the shadow pass + SD baseline);
-                // keep the DNC day/night ambient+diffuse colour.
+                // keep the DNC day/night colours.
                 const Vector3f sunWS = ComputeSunDirWS(dnc);
                 const Vector3f dirVS = whiteout::transform_normal(
                     Vector3f{-sunWS.x, -sunWS.y, -sunWS.z}, view);
+                const Vector3f amb = profiles::wc3::EngineLightColor(sample.ambientColor);
                 return {.ambient = sample.ambient,
                         .diffuse = sample.diffuse,
                         .ambientColor = sample.ambientColor,
-                        .dirToSourceVS = dirVS};
+                        .dirToSourceVS = dirVS,
+                        .main = {.ambient = {amb.x * sample.ambientIntensity,
+                                             amb.y * sample.ambientIntensity,
+                                             amb.z * sample.ambientIntensity},
+                                 .shadowIntensity = sample.shadowIntensity,
+                                 .color = sample.diffuse,
+                                 .dirToLightVS = dirVS,
+                                 .enabled = true}};
             }
         }
 
+        const Vector3f amb = {kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y,
+                              kHdBaselineAmbientColor.z};
+        const Vector3f col = {kHdBaselineLightColor.x, kHdBaselineLightColor.y,
+                              kHdBaselineLightColor.z};
         return {
-            .ambient = {kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y,
-                        kHdBaselineAmbientColor.z},
-            .diffuse = {kHdBaselineLightColor.x, kHdBaselineLightColor.y, kHdBaselineLightColor.z},
+            .ambient = amb,
+            .diffuse = col,
             .dirToSourceVS = {0.0f, 0.0f, -1.0f},
+            .main = {.ambient = amb,
+                     .shadowIntensity = kHdBaselineShadowIntensity,
+                     .color = col,
+                     .dirToLightVS = {0.0f, 0.0f, -1.0f},
+                     .enabled = true},
         };
     }
 
@@ -231,16 +226,14 @@ public:
         EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, lighting);
     }
 
-    // The HD submission, kept intact (HD/SD-on-HD/Crystal program selection,
-    // fresnel, normal/ORM/emissive + team-colour maps, shadows, MRT G-buffer,
-    // and the per-layer fading-opaque depth prepass) — now fed one geoset at a
-    // time by RunLists instead of the legacy bucket loop.
+    // The HD submission (HD / SD-on-HD / Crystal program selection, fresnel,
+    // normal/ORM/emissive + team-colour maps, MRT G-buffer, and the per-layer
+    // fading-opaque depth prepass), fed one geoset at a time.
     void EmitLayersHd(const render_detail::RenderableView& view_, const GPUGeoset& geo,
                       bls::FrameInputs& frame, const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
                       const bls::LightingContext& lighting) {
-        const i32 lightCountForGeoset = owner_->SelectLights(
-            frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
-
+        (void)viewMat;
+        (void)lighting;
         const auto* table = core::SurfaceTableCast<Wc3SurfaceTable>(view_.surfaceTable);
         const GPUMaterial* mat = table ? table->Material(geo.materialId) : nullptr;
 
@@ -270,10 +263,21 @@ public:
         }
         const bool hasBones =
             (geo.boneVb != gfx::BufferHandle::Invalid) && (paletteCb != gfx::BufferHandle::Invalid);
+        // Path B actors (more bones than one palette holds) read the whole
+        // skeleton's palettes from VS t16 at this geoset's base, as 3.0.0 does
+        // for > 256 bones; the CB stays bound for the SD programs' sake.
+        const i32 boneBufferBase =
+            (hasBones && view_.skinning && !view_.skinning->UsesPerActorPalette() &&
+             view_.skinning->BoneBuffer() != gfx::BufferHandle::Invalid)
+                ? view_.skinning->BoneBufferBase(geo.geosetId)
+                : -1;
+        const bool boneBuffer = boneBufferBase >= 0;
         if (hasBones) {
             const u32 boneSlot = hasTangents ? 2u : 1u;
             cmd->BindVertexBuffer(boneSlot, geo.boneVb, sizeof(BoneVertex));
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, paletteCb);
+            if (boneBuffer)
+                cmd->BindShaderResource(gfx::ShaderStage::Vertex, 16, view_.skinning->BoneBuffer());
         }
 
         struct LayerJob {
@@ -281,7 +285,6 @@ public:
             bls::MatParams mp;
             const bls::BlsProgram* program = nullptr;
             bls::GxShaderID programShaderId = bls::GxShaderID::SD_on_HD;
-            i32 activeN = 0;
             f32 combinedAlpha = 1.0f;
             bool unlit = false;
             bool isOpaqueFading = false;
@@ -301,17 +304,14 @@ public:
             if (isOpaqueFading)
                 effectiveFilter = FILTER_BLEND;
 
-            const bool isCrystalMaterial =
-                (layer.shaderId == 24) && rs_.Pipeline().impl_->blsCrystalProgram_ != nullptr;
-            const bool isHdMaterial =
-                isCrystalMaterial || layer.shaderId == 1 || layer.shaderId == 24;
-            const bls::GxShaderID programShaderId = isCrystalMaterial ? bls::GxShaderID::Crystal
-                                                    : isHdMaterial    ? bls::GxShaderID::HD
-                                                                      : bls::GxShaderID::SD_on_HD;
+            bls::GxShaderID programShaderId = bls::ProgramForLayer(layer.shaderId);
+            if (programShaderId == bls::GxShaderID::Crystal &&
+                rs_.Pipeline().impl_->blsCrystalProgram_ == nullptr)
+                programShaderId = bls::GxShaderID::HD;
             const bls::BlsProgram* program =
-                isCrystalMaterial ? rs_.Pipeline().impl_->blsCrystalProgram_
-                : isHdMaterial    ? rs_.Pipeline().impl_->blsHdProgram_
-                                  : rs_.Pipeline().impl_->blsSdOnHdProgram_;
+                programShaderId == bls::GxShaderID::Crystal ? rs_.Pipeline().impl_->blsCrystalProgram_
+                : programShaderId == bls::GxShaderID::HD    ? rs_.Pipeline().impl_->blsHdProgram_
+                                                            : rs_.Pipeline().impl_->blsSdOnHdProgram_;
 
             bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, programShaderId);
             // Promoting an alpha-key layer to a blend keeps its cutoff: the clip
@@ -329,15 +329,11 @@ public:
             mp.fresnelOpacity = layer.fresnelOpacity;
             mp.fresnelColor = layer.fresnelColor;
 
-            const bool unlit = (mp.disables & bls::kDisableLighting) != 0;
-            const i32 activeN = unlit ? 0 : lightCountForGeoset;
-
             jobs[li].mp = mp;
             jobs[li].program = program;
             jobs[li].programShaderId = programShaderId;
-            jobs[li].activeN = activeN;
             jobs[li].combinedAlpha = combinedAlpha;
-            jobs[li].unlit = unlit;
+            jobs[li].unlit = (mp.disables & bls::kDisableLighting) != 0;
             jobs[li].isOpaqueFading = isOpaqueFading;
             jobs[li].valid = true;
         }
@@ -345,39 +341,35 @@ public:
         auto issueHdDraw = [&](const LayerJob& job, const bls::MatParams& matParams, i32 layerIndex,
                                bool prepassTwin) {
             const auto& layer = job.layer;
-            const bool unlit = job.unlit;
-            const i32 activeN = job.activeN;
-            const bls::GxShaderID programShaderId = job.programShaderId;
-            const bls::BlsProgram* program = job.program;
-            frame.numLights = activeN;
             render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette,
                                                       layer.textureAnimationId);
             {
+                const bool teamLayer =
+                    (layer.teamColorMapId == kHdTeamColorActive) || (layer.teamColorMapId >= 0);
+
                 bls::RenderState rs;
-                rs.shaderId = programShaderId;
+                rs.shaderId = job.programShaderId;
                 rs.alphaMode = static_cast<u8>(matParams.alpha);
                 rs.numColors = 0;
                 rs.numTexCoords = 1;
-
                 rs.numTangents = hasTangents ? 1 : 0;
-
                 rs.numWeights = hasBones ? 4 : 0;
-                rs.numLights = static_cast<u8>(activeN);
-                rs.fogEnabled = false;
-                rs.depthWrite = matParams.DepthWriteEnabled();
-                rs.lightingEnabled = !unlit && activeN > 0;
-                rs.prepass = false;
-                rs.shadows = rs_.GetShadowService() && rs_.GetShadowService()->IsEnabled();
-
-                rs.teamColor =
-                    (layer.teamColorMapId == kHdTeamColorActive) || (layer.teamColorMapId >= 0);
-                const i32 dbgMode = rs_.Settings().HdDebugMode();
-                const bool debugActive = (dbgMode > 0);
-                rs.debugShader = debugActive;
+                rs.boneBuffer = boneBuffer;
+                // The fading-opaque twin writes depth only: DEPTH_PREPASS
+                // compiles every output away.
+                rs.depthPrepass = !matParams.ColorWriteEnabled();
+                rs.lighting = !job.unlit;
+                rs.shadowCascade = rs.lighting && !rs.depthPrepass && shadowCascades_ > 0;
+                rs.pointShadows = rs.lighting && !rs.depthPrepass && pointShadows_ > 0;
+                // Opaque, colour-writing materials take the G-buffer permutation
+                // that also writes SV_Target1 (linear view-Z) and SV_Target2
+                // (encoded normal); transparents stay single-target.
+                rs.mrt = matParams.DepthWriteEnabled() && matParams.ColorWriteEnabled();
+                rs.multiLayer = teamLayer && job.programShaderId != bls::GxShaderID::SD_on_HD;
                 auto perm = bls::SelectPermutes(rs);
 
                 bls::PsoRequest req{};
-                req.program = program;
+                req.program = job.program;
                 req.vsIndex = perm.vs;
                 req.psIndex = perm.ps;
                 req.material = matParams;
@@ -391,24 +383,14 @@ public:
                 }
                 req.topology = gfx::PrimitiveTopology::TriangleList;
                 req.rtvFormat = RenderPipeline::kHdrSceneFormat;
-                // Match the HD G-buffer render pass: slot 1 = linear
-                // depth, slot 2 = encoded normal. Picked up by the
-                // backend's multi-RTV PSO build path. The HD opaque
-                // shader's WC3_IS_MRT permutation writes SV_Target1/2,
-                // so enable extra-slot writes (transparent / SD / line
-                // PSOs leave the flag at the default `false`).
+                // Match the HD G-buffer render pass: slot 1 = linear depth,
+                // slot 2 = encoded normal. Only the MRT permutation writes them,
+                // so only it enables extra-slot writes — WebGPU rejects a PSO
+                // whose extras have a write mask with no fragment output.
                 req.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
                 req.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
                 req.extraRtvCount = 2;
-                // Only the colour-writing, depth-writing materials
-                // (= the WC3_IS_MRT permutation) actually emit
-                // SV_Target1/2. Depth-prepass materials have
-                // DepthWriteEnabled=true but ColorWriteEnabled=false —
-                // their shader outputs nothing at all and WebGPU
-                // rejects a PSO whose extras have writeMask != 0 with
-                // no matching fragment output.
-                req.extraColorWrite =
-                    matParams.DepthWriteEnabled() && matParams.ColorWriteEnabled();
+                req.extraColorWrite = rs.mrt;
                 req.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
                 req.lhClipSpace = true;
                 auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(req);
@@ -420,6 +402,7 @@ public:
                                       sizeof(Vertex));
 
                 frame.world = view_.worldTransform;
+                frame.boneBufferBase = boneBuffer ? boneBufferBase : 0;
 
                 if (auto vs = bls::ScopedCb<bls::HdVsCb>(rs_.Pipeline().Gfx(),
                                                          rs_.Pipeline().impl_->blsHdVsCb_)) {
@@ -428,27 +411,13 @@ public:
                 cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2,
                                         rs_.Pipeline().impl_->blsHdVsCb_);
 
-                // Pass-constant CBs (HdShadowCascadesCb @ VS slot 1,
-                // SdOnHdShadowCascadeCountCb @ PS slot 1, DebugVisCb @
-                // PS slot 3) are bound once in BindPassResources — they
-                // don't vary per draw.
-
-                if (program == rs_.Pipeline().impl_->blsHdProgram_ ||
-                    program == rs_.Pipeline().impl_->blsCrystalProgram_) {
-                    if (auto ps = bls::ScopedCb<bls::HdPsCb>(rs_.Pipeline().Gfx(),
-                                                             rs_.Pipeline().impl_->blsHdPsCb_)) {
-                        bls::BuildHdPsCb(*ps, frame, matParams);
-                    }
-                    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2,
-                                            rs_.Pipeline().impl_->blsHdPsCb_);
-                } else {
-                    if (auto ps = bls::ScopedCb<bls::SdOnHdPsCb>(
-                            rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsSdOnHdPsCb_)) {
-                        bls::BuildSdOnHdPsCb(*ps, frame, matParams);
-                    }
-                    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2,
-                                            rs_.Pipeline().impl_->blsSdOnHdPsCb_);
+                // One per-draw PS bank for all three programs in 3.0.0.
+                if (auto ps = bls::ScopedCb<bls::HdPsCb>(rs_.Pipeline().Gfx(),
+                                                         rs_.Pipeline().impl_->blsHdPsCb_)) {
+                    bls::BuildHdPsCb(*ps, frame, matParams);
                 }
+                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2,
+                                        rs_.Pipeline().impl_->blsHdPsCb_);
 
                 auto bindMaterialTex = [&](u32 slot, i32 texId, gfx::TextureHandle fallback,
                                            u32* outWrap) {
@@ -522,7 +491,8 @@ public:
             : job.programShaderId == bls::GxShaderID::HD     ? debug::TraceShadingModel::Wc3Hd
                                                              : debug::TraceShadingModel::Wc3SdOnHd);
         d.blendClass = static_cast<u8>(matParams.alpha);
-        d.lightCount = static_cast<u8>(job.activeN);
+        // The cluster set the pass bound; every lit draw reads the same one.
+        d.lightCount = static_cast<u8>(job.unlit ? 0u : std::min(clusterLightCount_, 255u));
         d.combinedAlpha = job.combinedAlpha;
         // The fading-opaque twin is a real depth-only draw, so it says so
         // rather than tying with its colour draw on everything but the PSO.
@@ -556,19 +526,131 @@ public:
         bls::HdVsCb vs{};
         bls::BuildHdVsCb(vs, frame, matParams);
         u64 h = debug::TraceHashBytes(&vs, sizeof(vs));
-        if (job.program == rs_.Pipeline().impl_->blsHdProgram_ ||
-            job.program == rs_.Pipeline().impl_->blsCrystalProgram_) {
-            bls::HdPsCb ps{};
-            bls::BuildHdPsCb(ps, frame, matParams);
-            h = debug::TraceHashBytes(&ps, sizeof(ps), h);
-        } else {
-            bls::SdOnHdPsCb ps{};
-            bls::BuildSdOnHdPsCb(ps, frame, matParams);
-            h = debug::TraceHashBytes(&ps, sizeof(ps), h);
-        }
+        bls::HdPsCb ps{};
+        bls::BuildHdPsCb(ps, frame, matParams);
+        h = debug::TraceHashBytes(&ps, sizeof(ps), h);
         d.cbHash = h;
         debug::RecordGeosetDraw(d, view_, geo, layer, layerIndex, frame);
     }
+
+private:
+    // PS t11 / t12 (probe cube arrays) + t13 (split-sum LUT), and their mip
+    // counts in the frame inputs.
+    void BindIbl(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {
+        auto* impl = rs_.Pipeline().impl_.get();
+        const bool useDayNight = impl->iblDayNightLoaded_ && rs_.GetDncService() != nullptr &&
+                                 rs_.Settings().GetLightingMode() == LightingMode::InGame;
+
+        gfx::TextureHandle from = gfx::TextureHandle::Invalid;
+        gfx::TextureHandle to = gfx::TextureHandle::Invalid;
+        if (useDayNight) {
+            const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
+            const bool dayPrimary = blend.isDaytime;
+            frame.envFromMipCount = dayPrimary ? impl->iblDayMipCount_ : impl->iblNightMipCount_;
+            frame.envToMipCount = dayPrimary ? impl->iblNightMipCount_ : impl->iblDayMipCount_;
+            frame.envTransitionT = blend.transitionT;
+            const auto day = rs_.Textures().GetOwned(RenderPipeline::kIblDayProbeName);
+            const auto night = rs_.Textures().GetOwned(RenderPipeline::kIblNightProbeName);
+            from = dayPrimary ? day : night;
+            to = dayPrimary ? night : day;
+        } else {
+            frame.envFromMipCount = impl->iblProbeMipCount_;
+            frame.envToMipCount = impl->iblProbeMipCount_;
+            frame.envTransitionT = 0.75f;
+            from = rs_.Textures().GetOwned(RenderPipeline::kIblFromProbeName);
+            to = rs_.Textures().GetOwned(RenderPipeline::kIblToProbeName);
+            if (to == gfx::TextureHandle::Invalid)
+                to = from;
+        }
+        // Both counts zero is the shader's "no probe" test; leave them zero
+        // rather than sampling an unbound cube.
+        if (from == gfx::TextureHandle::Invalid || to == gfx::TextureHandle::Invalid) {
+            frame.envFromMipCount = 0.0f;
+            frame.envToMipCount = 0.0f;
+        }
+
+        const gfx::SamplerHandle linWrap = rs_.Samplers().LinearWrap();
+        const auto& defs = rs_.Textures().GetDefaults();
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 11,
+                                from != gfx::TextureHandle::Invalid ? from : defs.BlackCube);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 12,
+                                to != gfx::TextureHandle::Invalid ? to : defs.BlackCube);
+        const gfx::TextureHandle lut = rs_.Textures().GetOwned(RenderPipeline::kIblSplitSumLutName);
+        if (lut != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, lut);
+        for (u32 s : {11u, 12u, 13u})
+            cmd->BindSampler(gfx::ShaderStage::Pixel, s, linWrap);
+    }
+
+    // The engine's main light is light 0 of the device, the world sun. In the
+    // viewer that is the DNC rig or the constant baseline, except in Dynamic
+    // mode, where a model's own directional light takes the slot and a scene
+    // with only point lights has no main light at all (the SD palette's rule).
+    bls::MainLight SelectMainLight(const bls::LightingContext& lighting,
+                                   const Matrix44f& view) const {
+        switch (lighting.mode) {
+        case LightingMode::Glue:
+            return {};
+        case LightingMode::InGame:
+            return lighting.baseline.main;
+        case LightingMode::Dynamic:
+            break;
+        }
+        if (!lighting.sceneLights)
+            return lighting.baseline.main;
+        bool anyEnabled = false;
+        for (const auto& L : *lighting.sceneLights) {
+            if (!L.enabled)
+                continue;
+            anyEnabled = true;
+            if (L.kind == FrameState::LightKind::Omni)
+                continue;
+            const f32 n = std::sqrt(L.worldDir.x * L.worldDir.x + L.worldDir.y * L.worldDir.y +
+                                    L.worldDir.z * L.worldDir.z);
+            const Vector3f d = n > 1e-6f ? Vector3f{L.worldDir.x / n, L.worldDir.y / n,
+                                                    L.worldDir.z / n}
+                                         : Vector3f{0, 0, -1};
+            const Vector3f amb = profiles::wc3::EngineLightColor(L.ambientColor);
+            return {.ambient = {amb.x * L.ambIntensity, amb.y * L.ambIntensity,
+                                amb.z * L.ambIntensity},
+                    .shadowIntensity = L.shadowIntensity,
+                    .color = L.diffuse,
+                    .dirToLightVS = whiteout::transform_normal(Vector3f{-d.x, -d.y, -d.z}, view),
+                    .enabled = true};
+        }
+        return anyEnabled ? bls::MainLight{} : lighting.baseline.main;
+    }
+
+    // Write `data` into a CPU-writable structured buffer, growing it when the
+    // set outgrew the current allocation.
+    template <class T>
+    void UploadStructured(gfx::BufferHandle& handle, u32& capacity, std::span<const T> data) {
+        auto* gfx = rs_.Pipeline().Gfx();
+        if (!gfx || data.empty())
+            return;
+        const u32 count = static_cast<u32>(data.size());
+        if (handle == gfx::BufferHandle::Invalid || count > capacity) {
+            if (handle != gfx::BufferHandle::Invalid)
+                gfx->Destroy(handle);
+            capacity = std::max<u32>(count, capacity * 2u);
+            capacity = std::max<u32>(capacity, 16u);
+            handle = gfx->CreateBuffer({
+                .size = static_cast<u64>(capacity) * sizeof(T),
+                .elementStride = sizeof(T),
+                .usage = gfx::BufferUsage::ShaderResource | gfx::BufferUsage::CpuWritable,
+            });
+            if (handle == gfx::BufferHandle::Invalid) {
+                capacity = 0;
+                return;
+            }
+        }
+        gfx->UpdateBuffer(handle, data.data(), data.size_bytes());
+    }
+
+    profiles::wc3::ClusterSet clusterSet_;
+    u32 clusterLightCount_ = 0;
+    i32 shadowCascades_ = 0;
+    i32 pointShadows_ = 0;
 };
 
 } // namespace whiteout::flakes::renderer

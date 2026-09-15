@@ -7,6 +7,7 @@
 
 #include <webgpu/webgpu_cpp.h>
 
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -35,36 +36,52 @@ inline constexpr u32 kCbRingSlots = 1024;
 // Vulkan backend's `kSharedCbCapacity` and is plenty for our workload.
 inline constexpr u64 kSharedCbCapacity = 64ull * 1024 * 1024;
 
-// Binding slot counts.
+// Binding numbers.
 //
-// SRV / sampler: VS uses the lower half ([0, kStageBindingShift)); PS
-// uses the upper half — slangc emits PS textures at @binding(16+) when
-// kStageBindingShift==12 it'd use @binding(12+). We honor that split
-// with per-binding visibility flags in the layout (see CreateSharedBindLayouts).
+// The WGSL shaders put CBs in group 0, textures and storage buffers in group
+// 1, samplers in group 2. VS resources use @binding(register); PS resources
+// are shifted: CBs by kPsCbBindingOffsetWgsl (PsCbBindingOffset in
+// cb_structs.slang), textures, buffers and samplers by kStageBindingShift.
+// Bind* applies the same shift, so the pending arrays are indexed by the
+// shader's @binding number.
 //
-// CBs: VS CBs live at @binding(0..3); PS CBs live at @binding(4..11).
-// The slang side mirrors this split via PsCbBindingOffset (= 4 for
-// WGSL_TARGET, 16 otherwise) in cb_structs.slang — BindConstantBuffer
-// applies the same offset for the Pixel stage so the runtime and the
-// shader agree on which BindGroup entry feeds each cbuffer. The total
-// (12) matches the spec floor for maxUniformBuffersPerShaderStage so
-// the layout fits on mobile (Mali / Adreno) WebGPU.
+// Bind-group layouts are not fixed: each pipeline gets the layouts its two
+// WGSL modules declare (see ScanWgslBindings), so a shader's slot types and
+// per-stage counts are whatever it says.
 inline constexpr u32 kStageBindingShift = 12;
-inline constexpr u32 kCbBindingCount = 12;
 inline constexpr u32 kPsCbBindingOffsetWgsl = 4;
-// 12 VS + 16 PS = 28. PS half maxes the spec-floor cap
-// (maxSampledTexturesPerShaderStage = maxSamplersPerShaderStage = 16),
-// which is enough to land slang's register(t15) (binding kStageBindingShift+15 = 27).
-inline constexpr u32 kSrvBindingCount = 28;
-inline constexpr u32 kSamplerBindingCount = 28;
+inline constexpr u32 kMaxBindGroups = 4;
+inline constexpr u32 kMaxBindingIndex = 48;
+// Zero-filled buffer bound to storage declarations nobody filled; covers a
+// 256-bone palette of 48-byte transforms.
+inline constexpr u64 kDefaultStorageBufferBytes = 16384;
+// Size of the all-zero buffer behind phantom vertex attributes: 16 lanes.
+inline constexpr u64 kZeroVertexBufferBytes = 256;
 
-// PS slots within the WGSL bind groups (group 1/2 indices = kStageBindingShift + register).
-// Shadow maps and IBL cubemap arrays need distinct layout metadata, so
-// the layout builder hardcodes their slots here.
-inline constexpr u32 kPsShadowStartBinding = kStageBindingShift + 10; // register t10..t12 → 22..24
-inline constexpr u32 kPsShadowEndBinding = kStageBindingShift + 13;   // exclusive
-inline constexpr u32 kPsIblCubeFromBinding = kStageBindingShift + 13; // register t13 → 25
-inline constexpr u32 kPsIblCubeToBinding = kStageBindingShift + 14;   // register t14 → 26
+enum class WgslBindingKind : u8 {
+    Uniform,
+    ReadOnlyStorage,
+    Storage,
+    Texture,
+    Sampler,
+    ComparisonSampler,
+};
+
+// Which Bind* families feed a bind-group layout; a group is rebuilt only
+// when one of its families changed.
+inline constexpr u8 kBindKindConstant = 1 << 0;
+inline constexpr u8 kBindKindResource = 1 << 1;
+inline constexpr u8 kBindKindSampler = 1 << 2;
+
+// One `@group(G) @binding(N) var ...` declaration of a WGSL module.
+struct WgslBinding {
+    u32 group = 0;
+    u32 binding = 0;
+    WgslBindingKind kind = WgslBindingKind::Uniform;
+    wgpu::TextureSampleType sampleType = wgpu::TextureSampleType::Float;
+    wgpu::TextureViewDimension viewDimension = wgpu::TextureViewDimension::e2D;
+    bool multisampled = false;
+};
 
 // WebGPU has no notion of timeline semaphores. Every Present submits the
 // frame's encoder and increments `pendingEpoch`; OnSubmittedWorkDone bumps
@@ -109,6 +126,12 @@ struct TextureEntry {
     wgpu::Texture texture;
     wgpu::TextureView view;       // sRGB view (or matching unaliased view)
     wgpu::TextureView viewLinear; // linear partner view; null when N/A
+    // Dimension of `view`. A binding that declares another dimension gets a
+    // view from `altViews` (index = wgpu::TextureViewDimension value).
+    wgpu::TextureViewDimension viewDimension = wgpu::TextureViewDimension::e2D;
+    std::array<wgpu::TextureView, 7> altViews{};
+    // Single-layer 2D views for BeginDepthSlicePass, created on first use.
+    std::vector<wgpu::TextureView> sliceViews;
     wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
     i32 width = 0;
     i32 height = 0;
@@ -139,8 +162,11 @@ struct ShaderEntry {
     // with its WGSL type token. Populated at CreateShader time so
     // CreateGraphicsPipeline can spot gaps the InputLayout doesn't
     // cover and pad them with phantom attributes whose format matches
-    // the shader's declared type (see PipelineEntry::phantomVertexSlots).
+    // the shader's declared type (see PipelineEntry::phantomVertexSlot).
     std::vector<VertexInputLocation> vertexLocations;
+
+    // Every resource the module declares; the pipeline layout is built from these.
+    std::vector<WgslBinding> bindings;
 };
 
 struct PipelineEntry {
@@ -151,15 +177,21 @@ struct PipelineEntry {
     // WebGPUCommandList::BindPipeline.
     wgpu::TextureFormat colorFormat = wgpu::TextureFormat::Undefined;
 
-    // Vertex slot indices we added to satisfy VS @location() declarations
-    // the renderer's InputLayout didn't cover. BindPipeline binds the
-    // shared zero vertex buffer to each of these slots so missing
-    // attributes don't crash the GPU (they just read zeros).
-    std::vector<u32> phantomVertexSlots;
+    // Vertex slot carrying every attribute we added for VS @location()
+    // declarations the renderer's InputLayout didn't cover, or -1. It sits
+    // right after the real slots, so it can be a slot another pipeline binds
+    // real data to: BindPipeline puts the shared zero buffer there and
+    // restores the renderer's buffer when the next pipeline uses the slot.
+    i32 phantomVertexSlot = -1;
+
+    // Index into WebGPUDeviceState::bindLayouts for each group the layout has.
+    u32 groupCount = 0;
+    std::array<u32, kMaxBindGroups> groupLayouts{};
 };
 
 struct SamplerEntry {
     wgpu::Sampler sampler;
+    bool comparison = false;
 };
 
 struct SwapChainEntry {

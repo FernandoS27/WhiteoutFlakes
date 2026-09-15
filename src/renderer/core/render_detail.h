@@ -1,9 +1,11 @@
 #pragma once
 
+#include "bls/bls_frame.h"
 #include "core/draw_list.h"
 #include "core/surface_table.h"
 #include "gfx/gfx.h"
 #include "renderer/model/model_instance.h"
+#include "renderer/render_settings.h"
 #include "renderer/types.h"
 #include "whiteout/flakes/types.h"
 
@@ -139,6 +141,9 @@ struct CbPerFrameDesc {
 };
 
 void WriteCbPerFrame(gfx::IGFXDevice* gfx, gfx::BufferHandle cb, const CbPerFrameDesc& d);
+
+// The host's world fog (RenderSettings) as the BLS banks take it.
+bls::FogParams FogParamsFrom(const RenderSettings::WorldFog& fog);
 
 Vector4f NormalizedLightDir4(const Vector4f& dir);
 

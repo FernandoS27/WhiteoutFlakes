@@ -70,6 +70,25 @@ TEST_CASE("Both WC3 profiles declare a coherent chain") {
     REQUIRE(hdResult.ok);
 }
 
+TEST_CASE("WC3 HD runs bloom before depth of field, as 3.0.0 does") {
+    // 3.0.0's post order is Bloom -> Distortion -> DoF: the bloom composite
+    // lands in the scene colour and depth of field blurs the result. The 2.0.0
+    // order ran DoF first and left bloom crisp over a blurred scene.
+    RenderSettings settings;
+    Wc3HdProfile hd(settings);
+    int bloom = -1, dof = -1, i = 0;
+    for (const auto& p : hd.Passes()) {
+        if (p.slot == PassSlot::Bloom)
+            bloom = i;
+        if (p.slot == PassSlot::Dof)
+            dof = i;
+        ++i;
+    }
+    REQUIRE(bloom >= 0);
+    REQUIRE(dof >= 0);
+    REQUIRE(bloom < dof);
+}
+
 TEST_CASE("A pass reading a target nothing has written is rejected") {
     FakeProfile p;
     p.targets = {Target(TargetSlot::SceneColor), Target(TargetSlot::AmbientOcclusion)};

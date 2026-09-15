@@ -17,6 +17,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -98,30 +99,35 @@ struct WebGPUDeviceState {
     // BCn → RGBA8 decompression on adapters that can't sample BC directly.
     bool hasBlockCompression = false;
 
-    // Shared pipeline layout — every renderer PSO uses the same three
-    // bind-group layouts (CB / SRV / sampler), one slot per binding.
-    // Mirrors the descriptor-set-layout split in
-    // src/gfx/vulkan/vulkan_device_state.h.
-    wgpu::BindGroupLayout cbBgLayout;
-    wgpu::BindGroupLayout srvBgLayout;
-    wgpu::BindGroupLayout samplerBgLayout;
-    wgpu::PipelineLayout pipelineLayout;
+    // Float32Filterable enabled: R32F / RG32F / RGBA32F satisfy Float
+    // (filterable) texture entries, not only UnfilterableFloat.
+    bool float32Filterable = false;
 
-    // Default sampler / SRV used to fill any bind slot the renderer
-    // didn't populate — WebGPU rejects bind groups with holes, so we
-    // back-fill at FlushBindings time. The shadow / cube-array slots
-    // need typed defaults that match their layout metadata (depth-
-    // format texture for shadow, cube-array view for IBL probes,
-    // comparison sampler for shadow PCF) — Dawn validates the bound
-    // resource against the layout's exact sampleType/viewDimension.
+    // Bind-group layouts built from WGSL declarations, deduplicated by
+    // content. PipelineEntry::groupLayouts indexes `bindLayouts`; the index
+    // also keys the bind-group caches, so a group built for one layout is
+    // never set against another. Entries are never freed.
+    struct BindLayout {
+        wgpu::BindGroupLayout layout;
+        std::vector<wgpu::BindGroupLayoutEntry> entries;
+        u8 kindMask = 0; // kBindKind* families the entries draw from
+    };
+    std::vector<BindLayout> bindLayouts;
+    std::unordered_map<std::string, u32> bindLayoutIds;
+    std::unordered_map<u64, wgpu::PipelineLayout> pipelineLayouts;
+
+    // Defaults for entries the renderer left unbound (see CreateDefaultResources).
+    // The textures are 1x1 with 6 layers; FlushBindings takes views of the
+    // dimension each entry declares from `defaultViews`.
     wgpu::Sampler defaultSampler;
     wgpu::Sampler defaultComparisonSampler;
     wgpu::Texture defaultTexture;
-    wgpu::TextureView defaultTextureView;
     wgpu::Texture defaultDepthTexture;
-    wgpu::TextureView defaultDepthTextureView;
-    wgpu::Texture defaultCubeArrayTexture;
-    wgpu::TextureView defaultCubeArrayTextureView;
+    wgpu::Texture defaultUintTexture;
+    wgpu::Texture defaultSintTexture;
+    wgpu::Texture defaultTexture3D;
+    wgpu::Buffer defaultStorageBuffer;
+    std::unordered_map<u32, wgpu::TextureView> defaultViews;
 
     // Per-frame transient depth target — auto-attached at
     // BeginRenderPass time whenever the renderer passes depth=Invalid
@@ -161,9 +167,7 @@ struct WebGPUDeviceState {
     std::deque<PendingDelete> pendingDeletes;
     std::mutex deleteMutex; // pendingDeletes is touched from Destroy() (main) only
 
-    BindGroupCache bgCacheCb;
-    BindGroupCache bgCacheSrv;
-    BindGroupCache bgCacheSampler;
+    std::array<BindGroupCache, kMaxBindGroups> bgCaches;
 
     // Live GPU byte accounting. CreateTexture / CreateBuffer bump
     // `gpuBytesAlloc`; the deferred-delete lambda bumps `gpuBytesFreed`
@@ -199,9 +203,8 @@ void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state);
 // TextureHandle / SamplerHandle) so destroyed resources can't be kept
 // alive by stale cache entries referencing them.
 inline void InvalidateBindGroupCaches(WebGPUDeviceState& state) {
-    state.bgCacheCb.Clear();
-    state.bgCacheSrv.Clear();
-    state.bgCacheSampler.Clear();
+    for (auto& cache : state.bgCaches)
+        cache.Clear();
 }
 
 } // namespace whiteout::flakes::gfx::webgpu

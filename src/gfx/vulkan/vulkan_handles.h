@@ -47,6 +47,10 @@ struct TextureEntry {
     // `view` is the raw handle and `ownedView` stays null.
     vk::raii::ImageView ownedView = nullptr;
     VkImageView view = VK_NULL_HANDLE;
+    // One single-layer view per array slice, created by the first
+    // BeginDepthSlicePass on it (null = not created yet).
+    std::vector<vk::raii::ImageView> sliceViews;
+    u32 arrayLayers = 1;
 
     vk::Format format = vk::Format::eUndefined;
     vk::ImageLayout currentLayout = vk::ImageLayout::eUndefined;

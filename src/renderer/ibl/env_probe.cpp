@@ -279,7 +279,7 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         return failed;
     }
     DbgLogf("[WDEX IBL] CreateTexture OK\n");
-    return {handle, static_cast<i32>(mipCount)};
+    return {handle, static_cast<i32>(mipCount), static_cast<i32>(faceSize)};
 }
 } // namespace
 

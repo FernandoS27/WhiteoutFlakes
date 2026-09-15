@@ -49,6 +49,21 @@ void D3D11CommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCou
                                    clearStencil);
 }
 
+bool D3D11CommandList::BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                                           u8 clearStencil) {
+    assert(!inRenderPass_ && "Nested BeginRenderPass");
+    auto* entry = device_.GetTexture(depth);
+    ID3D11DepthStencilView* dsv = entry ? device_.DepthSliceView(*entry, arraySlice) : nullptr;
+    if (!dsv)
+        return false;
+    inRenderPass_ = true;
+    auto* ctx = device_.GetD3DContext();
+    ctx->OMSetRenderTargets(0, nullptr, dsv);
+    ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, clearDepth,
+                               clearStencil);
+    return true;
+}
+
 void D3D11CommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
                                            f32 clearDepth, u8 clearStencil, bool loadDepth) {
     // Same as BeginRenderPass minus the color clear — preserves existing

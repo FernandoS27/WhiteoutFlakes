@@ -31,6 +31,8 @@ public:
                          const f32 (*clearColors)[4], f32 clearDepth, u8 clearStencil) override;
     void BeginRenderPassLoad(TextureHandle color, TextureHandle depth, f32 clearDepth,
                              u8 clearStencil, bool loadDepth) override;
+    bool BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                             u8 clearStencil) override;
     void EndRenderPass() override;
 
     void BeginGpuZone(const char* name) override;
@@ -79,6 +81,8 @@ private:
     std::array<PendingCb, 32> pendingCBs_{};
     std::array<PendingSrv, 32> pendingSRVs_{};
     std::array<PendingSmp, 32> pendingSamplers_{};
+    // Indexed like kStorageBindings; offset captured at Bind like the CBs.
+    std::array<PendingCb, 5> pendingStorage_{};
     bool cbSetDirty_ = false;
     bool srvSetDirty_ = false;
     bool samplerSetDirty_ = false;
@@ -96,6 +100,9 @@ private:
     TextureHandle activeColorAttachments_[kMaxMrtColorAttachments] = {};
     u32 activeColorAttachmentCount_ = 0;
     TextureHandle activeDepthAttachment_ = TextureHandle::Invalid;
+    // Array slice the next BeginRenderPass attaches as depth (BeginDepthSlicePass).
+    static constexpr u32 kNoDepthSlice = ~0u;
+    u32 depthSlice_ = kNoDepthSlice;
     // Raw VkFormat held as u32 so this header stays free of vulkan.h.
     u32 activeColorFormat_ = 0;
     PipelineHandle lastBoundPipeline_ = PipelineHandle::Invalid;

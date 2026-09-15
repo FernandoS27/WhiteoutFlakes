@@ -26,9 +26,14 @@ struct TextureEntry {
     ID3D11ShaderResourceView* srv = nullptr;
     ID3D11RenderTargetView* rtv = nullptr;
     ID3D11DepthStencilView* dsv = nullptr;
+    // One DSV per array slice, created by the first BeginDepthSlicePass on it.
+    std::vector<ID3D11DepthStencilView*> sliceDsvs;
     TextureDesc desc{};
 
     void Release() {
+        for (auto*& v : sliceDsvs)
+            SafeRelease(v);
+        sliceDsvs.clear();
         SafeRelease(dsv);
         SafeRelease(rtv);
         SafeRelease(srv);

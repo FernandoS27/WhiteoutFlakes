@@ -336,6 +336,9 @@ struct Actor {
         // template — the buffer is per-instance state.
         gfx.Destroy(render.skinning.ActorPaletteCb());
         render.skinning.SetActorPaletteCb(gfx::BufferHandle::Invalid);
+        // Path B's structured palette, per instance for the same reason.
+        gfx.Destroy(render.skinning.BoneBuffer());
+        render.skinning.SetBoneBuffer(gfx::BufferHandle::Invalid, {});
 
         sourceTemplate.reset();
     }

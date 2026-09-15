@@ -60,32 +60,35 @@ CasterClass ClassifyCaster(const RenderableView& view, const wc3::Wc3SurfaceTabl
             .layerIndex = gc.firstVisibleLayer};
 }
 
-// The caster's VS constants. `misc.w` is `underWater`, and it has to stay 0:
-// the depth-prepass PS opens with `discard` on a negative worldPos.w, which the
-// VS computes as (worldZ - clipHeight) * underWater, so any other value would
-// cut the cascade at the world floor.
+// The caster's VS constants. `underWater` has to stay 0: the depth-prepass PS
+// opens with `discard` on a negative viewPos.w, which the VS computes as
+// (worldZ - clipHeight) * underWater, so any other value would cut the cascade
+// at the world floor.
 void BuildShadowVsCb(bls::HdVsCb& out, const Matrix44f& worldTransform,
                      const Matrix44f& cascadeVP, f32 alpha, const bls::ShaderTexMtx& texMtx) {
     std::memset(&out, 0, sizeof(out));
     out.world = worldTransform;
     out.worldView = worldTransform;
     out.worldViewProj = worldTransform * cascadeVP;
-    out.misc = {0.0f, 1.0f, 0.0f, 0.0f};
-    // The alpha the lit pass tests is albedo.a × this, so the caster has to
+    out.projection = Matrix44f::identity();
+    out.popcornScale = 1.0f;
+    // The alpha the lit pass tests is albedo.a x this, so the caster has to
     // carry the geoset's combined alpha or a fading unit's cut-out moves.
     out.diffuseColor = {1.0f, 1.0f, 1.0f, alpha};
     out.texMtx0 = texMtx;
     out.texMtx1 = bls::IdentityTexMtx();
 }
 
-// The three registers ps/ps_depth_prepass.slang actually reads. Everything else
-// in HdPsCb belongs to shading, which this permutation compiles out. Nothing
-// sets `cloakAmount` on a WC3 layer — leaving it 0 selects the uncloaked alpha
-// branch, which is the one the lit pass takes for the same reason.
+// What ps/hd_ps_prepass.slang's alpha-tested body reads: the alpha reference,
+// the fresnel alpha, the normal-map strength and the cloak amount. Nothing sets
+// `cloakAmount` on a WC3 layer — 0 selects the uncloaked alpha, the branch the
+// lit pass takes too — and the manual depth test stays off.
 void BuildShadowPsCb(bls::HdPsCb& out, const wc3::UnpackedLayer& layer) {
     std::memset(&out, 0, sizeof(out));
     out.alphaRef = bls::kAlphaKeyRef;
     out.fresnelColor = {0.0f, 0.0f, 0.0f, layer.fresnelOpacity};
+    out.normalStrength = 1.0f;
+    out.outputAlphaScale = 1.0f;
 }
 
 bls::ShaderTexMtx LayerTexMtx(const RenderableView& view, i32 textureAnimationId) {
@@ -135,19 +138,15 @@ bool ShadowPass::Run(ShadowService& service) {
 
     const auto& defaultTex = rs_.Textures().GetDefaults();
 
-    bool any = false;
-    for (i32 c = 0; c < service.cascadeCount(); ++c) {
-        const gfx::TextureHandle dst = service.depthTarget(c);
-        if (dst == gfx::TextureHandle::Invalid)
-            continue;
+    const gfx::TextureHandle dst = service.DepthArray();
+    if (dst == gfx::TextureHandle::Invalid)
+        return false;
 
-        cmd->BeginRenderPass(gfx::TextureHandle::Invalid, dst, nullptr, 1.0f, 0);
-        const f32 res = static_cast<f32>(service.Params().cascadeResolution);
-        cmd->SetViewport({0.0f, 0.0f, res, res, 0.0f, 1.0f});
-
+    // Every caster into the open depth pass through `cascadeVP` (a cascade or
+    // a cube face). `sortOrder` tags the trace records: the cascade index, or
+    // 100 + 6 * slot + face for a point-shadow face.
+    auto drawCasters = [&](const Matrix44f& cascadeVP, i32 sortOrder) {
         if (anyPso) {
-            const Matrix44f& cascadeVP = service.cascadeVP(c);
-
             const i32 selectedLod = rs_.Pipeline().ComputeSelectedLod();
 
             gfx::PipelineHandle currentPso = gfx::PipelineHandle::Invalid;
@@ -288,7 +287,7 @@ bool ShadowPass::Run(ShadowService& service) {
                         debug::TraceDraw d;
                         d.passSlot = static_cast<u8>(debug::TracePassSlot::ShadowMap);
                         d.shadingModel = static_cast<u8>(debug::TraceShadingModel::None);
-                        d.sortOrder = c; // cascade index
+                        d.sortOrder = sortOrder;
                         d.actor.rootActor =
                             debug::TraceRootOrdinal(rs_.Scene().Actors().All(), mi->handle);
                         d.actor.role = static_cast<u8>(mi->role);
@@ -317,11 +316,48 @@ bool ShadowPass::Run(ShadowService& service) {
                 }
             }
         }
+    };
 
+    // Counted from cascade 0 and stopped at the first slice the backend can't
+    // target, so the lit pass never walks into a cascade nobody drew.
+    i32 rendered = 0;
+    const i32 cascades = std::clamp(service.cascadeCount(), 1, kMaxCascades);
+    for (i32 c = 0; c < cascades; ++c) {
+        if (!cmd->BeginDepthSlicePass(dst, static_cast<u32>(CascadeSlice(c)), 1.0f, 0))
+            break;
+        ++rendered;
+        const f32 res = static_cast<f32>(std::max(64, service.Params().cascadeResolution));
+        cmd->SetViewport({0.0f, 0.0f, res, res, 0.0f, 1.0f});
+        drawCasters(service.cascadeVP(c), c);
         cmd->EndRenderPass();
-        any = true;
     }
-    return any;
+    service.SetRenderedCascades(rendered);
+
+    // Point-light cube faces, slot by slot; a slot counts only when all six
+    // faces were drawn.
+    i32 renderedPoint = 0;
+    const gfx::TextureHandle cubes = service.PointShadowArray();
+    if (cubes != gfx::TextureHandle::Invalid) {
+        const auto slots = service.PointShadows();
+        for (i32 s = 0; s < static_cast<i32>(slots.size()); ++s) {
+            bool complete = true;
+            for (i32 f = 0; f < 6 && complete; ++f) {
+                if (!cmd->BeginDepthSlicePass(cubes, static_cast<u32>(s * 6 + f), 1.0f, 0)) {
+                    complete = false;
+                    break;
+                }
+                const f32 res = static_cast<f32>(kPointShadowFaceSize);
+                cmd->SetViewport({0.0f, 0.0f, res, res, 0.0f, 1.0f});
+                drawCasters(slots[s].faceViewProj[f], 100 + s * 6 + f);
+                cmd->EndRenderPass();
+            }
+            if (!complete)
+                break;
+            ++renderedPoint;
+        }
+    }
+    service.SetRenderedPointShadows(renderedPoint);
+    return rendered > 0 || renderedPoint > 0;
 }
 
 } // namespace whiteout::flakes::renderer::shadow

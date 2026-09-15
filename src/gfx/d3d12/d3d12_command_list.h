@@ -20,6 +20,8 @@ public:
                          const f32 (*clearColors)[4], f32 clearDepth, u8 clearStencil) override;
     void BeginRenderPassLoad(TextureHandle color, TextureHandle depth, f32 clearDepth,
                              u8 clearStencil, bool loadDepth) override;
+    bool BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                             u8 clearStencil) override;
     void EndRenderPass() override;
 
     // GPU profiler zones are Vulkan-only today. Stubs keep the
@@ -86,7 +88,7 @@ private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kUavsForCompute> uavCs_{};
 
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kSamplersPerStage> samplerPs_{};
-    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kSamplersPerStage> samplerCs_{};
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kSamplersForCompute> samplerCs_{};
 };
 
 } // namespace whiteout::flakes::gfx::d3d12

@@ -1263,6 +1263,22 @@ struct FrameState {
         f32 ambIntensity = 0.0f;
         f32 attenStart = 0.0f;
         f32 attenEnd = 0.0f;
+        /// @brief Reforged 3.0 falloff: `exp(-damping d^2) / (1 + linear d +
+        ///        quadratic d^2)`. Static values only — SetLightValues never
+        ///        evaluates KLQF / KLLF / KLDA, so neither do we. The defaults
+        ///        are the ones the game substitutes for a pre-v1600 light.
+        f32 quadraticFalloff = 0.0005f;
+        f32 linearFalloff = 0.0f;
+        f32 damping = 0.00001f;
+        /// @brief MDLLIGHT+488 (CGxLight+28). On the main light it scales the
+        ///        HD image-based lighting term (PS cb2[28].w).
+        f32 shadowIntensity = 0.4f;
+        bool shadowCasting = false;
+        f32 shadowCastingStart = 0.0f;
+        f32 shadowCastingEnd = 0.0f;
+        /// @brief The light's node is named `Key_ShadowCast`: it takes a
+        ///        point-shadow slot ahead of every other caster.
+        bool shadowPriority = false;
         bool enabled = true;
     };
     std::vector<LightState> lights;

@@ -27,7 +27,9 @@ enum class RenderPass : u8 {
 };
 
 inline constexpr u32 kVsPermCount = 72;
-inline constexpr u32 kPsPermCount = 1152;
+// 3.0.0: 9 outer blocks x 32 inner bits. 2.0.0 had 128 inner bits; the fog
+// pair left the index when fog became a runtime constant.
+inline constexpr u32 kPsPermCount = 288;
 
 struct ShaderPermKey {
     u32 vsPerm = 0;
@@ -37,8 +39,7 @@ struct ShaderPermKey {
     bool operator==(const ShaderPermKey&) const = default;
 };
 
-ShaderPermKey classifyPopcornPerm(const LayerRendererFlags& flags, FogMode fog,
-                                  RenderPass pass) noexcept;
+ShaderPermKey classifyPopcornPerm(const LayerRendererFlags& flags, RenderPass pass) noexcept;
 
 struct VsPermFields {
     u32 modeIdx;
@@ -55,7 +56,7 @@ struct PsPermFields {
     u32 innerBits;
 };
 constexpr PsPermFields decodePsPerm(u32 perm) noexcept {
-    return {(perm / 128U) / 3U, (perm / 128U) % 3U, perm % 128U};
+    return {(perm / 32U) / 3U, (perm / 32U) % 3U, perm % 32U};
 }
 
 }

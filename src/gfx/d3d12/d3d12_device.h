@@ -3,6 +3,8 @@
 #include "d3d12_resources.h"
 #include "gfx/gfx.h"
 
+#include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -93,6 +95,8 @@ public:
     TextureEntry* GetTexture(TextureHandle h) {
         return textures_.Get(static_cast<u64>(h));
     }
+    // DSV of one slice of a depth texture array; ptr 0 when out of range.
+    D3D12_CPU_DESCRIPTOR_HANDLE DepthSliceDsv(TextureEntry& e, u32 slice);
     PipelineEntry* GetPipeline(PipelineHandle h) {
         return pipelines_.Get(static_cast<u64>(h));
     }
@@ -112,6 +116,18 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE GetNullSampler() const {
         return nullSampler_;
     }
+    // What an unbound PS sampler slot reads: the states the root signature used
+    // to hold as static samplers (s4 wrap, s9/s10 shadow compare, s11..s15
+    // clamp), point-clamp elsewhere.
+    D3D12_CPU_DESCRIPTOR_HANDLE GetDefaultSamplerPs(u32 slot) const {
+        return defaultSamplersPs_[slot];
+    }
+
+    // A shader-visible table holding `count` samplers, shared by every draw that
+    // binds the same set. The sampler heap is capped at 2048 descriptors, far
+    // fewer than draws x slots, but a frame only uses a handful of distinct sets.
+    D3D12_GPU_DESCRIPTOR_HANDLE SamplerTable(const D3D12_CPU_DESCRIPTOR_HANDLE* samplers,
+                                             u32 count);
 
 private:
     bool CreateDeviceAndQueue();
@@ -155,6 +171,12 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE nullSrv_{0};
     D3D12_CPU_DESCRIPTOR_HANDLE nullUav_{0};
     D3D12_CPU_DESCRIPTOR_HANDLE nullSampler_{0};
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kSamplersPerStage> defaultSamplersPs_{};
+
+    // Keyed by the source CPU handles, with the count in the last element.
+    using SamplerTableKey = std::array<SIZE_T, kSamplersPerStage + 1>;
+    std::map<SamplerTableKey, D3D12_GPU_DESCRIPTOR_HANDLE> samplerTables_;
+    u32 samplerTableHead_ = 0;
 
     SlotMap<BufferEntry> buffers_;
     SlotMap<TextureEntry> textures_;

@@ -637,6 +637,17 @@ if(WDX_BUILD_WC3_SHADERS AND WDX_USE_PREBUILT_SHADERS)
         "one runs slangc, the other copies pre-baked bundles. Pick one.")
 endif()
 
+# Where the viewer exe lands, spelled without naming the target (a generator
+# expression on WhiteoutFlakesStandalone would make Wc3Shaders depend on the
+# viewer, which depends on Wc3Shaders). The viewer pins Debug and Release to
+# standalone/; multi-config generators put every other config one level below.
+if(CMAKE_CONFIGURATION_TYPES)
+    set(WDX_VIEWER_EXE_DIR
+        "${CMAKE_BINARY_DIR}/standalone/$<$<NOT:$<CONFIG:Debug,Release>>:$<CONFIG>>")
+else()
+    set(WDX_VIEWER_EXE_DIR "${CMAKE_BINARY_DIR}/standalone")
+endif()
+
 if(WDX_USE_PREBUILT_SHADERS)
     set(WDX_PREBUILT_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/shaders"
         CACHE PATH "Pre-baked .bls staging tree (mirrors standalone/shaders/ layout)")
@@ -662,7 +673,20 @@ if(WDX_USE_PREBUILT_SHADERS)
         DEPENDS "${WDX_PREBUILT_SHADERS_DIR}"
         COMMENT "Wc3Shaders[prebuilt]: staging ${WDX_PREBUILT_SHADERS_DIR} -> ${_prebuilt_stage}"
         VERBATIM)
-    add_custom_target(Wc3Shaders ALL DEPENDS "${_prebuilt_stamp}")
+    # Beside the exe too, for the configs whose exe is not in standalone/
+    # (the same reason as the compiled pack's exe stage below).
+    set(_prebuilt_exe_stamp "${CMAKE_CURRENT_BINARY_DIR}/wc3_prebuilt_exe_$<CONFIG>.stamp")
+    add_custom_command(
+        OUTPUT  "${_prebuilt_exe_stamp}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DSRC=${_prebuilt_stage}"
+                "-DDST=${WDX_VIEWER_EXE_DIR}/shaders"
+                "-DSTAMP=${_prebuilt_exe_stamp}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/resources/copy_dir_unless_same.cmake"
+        DEPENDS "${_prebuilt_stamp}" "${CMAKE_CURRENT_SOURCE_DIR}/resources/copy_dir_unless_same.cmake"
+        COMMENT "Wc3Shaders[prebuilt]: staging the pack beside the viewer exe"
+        VERBATIM)
+    add_custom_target(Wc3Shaders ALL DEPENDS "${_prebuilt_exe_stamp}")
 
     # debug_shaders/ is intentionally not prebuilt — the .bls bundles
     # weigh ~865 MB and bloat the repo. Developers who need them flip
@@ -880,7 +904,25 @@ if(WDX_BUILD_WC3_SHADERS)
             COMMENT "Wc3Shaders[${variant}]: staging BLS bundles into ${_stage_dir}"
             VERBATIM)
 
-        set(${out_stamp_var} "${_stage}" PARENT_SCOPE)
+        # `standalone/` is not the exe directory for every config: Visual
+        # Studio puts RelWithDebInfo / MinSizeRel exes one level below it (see
+        # the lang/fonts staging on the viewer target). The viewer reads
+        # shaders/ beside its exe and falls back to the game's CASC, so a
+        # missed copy renders with the RETAIL shaders instead of this pack.
+        # Mirror the stage into the exe directory wherever the two differ.
+        set(_exe_stage "${CMAKE_BINARY_DIR}/wc3_${variant}_exe_stage_$<CONFIG>.stamp")
+        add_custom_command(
+            OUTPUT  "${_exe_stage}"
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DSRC=${_stage_dir}"
+                    "-DDST=${WDX_VIEWER_EXE_DIR}/${stage_subdir}"
+                    "-DSTAMP=${_exe_stage}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/resources/copy_dir_unless_same.cmake"
+            DEPENDS "${_stage}" "${CMAKE_CURRENT_SOURCE_DIR}/resources/copy_dir_unless_same.cmake"
+            COMMENT "Wc3Shaders[${variant}]: staging BLS bundles beside the viewer exe"
+            VERBATIM)
+
+        set(${out_stamp_var} "${_exe_stage}" PARENT_SCOPE)
     endfunction()
 
     wc3_shader_pipeline(release FALSE "shaders" WC3_RELEASE_STAGE_STAMP)
@@ -1259,6 +1301,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/core/render_detail.cpp
     src/renderer/core/render_profile.cpp
     src/renderer/profiles/wc3/wc3_classify.cpp
+    src/renderer/profiles/wc3/wc3_lighting_frame.cpp
     src/renderer/shading/surface_pass.cpp
     src/renderer/shading/unlit_shading.cpp
     src/renderer/render_target.cpp

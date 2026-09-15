@@ -21,9 +21,13 @@ struct DncAsset;
 struct DncSample {
     whiteout::Vector3f ambient{0, 0, 0};
     whiteout::Vector3f diffuse{0, 0, 0};
-    // Raw KLBC colour, kept separate from `ambient` because only the SD-on-HD
-    // path folds it in (CGxLightToShaderLight's ambLightModifier).
+    // Raw KLBC colour and KLBI intensity. The SD palette uses `ambient` (the
+    // intensity alone); the 3.0.0 HD main light block multiplies the two.
     whiteout::Vector3f ambientColor{0, 0, 0};
+    f32 ambientIntensity = 0.0f;
+    // The rig light's static ShadowIntensity (MDLLIGHT+488). HD writes it to PS
+    // cb2[28].w, where it scales the image-based lighting.
+    f32 shadowIntensity = 0.0f;
     whiteout::Vector3f worldDir{0, 0, -1};
     bool valid = false;
 };

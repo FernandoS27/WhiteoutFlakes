@@ -380,9 +380,7 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
     rs.numTexCoords = 1;
     rs.numWeights = 0;
     rs.numLights = 0;
-    rs.fogEnabled = false;
-    rs.depthWrite = mp.DepthWriteEnabled();
-    rs.lightingEnabled = false;
+    rs.sdFogMode = static_cast<u8>(bls::DrawFogMode(frame.fog, mp));
     auto perm = bls::SelectPermutes(rs);
 
     auto req =
@@ -602,9 +600,6 @@ bool RenderPipeline::RenderSplatsBls() {
         rs.numTexCoords = 1;
         rs.numWeights = 0;
         rs.numLights = 0;
-        rs.fogEnabled = false;
-        rs.depthWrite = mp.DepthWriteEnabled();
-        rs.lightingEnabled = false;
         auto perm = bls::SelectPermutes(rs);
 
         auto req =
@@ -739,6 +734,7 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
     outFrame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
     outFrame.numLights = 0;
     outFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+    outFrame.fog = render_detail::FogParamsFrom(rs_.Settings().GetWorldFog());
     outFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
 
     // Sorted handles: the ribbon unit index this walk assigns is what
@@ -834,7 +830,8 @@ void RenderPipeline::DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameIn
     mp.disables |= bls::kDisableLighting;
     mp.diffuseColor = {1, 1, 1, 1};
 
-    bls::RenderState rs = bls::MakeSdMeshRenderState(mp, 0, true, false);
+    bls::RenderState rs =
+        bls::MakeSdMeshRenderState(mp, 0, true, false, bls::DrawFogMode(frame.fog, mp));
     auto perm = bls::SelectPermutes(rs);
     auto req =
         bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
@@ -1048,8 +1045,10 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     }
 
     impl_->blsSdProgram_ = impl_->blsPrograms_->Load({bls::GxShaderID::SD, "SD_HighSpec", "SD"});
+    // 3.0.0 ships no SD_on_HD vertex shader: sd_on_hd_ps reads the HD VS's
+    // outputs (TEXCOORD10/11), and so does crystal_ps.
     impl_->blsSdOnHdProgram_ =
-        impl_->blsPrograms_->Load({bls::GxShaderID::SD_on_HD, "SD_on_HD", "SD_on_HD"});
+        impl_->blsPrograms_->Load({bls::GxShaderID::SD_on_HD, "HD", "SD_on_HD"});
     impl_->blsHdProgram_ = impl_->blsPrograms_->Load({bls::GxShaderID::HD, "HD", "HD"});
 
     impl_->blsCrystalProgram_ =
@@ -1061,6 +1060,25 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     // blsCornFxProgram_) are trademark-neutral.
     impl_->blsCornFxProgram_ =
         impl_->blsPrograms_->Load({bls::GxShaderID::CornFx, "PopcornFX", "PopcornFX"});
+
+    // The permuters encode one pack's layout. A pack built for another client
+    // (a 2.0.0 hd.bls has 144 / 512 permutations) would have every index land
+    // on a different feature set, or out of range, so say so up front.
+    for (const bls::BlsProgram* program :
+         {impl_->blsSdProgram_, impl_->blsSdOnHdProgram_, impl_->blsHdProgram_,
+          impl_->blsCrystalProgram_, impl_->blsCornFxProgram_}) {
+        if (!program || !program->IsValid())
+            continue;
+        const bls::PermuteCounts want = bls::ExpectedPermuteCounts(program->id);
+        const auto haveVs = static_cast<u32>(program->vs->PermuteCount());
+        const auto havePs = static_cast<u32>(program->ps->PermuteCount());
+        if (haveVs != want.vs || havePs != want.ps) {
+            std::fprintf(stderr,
+                         "[bls] ERROR: program %u bundle has %u/%u permutations, the 3.0.0 "
+                         "layout expects %u/%u — rebuild or restage the shader pack\n",
+                         static_cast<u32>(program->id), haveVs, havePs, want.vs, want.ps);
+        }
+    }
 
     // Hand the corn fx service the renderer's gfx + BLS resources so its
     // per-emitter CornEffectsGfxBackend can issue draws. Diffuse-texture
@@ -1091,20 +1109,20 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         const shadow::ShadowParams& sp =
             rs_.GetShadowService() ? rs_.GetShadowService()->Params() : shadow::ShadowParams{};
 
-        // Both casters run the HD *depth-prepass* permutation: `prepass`
-        // compiles SV_Target out of PSOutput entirely (types/ps_io.slang), so
-        // the perm is depth-only exactly like the null-PS pipeline it replaces
-        // — with the one difference that matters, a pixel shader that can
-        // discard. `numTexCoords = 1` is what makes that possible: the
-        // no-UV perms this pass used before emit texCoord = 0 and would
-        // sample a single texel. The alpha-test variant additionally selects
-        // AlphaTestOn, whose discard is the same one the lit pass applies.
+        // Both casters run the HD PS DEPTH_PREPASS permutation (bit 3); 3.0.0
+        // has no prepass digit in the VS, so the lit mesh VS serves both.
+        // DEPTH_PREPASS compiles SV_Target out of PSOutput entirely
+        // (types/ps_io.slang), so the perm is depth-only like a null-PS
+        // pipeline — with the one difference that matters, a pixel shader that
+        // can discard. `numTexCoords = 1` makes the cut-out sample the layer's
+        // UVs; the alpha-test variant selects AlphaTestOn, the same discard the
+        // lit pass applies.
         auto shadowPerms = [](bool skinned, bool alphaTest) {
             bls::RenderState rs;
             rs.shaderId = bls::GxShaderID::HD;
             rs.numTexCoords = 1;
             rs.numWeights = skinned ? 4 : 0;
-            rs.prepass = true;
+            rs.depthPrepass = true;
             rs.alphaMode = alphaTest ? static_cast<u8>(bls::GxMatAlpha::AlphaKey) : 0;
             return bls::SelectPermutes(rs);
         };
@@ -1251,24 +1269,17 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         .ringSlotsHint = kHotCbRingSlots,
     });
 
-    impl_->blsHdShadowCb_ = impl_->gfx_->CreateBuffer({
-        .size = sizeof(bls::HdShadowCascadesCb),
+    // Written once per HD pass, so the default ring is enough.
+    impl_->blsHdVsBlightCb_ = impl_->gfx_->CreateBuffer({
+        .size = sizeof(bls::HdVsBlightCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-        .ringSlotsHint = kHotCbRingSlots,
     });
-
-    impl_->blsHdShadowCountCb_ = impl_->gfx_->CreateBuffer({
-        .size = sizeof(bls::SdOnHdShadowCascadeCountCb),
+    impl_->blsHdClusteredCb_ = impl_->gfx_->CreateBuffer({
+        .size = sizeof(bls::HdPsClusteredCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-        .ringSlotsHint = kHotCbRingSlots,
     });
     impl_->blsHdPsCb_ = impl_->gfx_->CreateBuffer({
         .size = sizeof(bls::HdPsCb),
-        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-        .ringSlotsHint = kHotCbRingSlots,
-    });
-    impl_->blsSdOnHdPsCb_ = impl_->gfx_->CreateBuffer({
-        .size = sizeof(bls::SdOnHdPsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = kHotCbRingSlots,
     });
@@ -1282,11 +1293,6 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     });
     impl_->shadowPsCb_ = impl_->gfx_->CreateBuffer({
         .size = sizeof(bls::HdPsCb),
-        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-        .ringSlotsHint = kHotCbRingSlots,
-    });
-    impl_->blsHdDebugVisCb_ = impl_->gfx_->CreateBuffer({
-        .size = sizeof(bls::DebugVisCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = kHotCbRingSlots,
     });
@@ -1359,12 +1365,12 @@ void RenderPipeline::SetEnvProbe(const std::string& relPath) {
     rs_.Textures().ReleaseOwned(kIblToProbeName);
 
     gfx::TextureHandle fromHandle = gfx::TextureHandle::Invalid;
-    i32 mips = 0;
+    i32 faceSize = 0;
     if (!relPath.empty() && rs_.Scene().ActiveContentProvider()) {
         auto probe = ibl::LoadEnvProbe(*impl_->gfx_, *rs_.Scene().ActiveContentProvider(), relPath);
         if (probe.handle != gfx::TextureHandle::Invalid) {
             fromHandle = probe.handle;
-            mips = probe.mipCount;
+            faceSize = probe.faceSize;
         }
     }
     impl_->iblProbeFromContent_ = fromHandle != gfx::TextureHandle::Invalid;
@@ -1374,10 +1380,10 @@ void RenderPipeline::SetEnvProbe(const std::string& relPath) {
                      "procedural\n",
                      relPath.c_str());
         fromHandle = ibl::CreateDebugFacesEnvProbe(*impl_->gfx_);
-        mips = ibl::kEnvProbeMipLevels;
+        faceSize = ibl::kEnvProbeSize;
     }
     rs_.Textures().RegisterOwned(kIblFromProbeName, fromHandle);
-    impl_->iblProbeMipEnd_ = static_cast<f32>(mips - 1);
+    impl_->iblProbeMipCount_ = ibl::EngineProbeMipCount(faceSize);
 
     impl_->iblDayNightLoaded_ = false;
     rs_.Textures().ReleaseOwned(kIblDayProbeName);
@@ -1391,9 +1397,10 @@ void RenderPipeline::SetDayNightProbes(const std::string& dayPath, const std::st
     rs_.Textures().ReleaseOwned(kIblDayProbeName);
     rs_.Textures().ReleaseOwned(kIblNightProbeName);
     impl_->iblDayNightLoaded_ = false;
-    impl_->iblDayMipEnd_ = 0.0f;
-    impl_->iblNightMipEnd_ = 0.0f;
+    impl_->iblDayMipCount_ = 0.0f;
+    impl_->iblNightMipCount_ = 0.0f;
 
+    // Returns the face size of the loaded probe, 0 when it did not load.
     auto loadProbe = [&](const std::string& path, const char* slotName) -> i32 {
         if (path.empty())
             return 0;
@@ -1403,14 +1410,14 @@ void RenderPipeline::SetDayNightProbes(const std::string& dayPath, const std::st
             return 0;
         }
         rs_.Textures().RegisterOwned(slotName, probe.handle);
-        return probe.mipCount;
+        return probe.faceSize;
     };
 
-    const i32 dayMips = loadProbe(dayPath, kIblDayProbeName);
-    const i32 nightMips = loadProbe(nightPath, kIblNightProbeName);
-    if (dayMips > 0 && nightMips > 0) {
-        impl_->iblDayMipEnd_ = static_cast<f32>(dayMips - 1);
-        impl_->iblNightMipEnd_ = static_cast<f32>(nightMips - 1);
+    const i32 daySize = loadProbe(dayPath, kIblDayProbeName);
+    const i32 nightSize = loadProbe(nightPath, kIblNightProbeName);
+    if (daySize > 0 && nightSize > 0) {
+        impl_->iblDayMipCount_ = ibl::EngineProbeMipCount(daySize);
+        impl_->iblNightMipCount_ = ibl::EngineProbeMipCount(nightSize);
         impl_->iblDayNightLoaded_ = true;
     } else {
 
@@ -1454,10 +1461,16 @@ void RenderPipeline::ShutdownBlsShaders() {
         impl_->blsSdPsCb_ = gfx::BufferHandle::Invalid;
         impl_->gfx_->Destroy(impl_->blsHdVsCb_);
         impl_->blsHdVsCb_ = gfx::BufferHandle::Invalid;
-        impl_->gfx_->Destroy(impl_->blsHdShadowCb_);
-        impl_->blsHdShadowCb_ = gfx::BufferHandle::Invalid;
-        impl_->gfx_->Destroy(impl_->blsHdShadowCountCb_);
-        impl_->blsHdShadowCountCb_ = gfx::BufferHandle::Invalid;
+        for (gfx::BufferHandle* b : {&impl_->blsHdVsBlightCb_, &impl_->blsHdClusteredCb_,
+                                     &impl_->blsHdLightsSb_, &impl_->blsHdLightIndicesSb_,
+                                     &impl_->blsHdClustersSb_}) {
+            if (*b != gfx::BufferHandle::Invalid)
+                impl_->gfx_->Destroy(*b);
+            *b = gfx::BufferHandle::Invalid;
+        }
+        impl_->blsHdLightsCapacity_ = 0;
+        impl_->blsHdLightIndicesCapacity_ = 0;
+        impl_->blsHdClustersCapacity_ = 0;
         if (impl_->shadowPSO_ != gfx::PipelineHandle::Invalid) {
             impl_->gfx_->Destroy(impl_->shadowPSO_);
             impl_->shadowPSO_ = gfx::PipelineHandle::Invalid;
@@ -1484,10 +1497,6 @@ void RenderPipeline::ShutdownBlsShaders() {
         }
         impl_->gfx_->Destroy(impl_->blsHdPsCb_);
         impl_->blsHdPsCb_ = gfx::BufferHandle::Invalid;
-        impl_->gfx_->Destroy(impl_->blsSdOnHdPsCb_);
-        impl_->blsSdOnHdPsCb_ = gfx::BufferHandle::Invalid;
-        impl_->gfx_->Destroy(impl_->blsHdDebugVisCb_);
-        impl_->blsHdDebugVisCb_ = gfx::BufferHandle::Invalid;
 
         if (rs_.HasDeviceAssetManagers()) {
             rs_.Textures().ReleaseOwned(kIblFromProbeName);
@@ -2339,6 +2348,30 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         rs_.GetShadowService()->Update(csmCamView, csmCamProj, rs_.Pipeline().FrameCamera().GetNearZ(),
                                        rs_.Pipeline().FrameCamera().GetFarZ(), lightDirWS, sceneCenter,
                                        sceneRadius);
+
+        // Point-light slots from every actor's evaluated lights (the pool the
+        // lit pass clusters), faded on the scene clock so a paused scene holds.
+        {
+            std::vector<FrameState::LightState> lights;
+            for (u32 h : [&] {
+                     std::vector<u32> hs;
+                     for (auto& [id, mi] : rs_.Scene().Actors().All())
+                         hs.push_back(id);
+                     std::sort(hs.begin(), hs.end());
+                     return hs;
+                 }()) {
+                if (auto* mi = rs_.Scene().Actors().Find(h); mi && mi->parentVisibility > 0.02f)
+                    lights.insert(lights.end(), mi->render.activeLights.begin(),
+                                  mi->render.activeLights.end());
+            }
+            const i32 nowMs = rs_.Scene().GetAnimationTime();
+            const f32 dt = impl_->pointShadowClockMs_ >= 0
+                               ? std::max(0, nowMs - impl_->pointShadowClockMs_) * 0.001f
+                               : 0.0f;
+            impl_->pointShadowClockMs_ = nowMs;
+            rs_.GetShadowService()->UpdatePointShadows(lights, rs_.Pipeline().FrameCamera().GetSource(),
+                                                       dt);
+        }
         shadow::ShadowPass(rs_).Run(*rs_.GetShadowService());
     };
 
@@ -2516,17 +2549,17 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                         const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
                         const bool dayPrimary = blend.isDaytime;
                         in.envFromMipEnd =
-                            dayPrimary ? impl_->iblDayMipEnd_ : impl_->iblNightMipEnd_;
+                            dayPrimary ? impl_->iblDayMipCount_ : impl_->iblNightMipCount_;
                         in.envToMipEnd =
-                            dayPrimary ? impl_->iblNightMipEnd_ : impl_->iblDayMipEnd_;
+                            dayPrimary ? impl_->iblNightMipCount_ : impl_->iblDayMipCount_;
                         in.envTransitionT = blend.transitionT;
                         const auto day = rs_.Textures().GetOwned(kIblDayProbeName);
                         const auto night = rs_.Textures().GetOwned(kIblNightProbeName);
                         in.iblFrom = dayPrimary ? day : night;
                         in.iblTo = dayPrimary ? night : day;
                     } else {
-                        in.envFromMipEnd = impl_->iblProbeMipEnd_;
-                        in.envToMipEnd = impl_->iblProbeMipEnd_;
+                        in.envFromMipEnd = impl_->iblProbeMipCount_;
+                        in.envToMipEnd = impl_->iblProbeMipCount_;
                         in.envTransitionT = 0.75f;
                         in.iblFrom = rs_.Textures().GetOwned(kIblFromProbeName);
                         in.iblTo = rs_.Textures().GetOwned(kIblToProbeName);
@@ -3033,7 +3066,7 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
     cmd->BindVertexBuffer(0, impl_->tonemapVB_, sizeof(f32) * 5);
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, impl_->tonemapSampler_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, impl_->tonemapPsCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, bls::kPostPassCbSlot, impl_->tonemapPsCb_);
     cmd->Draw(3, 0);
 
     // Submit ImGui inside the same render pass so we don't have to open a
@@ -3482,6 +3515,7 @@ void RenderPipeline::RenderTransparentScene() {
             const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
             partFrame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
             partFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+            partFrame.fog = render_detail::FogParamsFrom(rs_.Settings().GetWorldFog());
             partFrame.numLights = 0;
             partFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
         }

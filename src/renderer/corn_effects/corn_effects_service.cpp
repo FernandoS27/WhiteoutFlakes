@@ -35,7 +35,7 @@ namespace {
 // that doesn't sample the diffuse texture and every particle renders
 // white regardless of texture state.
 constexpr u32 kVsPermBasicUVWithVC = 10;
-constexpr u32 kPsPermBasicUVWithVC = (0 * 3 + 1) * 128 + 0x20;
+constexpr u32 kPsPermBasicUVWithVC = (0 * 3 + 1) * 32 + 0x08;
 } // namespace
 
 CornEffectsService::CornEffectsService() = default;
@@ -341,35 +341,35 @@ bool CornEffectsService::ConsolidatePending() {
     const Matrix44f worldView     = frameInputs_.view;
     const Matrix44f worldViewProj = frameInputs_.view * frameInputs_.projection;
     if (auto vs = bls::ScopedCb<bls::HdVsCb>(device, sharedVsCb_)) {
+        // 3.0.0 popcorn_vs reads the HD mesh bank: world / worldView /
+        // worldViewProj and the particle scale at cb2[16].y.
         bls::HdVsCb& cb = *vs;
+        std::memset(&cb, 0, sizeof(cb));
         cb.world         = Matrix44f::identity();
         cb.worldView     = worldView;
         cb.worldViewProj = worldViewProj;
-        cb.misc          = {frameInputs_.effectTime, frameInputs_.cornEffectsScale, 0.0f, 0.0f};
+        cb.projection    = frameInputs_.projection;
+        cb.effectTime    = frameInputs_.effectTime;
+        cb.popcornScale  = frameInputs_.cornEffectsScale;
         cb.diffuseColor  = {1, 1, 1, 1};
-        cb.texMtx0       = {};
-        cb.texMtx1       = {};
     }
     if (auto ps = bls::ScopedCb<bls::HdPsCb>(device, sharedPsCb_)) {
+        // And popcorn_ps reads the HD mesh PS bank. The lanes that mean
+        // something else for particles: cb2[21] is the depth-buffer UV remap
+        // and cb2[22].x the soft-particle fade scale. No selected permutation
+        // enables soft particles or lighting, so fog (mode 0), the remap and the
+        // fade scale are inert; they are still the values those perms expect.
         bls::HdPsCb& cb = *ps;
         std::memset(&cb, 0, sizeof(cb));
-        cb.alphaRef      = 0.0f;
-        cb.fogParams     = {0, 0, 0, 0};
-        cb.fogColor      = {0, 0, 0, 1};
-        cb.worldView     = worldView;
-        cb.view          = frameInputs_.view;
-        cb.projection    = frameInputs_.projection;
-        // NOTE: the popcorn PS block aliases two of these. At offset 240 the
-        // shader reads `depthUVRemap` (engine value (1,-1,0,1)) where we write
-        // viewportRect, and at 256 it reads `depthFadeScale` (engine default
-        // 1e-6, per-draw 1/softness) where we write pixelParams1.x = 1.0f.
-        // Inert today because no perm we select reads them — but a soft-particle
-        // perm would fade everything to nothing and send the depth lookup
-        // off-screen. Fix these before enabling SoftParticles.
-        cb.viewportRect  = frameInputs_.viewportRect;
-        cb.pixelParams1  = {1.0f, 0.0f, 0.0f, 0.0f};
-        cb.effectTime    = frameInputs_.effectTime;
-        cb.lightCount    = 0.0f;
+        cb.worldView        = worldView;
+        cb.invView          = Matrix44f::inverse(frameInputs_.view);
+        cb.invProjection    = Matrix44f::inverse(frameInputs_.projection);
+        cb.projection       = frameInputs_.projection;
+        cb.depthUVRemap     = {1.0f, 1.0f, 0.0f, 0.0f};
+        cb.outputAlphaScale = 1.0f;
+        cb.effectTime       = frameInputs_.effectTime;
+        cb.useNdf           = bls::IntBits(1);
+        cb.normalStrength   = 1.0f;
     }
     return true;
 }

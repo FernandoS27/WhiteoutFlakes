@@ -44,7 +44,8 @@ public:
         proj = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
     }
 
-    void BindPassResources(gfx::IGFXCommandList*, bls::FrameInputs&) const {}
+    void BindPassResources(gfx::IGFXCommandList*, bls::FrameInputs&,
+                           const bls::LightingContext&) const {}
 
     bls::BaselineLights Baseline(const Matrix44f& view) const {
 
@@ -158,7 +159,8 @@ public:
         render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette,
                                                   layer.textureAnimationId);
 
-        const auto rsLocal = bls::MakeSdMeshRenderState(matParams, activeN, unlit, hasBones);
+        const auto rsLocal = bls::MakeSdMeshRenderState(matParams, activeN, unlit, hasBones,
+                                                        bls::DrawFogMode(frame.fog, matParams));
         const auto permLocal = bls::SelectPermutes(rsLocal);
         auto reqLocal = bls::MakePsoRequest(impl->blsSdProgram_, layout, matParams, permLocal);
 

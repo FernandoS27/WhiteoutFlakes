@@ -375,11 +375,33 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
     if (hasFlag(desc.usage, TextureUsage::DepthStencil)) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
         dsvDesc.Format = ToDXGI(desc.format);
-        dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (arraySize > 1) {
+            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+            dsvDesc.Texture2DArray.ArraySize = arraySize;
+        } else {
+            dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+        }
         device_->CreateDepthStencilView(entry.tex, &dsvDesc, &entry.dsv);
     }
 
     return static_cast<TextureHandle>(textures_.Insert(std::move(entry)));
+}
+
+ID3D11DepthStencilView* D3D11Device::DepthSliceView(TextureEntry& e, u32 slice) {
+    if (!e.tex || !hasFlag(e.desc.usage, TextureUsage::DepthStencil) ||
+        slice >= static_cast<u32>(std::max(1, e.desc.arraySize)))
+        return nullptr;
+    if (e.sliceDsvs.size() <= slice)
+        e.sliceDsvs.resize(slice + 1, nullptr);
+    if (!e.sliceDsvs[slice]) {
+        D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+        dsvDesc.Format = ToDXGI(e.desc.format);
+        dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsvDesc.Texture2DArray.FirstArraySlice = slice;
+        dsvDesc.Texture2DArray.ArraySize = 1;
+        device_->CreateDepthStencilView(e.tex, &dsvDesc, &e.sliceDsvs[slice]);
+    }
+    return e.sliceDsvs[slice];
 }
 
 void D3D11Device::Destroy(TextureHandle h) {

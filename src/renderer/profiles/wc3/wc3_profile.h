@@ -165,16 +165,19 @@ public:
                            TargetBits({TargetSlot::LinearDepth, TargetSlot::Normal}),
                            0,
                            TargetBits({TargetSlot::AmbientOcclusion, TargetSlot::SceneColor})});
+        // 3.0.0's post order is Bloom -> Distortion -> DoF (WC3_HD_PIPELINE_3_0_RE.md,
+        // frame order): bloom composites into the scene colour first, so depth
+        // of field blurs the bloomed image. WC3 has no distortion pass here.
+        passes_.push_back({PassSlot::Bloom,
+                           [this] { return settings_.BloomEnabled(); },
+                           TargetBit(TargetSlot::SceneColor),
+                           0,
+                           TargetBits({TargetSlot::Bloom, TargetSlot::SceneColor})});
         passes_.push_back({PassSlot::Dof,
                            [this] { return settings_.DofEnabled(); },
                            TargetBits({TargetSlot::SceneColor, TargetSlot::LinearDepth}),
                            0,
                            TargetBit(TargetSlot::SceneColor)});
-        passes_.push_back({PassSlot::Bloom,
-                           [this] { return settings_.BloomEnabled(); },
-                           TargetBit(TargetSlot::SceneColor),
-                           0,
-                           TargetBit(TargetSlot::Bloom)});
         passes_.push_back({PassSlot::Tonemap,
                            nullptr,
                            TargetBit(TargetSlot::SceneColor),

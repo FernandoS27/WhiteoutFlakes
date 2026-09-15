@@ -283,6 +283,26 @@ public:
         bonePaletteCb_ = cb;
     }
 
+    // Path B's structured-buffer twin: every geoset's palette back to back in
+    // one buffer, which WC3 3.0.0's HD vertex shader reads at VS t16 from the
+    // geoset's base (VS cb2 boneBufferBase) — the engine's > 256-bone path.
+    // The per-geoset CBs stay for the SD programs, which have no buffer path.
+    gfx::BufferHandle BoneBuffer() const {
+        return boneBuffer_;
+    }
+    // First bone of `geosetId`'s palette in BoneBuffer(), or -1.
+    i32 BoneBufferBase(i32 geosetId) const {
+        auto it = boneBufferBases_.find(geosetId);
+        return it != boneBufferBases_.end() ? it->second : -1;
+    }
+    const std::unordered_map<i32, i32>& BoneBufferBases() const {
+        return boneBufferBases_;
+    }
+    void SetBoneBuffer(gfx::BufferHandle buffer, std::unordered_map<i32, i32> bases) {
+        boneBuffer_ = buffer;
+        boneBufferBases_ = std::move(bases);
+    }
+
     const GeosetSkinInfo* GetGeosetWeights(i32 geosetId) const {
         if (!data_)
             return nullptr;
@@ -498,6 +518,9 @@ private:
     // loader once per actor instance after SetSharedData; freed by the
     // owner (Actor) on destruction. Invalid on Path B actors.
     gfx::BufferHandle bonePaletteCb_ = gfx::BufferHandle::Invalid;
+    // Path B only, same ownership as bonePaletteCb_ (see BoneBuffer()).
+    gfx::BufferHandle boneBuffer_ = gfx::BufferHandle::Invalid;
+    std::unordered_map<i32, i32> boneBufferBases_;
 };
 
 } // namespace whiteout::flakes::renderer::animation

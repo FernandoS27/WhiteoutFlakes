@@ -18,7 +18,11 @@ constexpr u32 kMagic = 0x544F5350u; // 'PSOT' LE
 // reshuffles (e.g. WGSL_TARGET binding shift) reference VS/PS indices
 // that no longer exist. Force a clean recapture so the cached PSOs
 // match the current pipeline state.
-constexpr u32 kVersion = 3u;
+//
+// v4 bump: the 3.0.0 shader pack renumbered GxShaderID (WaterReflection at 10)
+// and every lit family's permutation layout, so a v3 key names the wrong
+// program or a permutation with a different feature set.
+constexpr u32 kVersion = 4u;
 constexpr usize kV1EntrySize = 16; // pre-MRT layout
 
 u64 EntryKey(const PsoTraceEntry& e) {
@@ -86,7 +90,7 @@ void BlsPsoTrace::Load() {
     // Accept the current version + any legacy version we know how to
     // handle (currently: discard). Anything else (unknown future format,
     // corrupted header) → bail without touching the trace.
-    if (version != 1u && version != 2u && version != kVersion)
+    if (version != 1u && version != 2u && version != 3u && version != kVersion)
         return;
 
     // Sanity cap so a corrupt header doesn't drive a multi-GB allocation.
@@ -98,6 +102,7 @@ void BlsPsoTrace::Load() {
         f.read(reinterpret_cast<char*>(entries_.data()),
                static_cast<std::streamsize>(count) * sizeof(PsoTraceEntry));
     } else {
+        // v3 → current: 2.0.0 program ids and permutation indices.
         // v1 / v2 → current: the legacy entries either lack the MRT
         // fields outright (v1) or carry zeroed `extraRtvCount` for what
         // are now MRT-bound BLS opaque draws (v2, captured before the

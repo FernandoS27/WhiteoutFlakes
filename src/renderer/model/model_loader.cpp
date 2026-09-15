@@ -2641,12 +2641,19 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
     bls::BonePaletteCb identity{};
     for (i32 i = 0; i < bls::kMaxBones; ++i)
         bls::PackBone(identity.bones[i], Matrix44f::identity());
+    std::unordered_map<i32, i32> bufferBases;
+    i32 bufferBones = 0;
     for (auto& geo : mi.render.gpuGeosets) {
         if (!skinnable(geo))
             continue;
+        const i32 paletteSize = std::min(skinning.GeosetPaletteSize(geo.geosetId), bls::kMaxBones);
+        if (paletteSize > 0 && !bufferBases.contains(geo.geosetId)) {
+            bufferBases.emplace(geo.geosetId, bufferBones);
+            bufferBones += paletteSize;
+        }
         if (geo.bonePaletteCb != gfx::BufferHandle::Invalid)
             continue;
-        if (skinning.GeosetPaletteSize(geo.geosetId) <= 0)
+        if (paletteSize <= 0)
             continue;
         geo.bonePaletteCb = rs_.Pipeline().Gfx()->CreateBuffer(
             {
@@ -2656,6 +2663,23 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
             },
             &identity);
         geo.hasSkinning = true;
+    }
+
+    // The HD programs' structured-buffer palette (SkinningSystem::BoneBuffer),
+    // identity until the first UpdateAnimation like the CBs above.
+    if (skinning.BoneBuffer() == gfx::BufferHandle::Invalid && bufferBones > 0) {
+        std::vector<bls::ShaderBone> bones(static_cast<usize>(bufferBones));
+        for (auto& b : bones)
+            bls::PackBone(b, Matrix44f::identity());
+        const gfx::BufferHandle sb = rs_.Pipeline().Gfx()->CreateBuffer(
+            {
+                .size = static_cast<u64>(bones.size()) * sizeof(bls::ShaderBone),
+                .elementStride = sizeof(bls::ShaderBone),
+                .usage = gfx::BufferUsage::ShaderResource | gfx::BufferUsage::CpuWritable,
+                .ringSlotsHint = 4,
+            },
+            bones.data());
+        skinning.SetBoneBuffer(sb, std::move(bufferBases));
     }
 }
 

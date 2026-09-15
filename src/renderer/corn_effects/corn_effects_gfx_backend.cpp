@@ -37,7 +37,7 @@ namespace {
 
 constexpr u32 kVsPermBasicUVWithVC = 10;
 
-constexpr u32 kPsPermBasicUVWithVC = (0 * 3 + 1) * 128 + 0x20;
+constexpr u32 kPsPermBasicUVWithVC = (0 * 3 + 1) * 32 + 0x08;
 
 // Per-particle decorrelation value for the AlphaRemap LUT's V axis. Billboards
 // have no Cursor stream to read (the sim only fills it for ribbons), so the
@@ -181,8 +181,7 @@ bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::Laye
             flags.hasAlphaLut = (st.alphaLutSlot != 0);
             flags.hasRandom = flags.hasAlphaLut;
             const auto key = ::whiteout::cornflakes::classifyPopcornPerm(
-                flags, ::whiteout::cornflakes::FogMode::None,
-                ::whiteout::cornflakes::RenderPass::Color);
+                flags, ::whiteout::cornflakes::RenderPass::Color);
             st.vsPerm = key.vsPerm;
             st.psPerm = key.psPerm;
         }

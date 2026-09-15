@@ -41,13 +41,16 @@ public:
         outFrame.view = outView;
         outFrame.projection = proj;
         outFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+        outFrame.fog = render_detail::FogParamsFrom(rs_.Settings().GetWorldFog());
         outFrame.numLights = 0;
         outFrame.viewportRect = {(f32)rs_.Pipeline().Width(), (f32)rs_.Pipeline().Height(), 0.0f,
                                  0.0f};
 
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
-        d.BindPassResources(cmd, outFrame);
+        // The lighting context first: the HD pass packs the scene's lights into
+        // its per-pass buffers while it binds them.
         outLighting = MakeLightingContext(lists, outView);
+        d.BindPassResources(cmd, outFrame, outLighting);
     }
 
     // `collected` must outlive the returned context — it holds the light list

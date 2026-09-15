@@ -13,9 +13,12 @@ namespace whiteout::flakes::gfx::d3d12 {
 
 inline constexpr u32 kFramesInFlight = 2;
 
-inline constexpr u32 kSrvsPerStage = 16;
+// WC3 3.0.0's HD pixel shader reads t0..t18 and s0..s13, so the graphics tables
+// cover t0..t31 and s0..s15. Compute keeps a short sampler table.
+inline constexpr u32 kSrvsPerStage = 32;
 inline constexpr u32 kUavsForCompute = 4;
-inline constexpr u32 kSamplersPerStage = 4;
+inline constexpr u32 kSamplersPerStage = 16;
+inline constexpr u32 kSamplersForCompute = 4;
 
 inline constexpr u32 kRootCbvsPerStage = 4;
 
@@ -77,6 +80,9 @@ struct TextureEntry {
     bool hasSrv = false;
     bool hasRtv = false;
     bool hasDsv = false;
+    // One DSV per array slice, created by the first BeginDepthSlicePass on it;
+    // ptr 0 = not created yet.
+    std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> sliceDsvs;
 
     void Release() {
         if (ownsResource)
@@ -240,8 +246,10 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE cpuBase_{0};
 };
 
+// `a` need not be a power of two: a structured buffer's ring slot aligns to a
+// multiple of its element stride (48 for the bone palette).
 inline u64 AlignUp(u64 v, u64 a) {
-    return (v + a - 1) & ~(a - 1);
+    return (v + a - 1) / a * a;
 }
 
 } // namespace whiteout::flakes::gfx::d3d12

@@ -238,23 +238,35 @@ struct RenderPipeline::Impl {
     gfx::BufferHandle blsSdPsCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle blsHdVsCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle blsHdPsCb_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle blsHdShadowCb_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle blsHdShadowCountCb_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle blsSdOnHdPsCb_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle blsHdDebugVisCb_ = gfx::BufferHandle::Invalid;
+    // 3.0.0 HD pass banks: VS b1 (blight rect) and PS b1 (cascades + cluster
+    // grid), written once per pass.
+    gfx::BufferHandle blsHdVsBlightCb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle blsHdClusteredCb_ = gfx::BufferHandle::Invalid;
+    // The clustered light set, PS t16 / t17 / t18. Grown on demand; the
+    // capacities are element counts.
+    gfx::BufferHandle blsHdLightsSb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle blsHdLightIndicesSb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle blsHdClustersSb_ = gfx::BufferHandle::Invalid;
+    u32 blsHdLightsCapacity_ = 0;
+    u32 blsHdLightIndicesCapacity_ = 0;
+    u32 blsHdClustersCapacity_ = 0;
 
     // ---- Shadow ----
     gfx::PipelineHandle shadowPSO_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle shadowPSORigid_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle shadowPSOAlpha_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle shadowPSORigidAlpha_ = gfx::PipelineHandle::Invalid;
+    // Scene clock (ms) at the last point-shadow allocation, -1 before the first.
+    i32 pointShadowClockMs_ = -1;
     gfx::BufferHandle shadowVsCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle shadowPsCb_ = gfx::BufferHandle::Invalid;
 
-    // ---- IBL probe state (mip extents + load state; mode lives in settings_) ----
-    f32 iblProbeMipEnd_ = 0.0f;
-    f32 iblDayMipEnd_ = 0.0f;
-    f32 iblNightMipEnd_ = 0.0f;
+    // ---- IBL probe state (mip counts + load state; mode lives in settings_) ----
+    // Full-chain mip COUNT of each probe, log2(max(w,h)) + 1 — what the engine
+    // uploads to PS cb2[25] (CGxTex+0x48), not the last mip index.
+    f32 iblProbeMipCount_ = 0.0f;
+    f32 iblDayMipCount_ = 0.0f;
+    f32 iblNightMipCount_ = 0.0f;
     bool iblDayNightLoaded_ = false;
     // The single probe came out of the content, not CreateDebugFacesEnvProbe.
     bool iblProbeFromContent_ = false;

@@ -221,24 +221,20 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
     wgpu::Limits supported{};
     state.adapter.GetLimits(&supported);
 
-    // After the VS/PS visibility split, each stage sees kStageBindingShift
-    // (=12) bindings of each kind. We bump uniform-buffer-per-stage to 12
-    // (default is 12) and sampled-textures / samplers to 16 (the Apple
-    // Metal hard cap, also the WebGPU default). The dynamic-uniform cap is
-    // spec-bounded to ~8-11 on every implementation, so we DON'T use
-    // hasDynamicOffset — see CreateSharedBindLayouts. Each per-draw
-    // FlushBindings embeds the ring-slot offset into the BindGroupEntry
-    // directly.
+    // Pipeline layouts follow each shader's declarations, so the per-stage
+    // counts are whatever the widest shader needs (WC3 3.0 HD PS: 13 textures,
+    // 12 samplers, 3 storage buffers). Ask for up to 32 of each where the
+    // adapter has them; the spec defaults are 16 / 16 / 8. The dynamic-uniform
+    // cap is ~8-11 everywhere, so no binding uses hasDynamicOffset — each
+    // FlushBindings bakes the ring-slot offset into the BindGroupEntry.
     auto cap = [](u32 desired, u32 adapterMax) -> u32 { return std::min(desired, adapterMax); };
     wgpu::Limits required{};
-    required.maxSampledTexturesPerShaderStage =
-        cap(kStageBindingShift, supported.maxSampledTexturesPerShaderStage);
-    required.maxSamplersPerShaderStage =
-        cap(kStageBindingShift, supported.maxSamplersPerShaderStage);
-    required.maxUniformBuffersPerShaderStage =
-        cap(kStageBindingShift, supported.maxUniformBuffersPerShaderStage);
-    required.maxBindingsPerBindGroup = cap(kCbBindingCount, supported.maxBindingsPerBindGroup);
-    required.maxBindGroups = cap(4, supported.maxBindGroups);
+    required.maxSampledTexturesPerShaderStage = cap(32, supported.maxSampledTexturesPerShaderStage);
+    required.maxSamplersPerShaderStage = cap(32, supported.maxSamplersPerShaderStage);
+    required.maxUniformBuffersPerShaderStage = cap(12, supported.maxUniformBuffersPerShaderStage);
+    required.maxStorageBuffersPerShaderStage = cap(16, supported.maxStorageBuffersPerShaderStage);
+    required.maxBindingsPerBindGroup = cap(kMaxBindingIndex, supported.maxBindingsPerBindGroup);
+    required.maxBindGroups = cap(kMaxBindGroups, supported.maxBindGroups);
 
     // Features: enable BC texture compression when the adapter exposes
     // it — WC3 ships BC1/BC3/BC7 textures throughout. Same for the
@@ -299,151 +295,18 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
 
     wgpu::Limits limits{};
     if (state.device.GetLimits(&limits) == wgpu::Status::Success) {
-        state.minUniformBufferAlign = std::max<u64>(limits.minUniformBufferOffsetAlignment, 256ull);
+        // Ring slots back both uniform and storage bindings, so they align to both.
+        state.minUniformBufferAlign =
+            std::max<u64>({limits.minUniformBufferOffsetAlignment,
+                           limits.minStorageBufferOffsetAlignment, 256ull});
     }
     return true;
 }
 
-// Build the three shared bind-group layouts the renderer assumes:
-//   group 0: kCbBindingCount uniform-buffer slots, all dynamic-offset
-//            (VS in [0, kStageBindingShift), PS in upper half)
-//   group 1: kSrvBindingCount sampled-texture slots, both stages
-//   group 2: kSamplerBindingCount sampler slots, both stages
-// Every PSO uses the same PipelineLayout — matches the Vulkan backend's
-// kCbSetIndex / kSrvSetIndex / kSamplerSetIndex split.
-bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
-    // slangc emits unified bindings — both VS and PS can reference the
-    // same @binding(N) @group(0) for a shared uniform buffer. CBs must
-    // therefore have visibility = Vertex | Fragment so neither stage
-    // gets rejected. With kStageBindingShift==12 and the per-stage cap
-    // also 12, each stage still counts exactly 12 uniforms in the layout
-    // — within the cap.
-    //
-    // For SRV / Sampler the slangc-produced WGSL DOES split by stage
-    // (textures show up at @binding(0..) for VS, @binding(kStageBindingShift..)
-    // for PS), so the per-binding-index visibility split still applies.
-    //
-    // Compute is intentionally *not* in this mask: Apple Metal caps
-    // maxSampledTexturesPerShaderStage at 16, and we have 28 SRV
-    // bindings. Marking them all compute-visible would push compute past
-    // the cap and fail BindGroupLayout validation. frame_capture (the
-    // engine's only compute pipeline today) is off by default; when it's
-    // wired up properly it'll need its own narrower compute layout.
-    const auto bothStages = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
-
-    // ---- CB layout (uniform buffers, both-stages-visible) ----
-    {
-        std::vector<wgpu::BindGroupLayoutEntry> entries;
-        entries.reserve(kCbBindingCount);
-        for (u32 i = 0; i < kCbBindingCount; ++i) {
-            wgpu::BindGroupLayoutEntry e{};
-            e.binding = i;
-            e.visibility = bothStages;
-            e.buffer.type = wgpu::BufferBindingType::Uniform;
-            e.buffer.hasDynamicOffset = false;
-            e.buffer.minBindingSize = 0;
-            entries.push_back(e);
-        }
-        wgpu::BindGroupLayoutDescriptor d{};
-        d.label = "wf.cb";
-        d.entryCount = static_cast<u32>(entries.size());
-        d.entries = entries.data();
-        state.cbBgLayout = state.device.CreateBindGroupLayout(&d);
-        if (!state.cbBgLayout) {
-            std::fprintf(stderr, "[wgpu] CB BindGroupLayout creation failed\n");
-            return false;
-        }
-    }
-
-    // ---- SRV layout (sampled textures, per-binding type) ----
-    // Slot map mirrors slang's binding hardcoded for the WGSL target:
-    //   [0..12)   VS texture slots (Float / e2D, Filtering sampler)
-    //   [12..22)  PS color textures (Float / e2D, Filtering sampler)
-    //   [22..25)  PS shadow maps   (Depth / e2D, Comparison sampler)
-    //   [25..27)  PS IBL cubemaps  (Float / CubeArray, Filtering sampler)
-    //   [27]      PS BRDF LUT      (Float / e2D, Filtering sampler)
-    // Slang's `Texture2D<float>` shadow declarations + the WGSL
-    // depth-texture post-processor (compile_all_slang.py) emit
-    // `texture_depth_2d`, which Dawn requires sampleType=Depth in the
-    // layout for. The IBL cubemaps are declared as `TextureCubeArray<float4>`
-    // → WGSL `texture_cube_array<f32>`, viewDimension=CubeArray.
-    {
-        std::vector<wgpu::BindGroupLayoutEntry> entries;
-        entries.reserve(kSrvBindingCount);
-        for (u32 i = 0; i < kSrvBindingCount; ++i) {
-            wgpu::BindGroupLayoutEntry e{};
-            e.binding = i;
-            e.visibility =
-                (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex : wgpu::ShaderStage::Fragment;
-            e.texture.multisampled = false;
-            if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding) {
-                e.texture.sampleType = wgpu::TextureSampleType::Depth;
-                e.texture.viewDimension = wgpu::TextureViewDimension::e2D;
-            } else if (i == kPsIblCubeFromBinding || i == kPsIblCubeToBinding) {
-                e.texture.sampleType = wgpu::TextureSampleType::Float;
-                e.texture.viewDimension = wgpu::TextureViewDimension::CubeArray;
-            } else {
-                e.texture.sampleType = wgpu::TextureSampleType::Float;
-                e.texture.viewDimension = wgpu::TextureViewDimension::e2D;
-            }
-            entries.push_back(e);
-        }
-        wgpu::BindGroupLayoutDescriptor d{};
-        d.label = "wf.srv";
-        d.entryCount = static_cast<u32>(entries.size());
-        d.entries = entries.data();
-        state.srvBgLayout = state.device.CreateBindGroupLayout(&d);
-        if (!state.srvBgLayout) {
-            std::fprintf(stderr, "[wgpu] SRV BindGroupLayout creation failed\n");
-            return false;
-        }
-    }
-
-    // ---- Sampler layout (per-binding type — Comparison for shadow PCF) ----
-    {
-        std::vector<wgpu::BindGroupLayoutEntry> entries;
-        entries.reserve(kSamplerBindingCount);
-        for (u32 i = 0; i < kSamplerBindingCount; ++i) {
-            wgpu::BindGroupLayoutEntry e{};
-            e.binding = i;
-            e.visibility =
-                (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex : wgpu::ShaderStage::Fragment;
-            if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
-                e.sampler.type = wgpu::SamplerBindingType::Comparison;
-            else
-                e.sampler.type = wgpu::SamplerBindingType::Filtering;
-            entries.push_back(e);
-        }
-        wgpu::BindGroupLayoutDescriptor d{};
-        d.label = "wf.sampler";
-        d.entryCount = static_cast<u32>(entries.size());
-        d.entries = entries.data();
-        state.samplerBgLayout = state.device.CreateBindGroupLayout(&d);
-        if (!state.samplerBgLayout) {
-            std::fprintf(stderr, "[wgpu] Sampler BindGroupLayout creation failed\n");
-            return false;
-        }
-    }
-
-    const wgpu::BindGroupLayout layouts[] = {state.cbBgLayout, state.srvBgLayout,
-                                             state.samplerBgLayout};
-    wgpu::PipelineLayoutDescriptor pld{};
-    pld.label = "wf.pipelineLayout";
-    pld.bindGroupLayoutCount = 3;
-    pld.bindGroupLayouts = layouts;
-    state.pipelineLayout = state.device.CreatePipelineLayout(&pld);
-    if (!state.pipelineLayout) {
-        std::fprintf(stderr, "[wgpu] CreatePipelineLayout failed\n");
-        return false;
-    }
-    return true;
-}
-
-// Default textures + samplers used as fallback fills for bind-group
-// slots the renderer didn't populate. WebGPU rejects bind groups with
-// holes, AND each layout slot has an exact sampleType / viewDimension
-// the bound resource must match — so a 2D-color default can't fill a
-// depth slot or a cube-array slot. We allocate one of each here.
+// Default resources used to fill bind-group entries the renderer didn't
+// populate. WebGPU rejects bind groups with holes, and every layout entry has
+// an exact sampleType / viewDimension the bound resource must match, so there
+// is one default per kind a WGSL declaration can ask for.
 bool CreateDefaultResources(WebGPUDeviceState& state) {
     auto makeSampler = [&](const char* label, wgpu::CompareFunction cmp, wgpu::Sampler& out) {
         wgpu::SamplerDescriptor sd{};
@@ -464,106 +327,85 @@ bool CreateDefaultResources(WebGPUDeviceState& state) {
     makeSampler("wf.defaultCmpSampler", wgpu::CompareFunction::Always,
                 state.defaultComparisonSampler);
 
-    // 1x1 RGBA8 default color texture.
-    {
+    // One texture per format class, each 1x1 with 6 layers so the same texture
+    // serves 2D, 2D-array, cube and cube-array views. Colour texels are opaque
+    // black; depth stays zero-initialised, which the always-pass comparison
+    // sampler still reads as lit.
+    auto makeTexture = [&](const char* label, wgpu::TextureFormat fmt, wgpu::TextureDimension dim,
+                           u32 layers, const u8* texel, u32 texelBytes) {
         wgpu::TextureDescriptor td{};
-        td.label = "wf.defaultTexture";
-        td.size = {1, 1, 1};
+        td.label = label;
+        td.size = {1, 1, layers};
         td.mipLevelCount = 1;
         td.sampleCount = 1;
-        td.format = wgpu::TextureFormat::RGBA8Unorm;
-        td.dimension = wgpu::TextureDimension::e2D;
+        td.format = fmt;
+        td.dimension = dim;
         td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-        state.defaultTexture = state.device.CreateTexture(&td);
+        if (fmt == wgpu::TextureFormat::Depth32Float)
+            td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::RenderAttachment;
+        wgpu::Texture tex = state.device.CreateTexture(&td);
+        if (tex && texel) {
+            wgpu::TexelCopyBufferLayout layout{};
+            layout.bytesPerRow = texelBytes;
+            layout.rowsPerImage = 1;
+            wgpu::Extent3D ext{1, 1, 1};
+            for (u32 layer = 0; layer < layers; ++layer) {
+                wgpu::TexelCopyTextureInfo dst{};
+                dst.texture = tex;
+                dst.origin = {0, 0, dim == wgpu::TextureDimension::e3D ? 0u : layer};
+                state.queue.WriteTexture(&dst, texel, texelBytes, &layout, &ext);
+                if (dim == wgpu::TextureDimension::e3D)
+                    break;
+            }
+        }
+        return tex;
+    };
+    const u8 black[4] = {0, 0, 0, 255};
+    state.defaultTexture = makeTexture("wf.defaultTexture", wgpu::TextureFormat::RGBA8Unorm,
+                                       wgpu::TextureDimension::e2D, 6, black, 4);
+    state.defaultDepthTexture = makeTexture("wf.defaultDepth", wgpu::TextureFormat::Depth32Float,
+                                            wgpu::TextureDimension::e2D, 6, nullptr, 0);
+    state.defaultUintTexture = makeTexture("wf.defaultUint", wgpu::TextureFormat::RGBA8Uint,
+                                           wgpu::TextureDimension::e2D, 6, black, 4);
+    state.defaultSintTexture = makeTexture("wf.defaultSint", wgpu::TextureFormat::RGBA8Sint,
+                                           wgpu::TextureDimension::e2D, 6, black, 4);
+    state.defaultTexture3D = makeTexture("wf.defaultTexture3D", wgpu::TextureFormat::RGBA8Unorm,
+                                         wgpu::TextureDimension::e3D, 1, black, 4);
 
-        const u8 pixel[4] = {0, 0, 0, 255};
-        wgpu::TexelCopyTextureInfo dst{};
-        dst.texture = state.defaultTexture;
-        wgpu::TexelCopyBufferLayout layout{};
-        layout.bytesPerRow = 4;
-        layout.rowsPerImage = 1;
-        wgpu::Extent3D ext{1, 1, 1};
-        state.queue.WriteTexture(&dst, pixel, sizeof(pixel), &layout, &ext);
-
-        wgpu::TextureViewDescriptor vd{};
-        state.defaultTextureView = state.defaultTexture.CreateView(&vd);
-    }
-
-    // 1x1 Depth32Float default for shadow-map fallback. RenderAttachment
-    // usage is required to legally create depth textures; we never
-    // render to it but Dawn enforces the usage check.
+    // Zero-filled storage buffer for unbound read-only storage declarations.
     {
-        wgpu::TextureDescriptor td{};
-        td.label = "wf.defaultDepth";
-        td.size = {1, 1, 1};
-        td.mipLevelCount = 1;
-        td.sampleCount = 1;
-        td.format = wgpu::TextureFormat::Depth32Float;
-        td.dimension = wgpu::TextureDimension::e2D;
-        td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::RenderAttachment;
-        state.defaultDepthTexture = state.device.CreateTexture(&td);
-
-        wgpu::TextureViewDescriptor vd{};
-        vd.aspect = wgpu::TextureAspect::DepthOnly;
-        state.defaultDepthTextureView = state.defaultDepthTexture.CreateView(&vd);
-    }
-
-    // 1x1 cube-array (6 layers, depthOrArrayLayers=6 cube) for IBL
-    // probe fallback. depthOrArrayLayers must be a multiple of 6 for
-    // CubeArray, so 6 = one cube.
-    {
-        wgpu::TextureDescriptor td{};
-        td.label = "wf.defaultCubeArr";
-        td.size = {1, 1, 6};
-        td.mipLevelCount = 1;
-        td.sampleCount = 1;
-        td.format = wgpu::TextureFormat::RGBA8Unorm;
-        td.dimension = wgpu::TextureDimension::e2D;
-        td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-        state.defaultCubeArrayTexture = state.device.CreateTexture(&td);
-
-        const u8 pixel[4] = {0, 0, 0, 255};
-        wgpu::TexelCopyTextureInfo dst{};
-        dst.texture = state.defaultCubeArrayTexture;
-        wgpu::TexelCopyBufferLayout layout{};
-        layout.bytesPerRow = 4;
-        layout.rowsPerImage = 1;
-        // Single face — the other five stay zero-initialised, which is
-        // fine since the cube is just a "no-binding-yet" placeholder.
-        wgpu::Extent3D ext{1, 1, 1};
-        state.queue.WriteTexture(&dst, pixel, sizeof(pixel), &layout, &ext);
-
-        wgpu::TextureViewDescriptor vd{};
-        vd.dimension = wgpu::TextureViewDimension::CubeArray;
-        vd.arrayLayerCount = 6;
-        state.defaultCubeArrayTextureView = state.defaultCubeArrayTexture.CreateView(&vd);
+        wgpu::BufferDescriptor bd{};
+        bd.label = "wf.defaultStorage";
+        bd.size = kDefaultStorageBufferBytes;
+        bd.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
+        state.defaultStorageBuffer = state.device.CreateBuffer(&bd);
     }
 
     if (!state.defaultSampler || !state.defaultComparisonSampler) {
         std::fprintf(stderr, "[wgpu] default sampler creation failed\n");
         return false;
     }
-    if (!state.defaultTextureView || !state.defaultDepthTextureView ||
-        !state.defaultCubeArrayTextureView) {
-        std::fprintf(stderr, "[wgpu] default texture/view creation failed\n");
+    if (!state.defaultTexture || !state.defaultDepthTexture || !state.defaultUintTexture ||
+        !state.defaultSintTexture || !state.defaultTexture3D || !state.defaultStorageBuffer) {
+        std::fprintf(stderr, "[wgpu] default texture/buffer creation failed\n");
         return false;
     }
     return true;
 }
 
-// Tiny all-zero buffer bound to phantom vertex slots — see
-// PipelineEntry::phantomVertexSlots in webgpu_handles.h. 256 bytes is
-// enough for any realistic per-vertex attribute size (largest WGSL
-// scalar/vector format is 16 bytes); shaders read zero through it.
+// Tiny all-zero buffer bound to the phantom vertex slot — see
+// PipelineEntry::phantomVertexSlot in webgpu_handles.h. One 16-byte lane per
+// phantom attribute (the largest WGSL scalar/vector format is 16 bytes);
+// shaders read zero through it.
 void CreateZeroVertexBuffer(WebGPUDeviceState& state) {
     wgpu::BufferDescriptor bd{};
     bd.label = "wf.zeroVtx";
-    bd.size = 256;
+    bd.size = kZeroVertexBufferBytes;
     bd.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
     bd.mappedAtCreation = false;
     state.zeroVertexBuffer = state.device.CreateBuffer(&bd);
     if (state.zeroVertexBuffer) {
-        std::array<u8, 256> zeros{};
+        std::array<u8, kZeroVertexBufferBytes> zeros{};
         state.queue.WriteBuffer(state.zeroVertexBuffer, 0, zeros.data(), zeros.size());
     }
 }
@@ -673,11 +515,7 @@ bool WebGPUDevice::Init(bool enableValidation) {
         return false;
     }
 #endif
-    std::fprintf(stderr, "[wgpu] Init: building shared bind layouts\n");
-    if (!CreateSharedBindLayouts(state)) {
-        std::fprintf(stderr, "[wgpu] Init: shared bind layouts failed\n");
-        return false;
-    }
+    state.float32Filterable = state.device.HasFeature(wgpu::FeatureName::Float32Filterable);
     std::fprintf(stderr, "[wgpu] Init: building default resources\n");
     if (!CreateDefaultResources(state)) {
         std::fprintf(stderr, "[wgpu] Init: default resources failed\n");

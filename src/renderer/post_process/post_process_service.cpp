@@ -364,7 +364,8 @@ void PostProcessService::RunBloom(gfx::IGFXCommandList* cmd, const RenderTarget&
         cmd->SetViewport({0, 0, w, h, 0, 1});
         cmd->BindPipeline(extractPso_);
         cmd->BindVertexBuffer(0, spriteVb_, spriteStride);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, extractCb_);
+        // 3.0.0 bloomextract / bloomcombine read their bank at b3 (b1 in 2.0.0).
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, extractCb_);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, linearSampler_);
         cmd->Draw(3, 0);
@@ -412,7 +413,7 @@ void PostProcessService::RunBloom(gfx::IGFXCommandList* cmd, const RenderTarget&
         cmd->SetViewport({0, 0, w, h, 0, 1});
         cmd->BindPipeline(combinePso_);
         cmd->BindVertexBuffer(0, spriteVb_, spriteStride);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, combineCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, combineCb_);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 1, target.bloomScratchA);
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, linearSampler_);

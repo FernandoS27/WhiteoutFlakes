@@ -12,12 +12,10 @@ inline constexpr u32 kHasNT = 0x04U;
 
 namespace ps_inner {
 inline constexpr u32 kWriteGBuffer = 0x01U;
-inline constexpr u32 kFogLinear = 0x02U;
-inline constexpr u32 kFogExp = 0x04U;
-inline constexpr u32 kSoftParticles = 0x08U;
-inline constexpr u32 kAlphaLut = 0x10U;
-inline constexpr u32 kVertexColor = 0x20U;
-inline constexpr u32 kLit = 0x40U;
+inline constexpr u32 kSoftParticles = 0x02U;
+inline constexpr u32 kAlphaLut = 0x04U;
+inline constexpr u32 kVertexColor = 0x08U;
+inline constexpr u32 kLit = 0x10U;
 }
 
 struct OuterParts {
@@ -59,22 +57,7 @@ u32 computeVsInner(const LayerRendererFlags& flags, u32 uvVariant) noexcept {
     return inner;
 }
 
-u32 fogBits(FogMode fog) noexcept {
-    switch (fog) {
-    case FogMode::Linear:
-        return ps_inner::kFogLinear;
-    case FogMode::Exp:
-        return ps_inner::kFogExp;
-    case FogMode::ExpSq:
-
-        return ps_inner::kFogLinear | ps_inner::kFogExp;
-    case FogMode::None:
-    default:
-        return 0;
-    }
-}
-
-u32 computePsInner(const LayerRendererFlags& flags, FogMode fog, RenderPass pass) noexcept {
+u32 computePsInner(const LayerRendererFlags& flags, RenderPass pass) noexcept {
     u32 inner = 0;
 
     if (flags.hasSoftParticles) {
@@ -87,7 +70,6 @@ u32 computePsInner(const LayerRendererFlags& flags, FogMode fog, RenderPass pass
     if (flags.writeGBuffer) {
         inner |= ps_inner::kWriteGBuffer;
     }
-    inner |= fogBits(fog);
     if (flags.hasAlphaLut && flags.hasUV) {
 
         inner |= ps_inner::kAlphaLut;
@@ -103,17 +85,16 @@ u32 computePsInner(const LayerRendererFlags& flags, FogMode fog, RenderPass pass
 
 }
 
-ShaderPermKey classifyPopcornPerm(const LayerRendererFlags& flags, FogMode fog,
-                                  RenderPass pass) noexcept {
+ShaderPermKey classifyPopcornPerm(const LayerRendererFlags& flags, RenderPass pass) noexcept {
     const auto outer = resolveOuter(flags, pass);
     const u32 outerKey = outer.modeIdx * 3U + outer.uvVariant;
 
     const u32 vsInner = computeVsInner(flags, outer.uvVariant);
-    const u32 psInner = computePsInner(flags, fog, pass);
+    const u32 psInner = computePsInner(flags, pass);
 
     ShaderPermKey key;
     key.vsPerm = outerKey * 8U + vsInner;
-    key.psPerm = outerKey * 128U + psInner;
+    key.psPerm = outerKey * 32U + psInner;
     key.pass = pass;
     return key;
 }

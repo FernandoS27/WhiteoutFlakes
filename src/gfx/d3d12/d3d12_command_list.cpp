@@ -152,6 +152,31 @@ void D3D12CommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCou
     }
 }
 
+bool D3D12CommandList::BeginDepthSlicePass(TextureHandle depth, u32 arraySlice, f32 clearDepth,
+                                           u8 clearStencil) {
+    assert(!inRenderPass_ && "Nested BeginRenderPass");
+    auto* entry = device_.GetTexture(depth);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+        entry ? device_.DepthSliceDsv(*entry, arraySlice) : D3D12_CPU_DESCRIPTOR_HANDLE{0};
+    if (!dsv.ptr)
+        return false;
+    inRenderPass_ = true;
+    currentColorRt_ = TextureHandle{};
+    currentDepthRt_ = depth;
+
+    // The whole resource moves to DEPTH_WRITE: state is tracked per texture,
+    // not per slice, and the lit pass samples every slice afterwards.
+    TransitionTexture(*entry, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    auto* cmd = device_.GetCmdList();
+    cmd->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+    D3D12_CLEAR_FLAGS clearFlags = D3D12_CLEAR_FLAG_DEPTH;
+    if (entry->desc.format == Format::D24_UNORM_S8_UINT ||
+        entry->desc.format == Format::D32_FLOAT_S8_UINT)
+        clearFlags |= D3D12_CLEAR_FLAG_STENCIL;
+    cmd->ClearDepthStencilView(dsv, clearFlags, clearDepth, clearStencil, 0, nullptr);
+    return true;
+}
+
 void D3D12CommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
                                            f32 clearDepth, u8 clearStencil, bool loadDepth) {
     // Same setup as BeginRenderPass, minus the ClearRenderTargetView.
@@ -369,18 +394,18 @@ void D3D12CommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
 }
 
 void D3D12CommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle h) {
-    if (slot >= kSamplersPerStage)
-        return;
     auto* e = device_.GetSampler(h);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu{0};
     if (e && e->valid)
         cpu = e->samplerCpu;
     switch (stage) {
     case ShaderStage::Pixel:
-        samplerPs_[slot] = cpu;
+        if (slot < kSamplersPerStage)
+            samplerPs_[slot] = cpu;
         break;
     case ShaderStage::Compute:
-        samplerCs_[slot] = cpu;
+        if (slot < kSamplersForCompute)
+            samplerCs_[slot] = cpu;
         break;
     default:
         break;
@@ -440,12 +465,11 @@ void D3D12CommandList::ApplyGraphicsBindings() {
     }
 
     {
-        auto slice = device_.SamplerRing().Allocate(kSamplersPerStage);
-        CopyDescriptorsOrNull(dev, slice.cpu, device_.SamplerRing().Stride(), samplerPs_.data(),
-                              kSamplersPerStage, device_.GetNullSampler(),
-                              D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kSamplersPerStage> table;
+        for (u32 i = 0; i < kSamplersPerStage; ++i)
+            table[i] = samplerPs_[i].ptr ? samplerPs_[i] : device_.GetDefaultSamplerPs(i);
         cmd->SetGraphicsRootDescriptorTable(static_cast<UINT>(GraphicsRP::SAMPLER_TABLE_PS),
-                                            slice.gpu);
+                                            device_.SamplerTable(table.data(), kSamplersPerStage));
     }
 }
 
@@ -476,11 +500,11 @@ void D3D12CommandList::ApplyComputeBindings() {
     }
 
     {
-        auto slice = device_.SamplerRing().Allocate(kSamplersPerStage);
-        CopyDescriptorsOrNull(dev, slice.cpu, device_.SamplerRing().Stride(), samplerCs_.data(),
-                              kSamplersPerStage, device_.GetNullSampler(),
-                              D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-        cmd->SetComputeRootDescriptorTable(static_cast<UINT>(ComputeRP::SAMPLER_TABLE), slice.gpu);
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kSamplersForCompute> table;
+        for (u32 i = 0; i < kSamplersForCompute; ++i)
+            table[i] = samplerCs_[i].ptr ? samplerCs_[i] : device_.GetNullSampler();
+        cmd->SetComputeRootDescriptorTable(static_cast<UINT>(ComputeRP::SAMPLER_TABLE),
+                                           device_.SamplerTable(table.data(), kSamplersForCompute));
     }
 }
 

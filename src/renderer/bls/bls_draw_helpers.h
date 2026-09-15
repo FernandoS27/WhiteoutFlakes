@@ -13,12 +13,18 @@
 namespace whiteout::flakes::renderer::bls {
 
 struct BaselineLights {
+    // What the SD palette uploads as the sun's ambient term.
     Vector3f ambient = {0.0f, 0.0f, 0.0f};
     Vector3f diffuse = {1.0f, 1.0f, 1.0f};
-    // KLBC colour of the sun light, for the SD-on-HD ambient compensation.
+    // KLBC colour of the sun light.
     Vector3f ambientColor = {0.0f, 0.0f, 0.0f};
 
     Vector3f dirToSourceVS = {0.0f, 0.0f, 1.0f};
+
+    // The HD main light block (bls::MainLight) — the 3.0.0 semantics, which
+    // differ from the SD palette's: ambient is colour x intensity, and the rig
+    // light's ShadowIntensity scales the image-based lighting.
+    MainLight main;
 };
 
 // Everything the per-geoset palette build needs that stays constant for a pass.
@@ -43,8 +49,9 @@ struct LightingContext {
 i32 BuildLightPalette(FrameInputs& frame, const LightingContext& ctx, const Matrix44f& viewMatrix,
                       const Vector3f& geosetCentroidWS);
 
+// `fogMode` is DrawFogMode's answer for the draw (the SD PS fog digit).
 RenderState MakeSdMeshRenderState(const MatParams& mat, i32 activeLights, bool unlit,
-                                  bool hasBones = false);
+                                  bool hasBones = false, i32 fogMode = 0);
 
 PsoRequest MakePsoRequest(const BlsProgram* program, VertexLayoutKind layout, const MatParams& mat,
                           PermuteIndices perm, bool lhClipSpace = false);

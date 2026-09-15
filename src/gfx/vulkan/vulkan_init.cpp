@@ -360,7 +360,9 @@ bool PickPhysicalDevice(VulkanDeviceState& state, std::string& deviceNameOut) {
     const auto props = state.physicalDevice.getProperties();
     deviceNameOut = props.deviceName.data();
     state.queueFamily = static_cast<u32>(PickGraphicsQueueFamily(state.physicalDevice));
-    state.minUniformBufferAlign = props.limits.minUniformBufferOffsetAlignment;
+    // Ring slots back uniform and storage bindings alike, so they align to both.
+    state.minUniformBufferAlign = std::max<u64>(props.limits.minUniformBufferOffsetAlignment,
+                                                props.limits.minStorageBufferOffsetAlignment);
 
     const i32 tf = PickDedicatedTransferQueueFamily(state.physicalDevice);
     state.hasAsyncTransfer = (tf >= 0 && static_cast<u32>(tf) != state.queueFamily);
@@ -513,9 +515,30 @@ bool CreatePipelineLayout(VulkanDeviceState& state) {
     if (!buildSet(vk::DescriptorType::eUniformBuffer, kCbBindingCount,
                   /*pushDescriptor=*/true, state.cbSetLayout, "CB"))
         return false;
-    if (!buildSet(vk::DescriptorType::eSampledImage, kSrvBindingCount, false, state.srvSetLayout,
-                  "SRV"))
-        return false;
+    {
+        std::vector<vk::DescriptorSetLayoutBinding> bindings;
+        bindings.reserve(kSrvBindingCount + kStorageBindingCount);
+        for (u32 i = 0; i < kSrvBindingCount; ++i)
+            bindings.push_back({.binding = i,
+                                .descriptorType = vk::DescriptorType::eSampledImage,
+                                .descriptorCount = 1,
+                                .stageFlags = bothStages});
+        for (u32 b : kStorageBindings)
+            bindings.push_back({.binding = b,
+                                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                                .descriptorCount = 1,
+                                .stageFlags = bothStages});
+        auto r = state.device.createDescriptorSetLayout({
+            .bindingCount = static_cast<u32>(bindings.size()),
+            .pBindings = bindings.data(),
+        });
+        if (r.result != vk::Result::eSuccess) {
+            std::fprintf(stderr, "[vk] createDescriptorSetLayout (SRV) failed (%s)\n",
+                         vk::to_string(r.result).c_str());
+            return false;
+        }
+        state.srvSetLayout = std::move(r.value);
+    }
     if (!buildSet(vk::DescriptorType::eSampler, kSamplerBindingCount, false, state.samplerSetLayout,
                   "Sampler"))
         return false;
@@ -601,7 +624,9 @@ bool CreatePerFrameContexts(VulkanDeviceState& state) {
                                kMaxSrvsPerFrame + kComputeDescriptorsPerFrame},
         vk::DescriptorPoolSize{vk::DescriptorType::eSampler, kMaxSamplersPerFrame},
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kComputeDescriptorsPerFrame},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kComputeDescriptorsPerFrame},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer,
+                               kMaxDrawsPerFrame * kStorageBindingCount +
+                                   kComputeDescriptorsPerFrame},
     };
 
     for (u32 i = 0; i < kFramesInFlight; ++i) {

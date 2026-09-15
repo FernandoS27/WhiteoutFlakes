@@ -516,7 +516,12 @@ void FrameTicker::UpdateAnimation() {
             continue;
         }
 
-        // Path B fallback: one CB per geoset, original code path.
+        // Path B fallback: one CB per geoset, original code path, plus the
+        // same palettes back to back in the HD programs' bone buffer.
+        const gfx::BufferHandle boneBuffer = mi->render.skinning.BoneBuffer();
+        auto* bufferBones = boneBuffer != gfx::BufferHandle::Invalid
+                                ? static_cast<bls::ShaderBone*>(gfx->MapBuffer(boneBuffer))
+                                : nullptr;
         for (auto& geo : mi->render.gpuGeosets) {
             if (geo.bonePaletteCb == gfx::BufferHandle::Invalid)
                 continue;
@@ -545,8 +550,21 @@ void FrameTicker::UpdateAnimation() {
                     WDX_CPU_ZONE("UnmapBuffer");
                     gfx->UnmapBuffer(geo.bonePaletteCb);
                 }
+                const i32 base = mi->render.skinning.BoneBufferBase(geo.geosetId);
+                // A mapped buffer's previous contents are undefined, so every
+                // geoset's range is rewritten each frame, identity included.
+                if (bufferBones && base >= 0) {
+                    const i32 slots = std::min(
+                        {realBones, mi->render.skinning.GeosetPaletteSize(geo.geosetId), kSlots});
+                    for (i32 i = 0; i < slots; ++i)
+                        bls::PackBone(bufferBones[base + i], staging[i]);
+                    if (slots <= 0)
+                        bls::PackBone(bufferBones[base], Matrix44f::identity());
+                }
             }
         }
+        if (bufferBones)
+            gfx->UnmapBuffer(boneBuffer);
     }
 
 #if defined(TRACY_ENABLE)

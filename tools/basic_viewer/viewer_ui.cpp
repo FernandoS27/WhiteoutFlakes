@@ -233,6 +233,10 @@ constexpr std::array<const char*, 3> kLightingKeys = {"lighting.ingame", "lighti
                                                       "lighting.dynamic"};
 constexpr std::array<const char*, 4> kShadowKeys = {"shadow.off", "shadow.1", "shadow.2",
                                                     "shadow.3"};
+// Indexed by the shader's fog mode (bls::FogParams::mode).
+constexpr std::array<const char*, 7> kFogModeKeys = {"fog.off",        "fog.linear", "fog.exp",
+                                                     "fog.exp2",       "fog.volumetric",
+                                                     "fog.exp_banded", "fog.exp2_banded"};
 
 // The games the Settings window can configure, in left-panel order. Game
 // names, so they are not localised — same rule the backend list follows.
@@ -2305,6 +2309,59 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
                 shadow->SetParams(p);
                 SaveIni(app_);
             }
+        }
+    }
+
+    // ---- World fog ----
+    // The game reads fog from the map; a viewer has none, so this is the only
+    // source. Distances are world units, the same scale as the camera distance.
+    if (ImGui::CollapsingHeader(i18n::tr("settings.fog.header"))) {
+        RenderSettings::WorldFog fog = svc.Settings().GetWorldFog();
+        bool changed = false;
+        std::array<const char*, kFogModeKeys.size()> modeItems{};
+        for (usize i = 0; i < kFogModeKeys.size(); ++i)
+            modeItems[i] = i18n::tr(kFogModeKeys[i]);
+        ImGui::SetNextItemWidth(180.0f);
+        changed |= ImGui::Combo(i18n::tr("settings.fog.mode"), &fog.mode, modeItems.data(),
+                                static_cast<i32>(kFogModeKeys.size()));
+        f32 rgb[3] = {fog.color[0] / 255.0f, fog.color[1] / 255.0f, fog.color[2] / 255.0f};
+        if (ImGui::ColorEdit3(i18n::tr("settings.fog.color"), rgb)) {
+            for (i32 c = 0; c < 3; ++c)
+                fog.color[c] = static_cast<u8>(std::clamp(rgb[c], 0.0f, 1.0f) * 255.0f + 0.5f);
+            changed = true;
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        changed |= ImGui::DragFloat(i18n::tr("settings.fog.start"), &fog.start, 5.0f, 0.0f,
+                                   20000.0f, "%.0f");
+        ImGui::SetNextItemWidth(180.0f);
+        changed |= ImGui::DragFloat(i18n::tr("settings.fog.end"), &fog.end, 5.0f, 0.0f, 20000.0f,
+                                   "%.0f");
+        if (fog.mode == 2 || fog.mode == 3 || fog.mode == 5 || fog.mode == 6) {
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::DragFloat(i18n::tr("settings.fog.density"), &fog.density, 0.0001f,
+                                       0.0f, 1.0f, "%.4f");
+        }
+        if (fog.mode == 4) {
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::DragFloat(i18n::tr("settings.fog.height_top"), &fog.heightTop, 1.0f,
+                                       -5000.0f, 5000.0f, "%.0f");
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::DragFloat(i18n::tr("settings.fog.height_bottom"), &fog.heightBottom,
+                                       1.0f, -5000.0f, 5000.0f, "%.0f");
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::DragFloat(i18n::tr("settings.fog.radial_inner"), &fog.radialInner,
+                                       5.0f, 0.0f, 20000.0f, "%.0f");
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::DragFloat(i18n::tr("settings.fog.radial_outer"), &fog.radialOuter,
+                                       5.0f, 0.0f, 20000.0f, "%.0f");
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::SliderFloat(i18n::tr("settings.fog.radial_strength"),
+                                         &fog.radialStrength, 0.0f, 1.0f, "%.2f");
+            changed |= ImGui::Checkbox(i18n::tr("settings.fog.everywhere"), &fog.everywhere);
+        }
+        if (changed) {
+            svc.Settings().SetWorldFog(fog);
+            SaveIni(app_);
         }
     }
 
