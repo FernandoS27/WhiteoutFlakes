@@ -31,7 +31,7 @@
 #include "renderer/profiles/diablo3/d3_character_appearance.h"
 #endif
 #include "renderer/model/corn_effect_source.h"
-#include "renderer/particle/splat_service.h"
+#include "renderer/effects/splat_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"

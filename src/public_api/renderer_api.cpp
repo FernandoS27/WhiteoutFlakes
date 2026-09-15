@@ -27,7 +27,7 @@
 #include "renderer/effects/spn_spawner.h"
 #include "renderer/model/model_template.h"
 #include "renderer/particle/particle_service.h"
-#include "renderer/particle/splat_service.h"
+#include "renderer/effects/splat_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/render_settings.h"

@@ -11,8 +11,8 @@
 // ============================================================================
 
 #include "d3_types.h"
-#include "renderer/particle/d3_emit_mesh.h"
-#include "renderer/particle/d3_emitter_desc.h"
+#include "renderer/particle/d3/d3_emit_mesh.h"
+#include "renderer/particle/d3/d3_emitter_desc.h"
 #include "whiteout/flakes/types.h"
 
 #include <memory>
@@ -21,6 +21,10 @@
 namespace whiteout::sno::d3::native {
 struct Particle;
 struct Appearances;
+}
+
+namespace whiteout::flakes::io {
+class D3SnoCache;
 }
 
 namespace whiteout::flakes::io::d3 {
@@ -36,8 +40,12 @@ namespace pd3 = ::whiteout::flakes::renderer::particle::d3;
 /// no actor texture ids, because which index a texture takes is a property of
 /// the actor the emitter is about to ride, not of the file; `D3BindParticleTextures`
 /// finishes it.
+///
+/// With @p cache, a child-actor system also reads its actor's scale tags; without
+/// one they keep the tag table's defaults.
 std::shared_ptr<pd3::EmitterDesc>
-BuildD3EmitterDesc(const ::whiteout::sno::d3::native::Particle& prt, i32 snoId);
+BuildD3EmitterDesc(const ::whiteout::sno::d3::native::Particle& prt, i32 snoId,
+                   D3SnoCache* cache = nullptr);
 
 /// @brief Build the surface emitter shapes 6, 7 and 11 sample.
 ///

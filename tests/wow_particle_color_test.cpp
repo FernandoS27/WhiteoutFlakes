@@ -31,7 +31,7 @@
 #include "io/wow/creature_skin_table.h"
 #include "io/wow/particle_color_table.h"
 #include "renderer/core/particle_dialect.h"
-#include "renderer/particle/particle2_emitter.h"
+#include "renderer/particle/base/particle2_emitter.h"
 #include "renderer/particle/particle_adapters.h"
 #include "renderer/profiles/wow/wow_replaceable_textures.h"
 #include "whiteout/flakes/content_ref.h"

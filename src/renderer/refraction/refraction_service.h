@@ -23,6 +23,7 @@
 // ============================================================================
 
 #include "gfx/gfx.h"
+#include "renderer/stream_vertex_buffer.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/types.h"
 #include "whiteout/flakes/types.h"
@@ -170,8 +171,7 @@ private:
     gfx::Format psoOutputFmt_ = gfx::Format::Unknown;
     gfx::Format psoDepthFmt_ = gfx::Format::Unknown;
 
-    gfx::BufferHandle vb_ = gfx::BufferHandle::Invalid;
-    i32 vbCapacity_ = 0;
+    StreamVertexBuffer vb_;
     gfx::BufferHandle maskVsCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle maskPsCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle applyCb_ = gfx::BufferHandle::Invalid;

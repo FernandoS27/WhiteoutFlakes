@@ -1330,38 +1330,40 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/corn_effects/corn_effects_resource_providers.cpp
     src/renderer/corn_effects/corn_effects_service.cpp
     ${CORNFLAKES_SOURCES}
-    src/renderer/particle/child_model_emitter.cpp
-    src/renderer/particle/model_particle_emitter.cpp
-    src/renderer/particle/sc2_model_particle_emitter.cpp
-    src/renderer/particle/particle_adapters_wc3_m2.cpp
-    src/renderer/particle/particle_adapters_sc2.cpp
-    src/renderer/particle/particle_curve.cpp
-    src/renderer/particle/d3_path.cpp
-    src/renderer/particle/d3_emitter.cpp
-    src/renderer/particle/d3_emitter_desc.cpp
-    src/renderer/particle/d3_emit_shape.cpp
-    src/renderer/particle/d3_birth.cpp
-    src/renderer/particle/d3_uv_state.cpp
-    src/renderer/particle/d3_motion.cpp
-    src/renderer/particle/d3_quad_build.cpp
-    src/renderer/particle/particle_pool.cpp
-    src/renderer/particle/particle2_emitter.cpp
-    src/renderer/particle/particle2_emitter_sc2.cpp
-    src/renderer/particle/particle_shape.cpp
-    src/renderer/particle/sc2_kernels_build.cpp
-    src/renderer/particle/sc2_kernels_emit.cpp
-    src/renderer/particle/sc2_kernels_move.cpp
-    src/renderer/particle/sc2_kernels_spawn.cpp
-    src/renderer/particle/trail_set.cpp
+    # The particle module, by folder: the shared base and its WC3/WoW dialect,
+    # the SC2 dialect, the D3 emitter, the output side, and the service seam.
+    src/renderer/particle/base/child_model_emitter.cpp
+    src/renderer/particle/base/model_particle_emitter.cpp
+    src/renderer/particle/base/particle2_emitter.cpp
+    src/renderer/particle/base/particle_adapters_wc3_m2.cpp
+    src/renderer/particle/base/particle_curve.cpp
+    src/renderer/particle/base/particle_pool.cpp
+    src/renderer/particle/base/particle_shape.cpp
+    src/renderer/particle/base/trail_set.cpp
+    src/renderer/particle/sc2/particle2_emitter_sc2.cpp
+    src/renderer/particle/sc2/particle_adapters_sc2.cpp
+    src/renderer/particle/sc2/particle_stages_sc2_model.cpp
+    src/renderer/particle/sc2/sc2_compose.cpp
+    src/renderer/particle/sc2/sc2_kernels_build.cpp
+    src/renderer/particle/sc2/sc2_kernels_emit.cpp
+    src/renderer/particle/sc2/sc2_kernels_move.cpp
+    src/renderer/particle/sc2/sc2_kernels_spawn.cpp
+    src/renderer/particle/sc2/sc2_model_particle_emitter.cpp
+    src/renderer/particle/sc2/sc2_tick.cpp
+    src/renderer/particle/d3/d3_birth.cpp
+    src/renderer/particle/d3/d3_emit_shape.cpp
+    src/renderer/particle/d3/d3_emitter.cpp
+    src/renderer/particle/d3/d3_emitter_desc.cpp
+    src/renderer/particle/d3/d3_motion.cpp
+    src/renderer/particle/d3/d3_path.cpp
+    src/renderer/particle/d3/d3_quad_build.cpp
+    src/renderer/particle/d3/d3_uv_state.cpp
+    src/renderer/particle/output/multitex_particle_service.cpp
+    src/renderer/particle/output/particle_geometry.cpp
+    src/renderer/particle/output/particle_trace.cpp
     src/renderer/particle/emitter_factory.cpp
-    src/renderer/particle/particle_stages_sc2_model.cpp
-    src/renderer/particle/sc2_compose.cpp
-    src/renderer/particle/sc2_tick.cpp
-    src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
-    src/renderer/particle/multitex_particle_service.cpp
-    src/renderer/particle/particle_trace.cpp
-    src/renderer/particle/splat_service.cpp
+    src/renderer/effects/splat_service.cpp
     src/renderer/dnc/dnc_asset.cpp
     src/renderer/dnc/dnc_cache.cpp
     src/renderer/dnc/dnc_catalog.cpp

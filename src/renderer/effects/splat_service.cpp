@@ -1,0 +1,349 @@
+#include "renderer/effects/splat_service.h"
+
+#include "renderer/assets/asset_manager.h"
+#include "renderer/particle/base/particle_constants.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace whiteout::flakes::renderer::effects {
+
+using namespace ::whiteout::flakes::renderer::assets;
+using particle::kWc3SampleBias;
+using particle::kWc3SampleSpan;
+
+namespace {
+/// `IWorldSplatEmitter` @0x1412E1E70 builds one emitter per `BlendMode`, each a
+/// ring of `1000 * splat level` splats; the level is 1 until a host lowers it.
+constexpr usize kSplatsPerBlendMode = 1000;
+/// `RenderSplat` skips a finished splat whose end alpha byte is this or less.
+constexpr i32 kFinishedAlphaFloor = 8;
+} // namespace
+
+SplatService::SplatService() = default;
+SplatService::~SplatService() {
+    Clear();
+}
+
+void SplatService::Configure(AssetManager* assets) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    assets_ = assets;
+}
+
+void SplatService::Tick(f32 dtSec) {
+    std::lock_guard<std::mutex> lk(mutex_);
+
+    const f32 dt = (f32)std::min((f64)dtSec, 0.5);
+    if (dt <= 0.f)
+        return;
+
+    // An SPL splat is never removed here: the engine keeps drawing a finished
+    // one until `CreateSplat` @0x141FE58D0 overwrites its ring slot.
+    auto it = splats_.begin();
+    while (it != splats_.end()) {
+        it->age += dt;
+        if (it->isUbr && it->age >= it->total) {
+            ReleaseSplat(*it);
+            it = splats_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void SplatService::Clear() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& s : splats_)
+        ReleaseSplat(s);
+    splats_.clear();
+}
+
+i32 SplatService::Count() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return (i32)splats_.size();
+}
+
+void SplatService::BuildCorners(Vector3f corners[4], const Vector3f& origin, const Vector3f& right,
+                                const Vector3f& forward) {
+
+    corners[0] = {origin.x + right.x + forward.x, origin.y + right.y + forward.y,
+                  origin.z + right.z + forward.z};
+    corners[1] = {origin.x - right.x + forward.x, origin.y - right.y + forward.y,
+                  origin.z - right.z + forward.z};
+    corners[2] = {origin.x - right.x - forward.x, origin.y - right.y - forward.y,
+                  origin.z - right.z - forward.z};
+    corners[3] = {origin.x + right.x - forward.x, origin.y + right.y - forward.y,
+                  origin.z + right.z - forward.z};
+}
+
+void SplatService::SpawnSpl(const io::SplEntry& entry, const Vector3f& worldOrigin,
+                            const Vector3f& worldRight, const Vector3f& worldForward) {
+    Splat s;
+    BuildCorners(s.corners, worldOrigin, worldRight, worldForward);
+    s.textureSlot = AcquireTexture(entry.file);
+    s.blendMode = entry.blendMode;
+    s.isUbr = false;
+    s.t0 = entry.lifespan;
+    s.t1 = entry.decay;
+    s.t2 = 0.f;
+    s.total = s.t0 + s.t1;
+
+    if (s.total <= 0.f) {
+        if (s.textureSlot != AssetManager::kInvalidSlot && assets_)
+            assets_->Release(s.textureSlot);
+        return;
+    }
+    std::memcpy(s.c[0], entry.startC, sizeof(f32) * 4);
+    std::memcpy(s.c[1], entry.midC, sizeof(f32) * 4);
+    std::memcpy(s.c[2], entry.endC, sizeof(f32) * 4);
+    s.columns = std::max(1, entry.columns);
+    s.rows = std::max(1, entry.rows);
+    s.uvLifeStart = entry.uvLifeStart;
+    s.uvLifeEnd = entry.uvLifeEnd;
+    s.lifespanRepeat = std::max(1, entry.lifespanRepeat);
+    s.uvDecayStart = entry.uvDecayStart;
+    s.uvDecayEnd = entry.uvDecayEnd;
+    s.decayRepeat = std::max(1, entry.decayRepeat);
+    s.age = 0.f;
+
+    std::lock_guard<std::mutex> lk(mutex_);
+    // A full ring overwrites its oldest slot, finished or not. Spawn order is
+    // kept in the vector, so the first match is the oldest.
+    const auto sameRing = [&s](const Splat& o) { return !o.isUbr && o.blendMode == s.blendMode; };
+    if (static_cast<usize>(std::count_if(splats_.begin(), splats_.end(), sameRing)) >=
+        kSplatsPerBlendMode) {
+        const auto oldest = std::find_if(splats_.begin(), splats_.end(), sameRing);
+        ReleaseSplat(*oldest);
+        splats_.erase(oldest);
+    }
+    splats_.push_back(s);
+}
+
+void SplatService::SpawnUbr(const io::UbrEntry& entry, const Vector3f& worldOrigin,
+                            const Vector3f& worldRight, const Vector3f& worldForward) {
+    Splat s;
+    BuildCorners(s.corners, worldOrigin, worldRight, worldForward);
+    s.textureSlot = AcquireTexture(entry.file);
+    s.blendMode = entry.blendMode;
+    s.isUbr = true;
+    s.t0 = entry.birthTime;
+    s.t1 = entry.pauseTime;
+    s.t2 = entry.decay;
+    s.total = s.t0 + s.t1 + s.t2;
+
+    if (s.total <= 0.f) {
+        if (s.textureSlot != AssetManager::kInvalidSlot && assets_)
+            assets_->Release(s.textureSlot);
+        return;
+    }
+    std::memcpy(s.c[0], entry.c[0], sizeof(f32) * 4);
+    std::memcpy(s.c[1], entry.c[1], sizeof(f32) * 4);
+    std::memcpy(s.c[2], entry.c[2], sizeof(f32) * 4);
+
+    s.columns = s.rows = 1;
+    s.uvLifeStart = s.uvLifeEnd = 0;
+    s.uvDecayStart = s.uvDecayEnd = 0;
+    s.lifespanRepeat = s.decayRepeat = 1;
+    s.age = 0.f;
+
+    std::lock_guard<std::mutex> lk(mutex_);
+    splats_.push_back(s);
+}
+
+namespace {
+inline f32 ClampF(f32 v, f32 lo, f32 hi) {
+    return std::max(lo, std::min(hi, v));
+}
+
+void Lerp4(f32 out[4], const f32 a[4], const f32 b[4], f32 t) {
+    out[0] = a[0] + (b[0] - a[0]) * t;
+    out[1] = a[1] + (b[1] - a[1]) * t;
+    out[2] = a[2] + (b[2] - a[2]) * t;
+    out[3] = a[3] + (b[3] - a[3]) * t;
+}
+
+/// `CSplatKey::Interpolate`'s saturation: truncate, then clamp to a byte.
+i32 ClampByte(f32 v) {
+    const i32 i = static_cast<i32>(v);
+    return (i < 0) ? 0 : (i > 255 ? 255 : i);
+}
+
+/// The byte `DatabaseInt` stored, recovered from the parsed `/ 255` colour.
+i32 ColorByte(f32 c) {
+    return static_cast<i32>(std::lround(c * 255.0f)) & 0xFF;
+}
+
+/// One SPL key over [@p from, @p to): the colour in integer bytes and the cell,
+/// both at the same nudged time.
+void InterpolateKey(f32 age, f32 from, f32 to, const f32 c0[4], const f32 c1[4], i32 start,
+                    i32 end, i32 repeat, f32 outColor[4], i32& outCellIdx) {
+    const f32 inv = 1.0f / (to - from);
+    const f32 t = ((age - from) * inv) * kWc3SampleSpan + kWc3SampleBias;
+    for (u32 k = 0; k < 4; ++k) {
+        const i32 s = ColorByte(c0[k]);
+        const i32 delta = ColorByte(c1[k]) - s;
+        outColor[k] = static_cast<f32>(ClampByte(static_cast<f32>(delta) * t + static_cast<f32>(s))) /
+                      255.0f;
+    }
+    outCellIdx = detail::SplatCell(start, end, repeat, t);
+}
+} // namespace
+
+i32 detail::SplatCell(i32 start, i32 end, i32 repeat, f32 t) {
+    const bool reversed = end < start;
+    const i32 first = reversed ? start + 1 : start;
+    const i32 delta = end + (reversed ? -1 : 1) - start;
+    const f32 sweep = (repeat == 1) ? t : std::fmod(static_cast<f32>(repeat) * t, 1.0f);
+    return ClampByte(sweep * static_cast<f32>(delta) + static_cast<f32>(first));
+}
+
+void SplatService::EvaluateAt(const Splat& s, f32 outColor[4], i32& outCellIdx) {
+    outCellIdx = -1;
+    const f32 age = ClampF(s.age, 0.f, s.total);
+
+    if (s.isUbr) {
+
+        if (age < s.t0 && s.t0 > 0.f) {
+            Lerp4(outColor, s.c[0], s.c[1], age / s.t0);
+        } else if (age < s.t0 + s.t1) {
+            std::memcpy(outColor, s.c[1], sizeof(f32) * 4);
+        } else if (s.t2 > 0.f) {
+            Lerp4(outColor, s.c[1], s.c[2], (age - s.t0 - s.t1) / s.t2);
+        } else {
+            std::memcpy(outColor, s.c[2], sizeof(f32) * 4);
+        }
+        return;
+    }
+
+    // `CSplatEmitter::RenderSplat` @0x141FE6990 picks the key whose range holds
+    // the age: [0, lifespan) start->middle, [lifespan, lifespan + decay)
+    // middle->end (`AddSplatToTable` @0x1412E0C00). Past both, the splat is
+    // finished and holds the last key's end colour and raw end cell.
+    if (age < s.t0 && s.t0 > 0.f) {
+        InterpolateKey(age, 0.0f, s.t0, s.c[0], s.c[1], s.uvLifeStart, s.uvLifeEnd,
+                       s.lifespanRepeat, outColor, outCellIdx);
+    } else if (s.age < s.total) {
+        InterpolateKey(age, s.t0, s.total, s.c[1], s.c[2], s.uvDecayStart, s.uvDecayEnd,
+                       s.decayRepeat, outColor, outCellIdx);
+    } else {
+        std::memcpy(outColor, s.c[2], sizeof(f32) * 4);
+        outCellIdx = s.uvDecayEnd;
+    }
+}
+
+bool SplatService::Draws(const Splat& s) {
+    return s.isUbr || s.age < s.total || ColorByte(s.c[2][3]) > kFinishedAlphaFloor;
+}
+
+void SplatService::CellToUV(i32 cellIdx, i32 columns, i32 rows, f32& u0, f32& v0, f32& u1,
+                            f32& v1) {
+    if (cellIdx < 0 || (columns <= 1 && rows <= 1)) {
+        u0 = 0.f;
+        v0 = 0.f;
+        u1 = 1.f;
+        v1 = 1.f;
+        return;
+    }
+    columns = std::max(1, columns);
+    rows = std::max(1, rows);
+    const i32 cells = columns * rows;
+    const i32 idx = ((cellIdx % cells) + cells) % cells;
+    const i32 cx = idx % columns;
+    const i32 cy = idx / columns;
+    const f32 du = 1.0f / (f32)columns;
+    const f32 dv = 1.0f / (f32)rows;
+    u0 = cx * du;
+    v0 = cy * dv;
+    u1 = u0 + du;
+    v1 = v0 + dv;
+}
+
+void SplatService::BuildGeometry(std::vector<Vertex>& outVertices,
+                                 std::vector<SplatDrawList>& outDrawLists) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (splats_.empty()) return;
+
+    // Emit in (textureSlot, blendMode) order, the splat vector staying in spawn
+    // order, so N same-material splats are ONE draw. M2_PARTICLE_DESIGN.md §11.15.
+    std::vector<u32> order(splats_.size());
+    for (u32 i = 0; i < splats_.size(); ++i) order[i] = i;
+    // The index tie-break makes this a strict total order. Without it a batch
+    // of same-texture, same-blend splats (a burst of footsteps) resolved in an
+    // unspecified order, and std::sort is free to pick a different one for the
+    // same input on a different build.
+    std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+        const auto& sa = splats_[a];
+        const auto& sb = splats_[b];
+        if (sa.textureSlot != sb.textureSlot) return sa.textureSlot < sb.textureSlot;
+        if (sa.blendMode != sb.blendMode) return sa.blendMode < sb.blendMode;
+        return a < b;
+    });
+
+    outVertices.reserve(outVertices.size() + splats_.size() * 6);
+
+    SplatDrawList run{};
+    bool runOpen = false;
+    u32 runTexSlot = 0;
+    i32 runBlendMode = 0;
+
+    auto flushRun = [&]() {
+        if (runOpen) {
+            outDrawLists.push_back(run);
+            runOpen = false;
+        }
+    };
+
+    for (u32 idx : order) {
+        const auto& s = splats_[idx];
+        if (!Draws(s))
+            continue;
+
+        f32 color[4];
+        i32 cellIdx = -1;
+        EvaluateAt(s, color, cellIdx);
+
+        f32 u0, v0, u1, v1;
+        CellToUV(cellIdx, s.columns, s.rows, u0, v0, u1, v1);
+
+        const Vector3f n{0.f, 0.f, 1.f};
+        const Vector4f c{color[0], color[1], color[2], color[3]};
+
+        const i32 base = (i32)outVertices.size();
+        outVertices.push_back({s.corners[0], n, c, {u0, v0}});
+        outVertices.push_back({s.corners[1], n, c, {u0, v1}});
+        outVertices.push_back({s.corners[2], n, c, {u1, v1}});
+        outVertices.push_back({s.corners[0], n, c, {u0, v0}});
+        outVertices.push_back({s.corners[2], n, c, {u1, v1}});
+        outVertices.push_back({s.corners[3], n, c, {u1, v0}});
+
+        if (runOpen && s.textureSlot == runTexSlot && s.blendMode == runBlendMode) {
+            run.vertexCount += 6;
+        } else {
+            flushRun();
+            run.vertexOffset = base;
+            run.vertexCount = 6;
+            run.texture = assets_ ? assets_->TextureOf(s.textureSlot) : gfx::TextureHandle::Invalid;
+            run.blendMode = s.blendMode;
+            runTexSlot = s.textureSlot;
+            runBlendMode = s.blendMode;
+            runOpen = true;
+        }
+    }
+    flushRun();
+}
+
+u32 SplatService::AcquireTexture(const std::string& path) {
+    if (path.empty() || !assets_)
+        return AssetManager::kInvalidSlot;
+    return assets_->Acquire(AssetKind::Texture, assets::kSoleSubKind, path);
+}
+
+void SplatService::ReleaseSplat(Splat& s) {
+    if (s.textureSlot != AssetManager::kInvalidSlot && assets_) {
+        assets_->Release(s.textureSlot);
+        s.textureSlot = AssetManager::kInvalidSlot;
+    }
+}
+
+} // namespace whiteout::flakes::renderer::effects

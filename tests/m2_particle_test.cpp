@@ -14,7 +14,7 @@
 #include "io/file_content_provider.h"
 #include "io/m2/m2_animation.h"
 #include "io/m2/m2_model_adapter.h"
-#include "renderer/particle/particle2_emitter.h"
+#include "renderer/particle/base/particle2_emitter.h"
 #include "renderer/particle/particle_adapters.h"
 #include "whiteout/flakes/content_ref.h"
 

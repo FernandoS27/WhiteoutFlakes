@@ -9,9 +9,6 @@
 namespace whiteout::flakes::renderer {
 class ISoundEmitter;
 }
-namespace whiteout::flakes::renderer::particle {
-class SplatService;
-}
 namespace whiteout::flakes::renderer::model {
 struct Actor;
 }
@@ -19,6 +16,7 @@ struct Actor;
 namespace whiteout::flakes::renderer::effects {
 
 class SpnSpawner;
+class SplatService;
 
 class EventEmitterPool {
 public:
@@ -26,7 +24,7 @@ public:
 
     void Tick(const model::Actor& actor, const std::vector<Matrix44f>& boneWorldMatrices,
               i32 activeSeqIdx, i32 localTimeMs, i32 globalTimeMs, i32 seqStartMs, i32 seqEndMs,
-              particle::SplatService* splats, SpnSpawner* spn, ISoundEmitter* sounds);
+              SplatService* splats, SpnSpawner* spn, ISoundEmitter* sounds);
 
     bool Empty() const {
         return entries_.empty();

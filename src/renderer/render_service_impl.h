@@ -6,6 +6,7 @@
 #include "camera.h"
 #include "corn_effects/corn_effects_service.h"
 #include "dnc/dnc_service.h"
+#include "effects/splat_service.h"
 #include "effects/spn_spawner.h"
 #include "file_content_provider.h"
 #include "frame_ticker.h"
@@ -14,13 +15,12 @@
 #include "model/model_instance.h"
 #include "model/model_loader.h"
 #include "particle.h"
-#include "particle/particle_service.h"
-#include "particle/splat_service.h"
-#include "ribbon/ribbon_service.h"
 #include "post_process/post_process_service.h"
 #include "render_pipeline.h"
 #include "render_settings.h"
 #include "render_target.h"
+#include "renderer/particle/particle_service.h"
+#include "ribbon/ribbon_service.h"
 #include "scene_manager.h"
 #include "shadow/shadow_service.h"
 #include "whiteout/flakes/content_provider.h"
@@ -60,7 +60,7 @@ struct SceneServices {
     /// @ref particles. Starts at "never", so a scene's first frame installs
     /// the grid, and after that only a host's new query is installed again.
     u32 particleGroundGeneration = 0xFFFFFFFFu;
-    particle::SplatService splats;
+    effects::SplatService splats;
     ribbon::RibbonService ribbons;
     std::unique_ptr<effects::SpnSpawner> spn;
     // Per-scene, because the DNC model resolves through the scene's own

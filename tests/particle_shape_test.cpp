@@ -6,8 +6,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include "renderer/particle/particle_shape.h"
-#include "renderer/particle/rnd_seed.h"
+#include "renderer/particle/base/particle_shape.h"
+#include "renderer/particle/base/rnd_seed.h"
 
 #include <algorithm>
 #include <cmath>

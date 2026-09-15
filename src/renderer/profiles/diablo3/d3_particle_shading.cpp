@@ -464,12 +464,12 @@ void D3ParticleShading::ReleaseGpu() {
             gfxDev->Destroy(pso);
     }
     psos_.clear();
-    for (gfx::BufferHandle* b : {&vsCb_, &psCb_, &vb_}) {
+    vb_.Release(*gfxDev);
+    for (gfx::BufferHandle* b : {&vsCb_, &psCb_}) {
         if (*b != gfx::BufferHandle::Invalid)
             gfxDev->Destroy(*b);
         *b = gfx::BufferHandle::Invalid;
     }
-    vbCapacity_ = 0;
     frameReady_ = false;
     vs_ = gfx::ShaderHandle::Invalid;
     ps_ = gfx::ShaderHandle::Invalid;
@@ -489,33 +489,18 @@ bool D3ParticleShading::BeginFrame(const std::vector<Vertex>& vertices,
         return false;
 
     const i32 count = static_cast<i32>(vertices.size());
-    if (vb_ == gfx::BufferHandle::Invalid || count > vbCapacity_) {
-        if (vb_ != gfx::BufferHandle::Invalid)
-            gfxDev->Destroy(vb_);
-        constexpr i32 kFloor = 4096;
-        const i32 newSize = (count > kFloor) ? count : kFloor;
-        gfx::BufferDesc bd;
-        bd.size = static_cast<u64>(sizeof(D3ParticleVertex)) * static_cast<u64>(newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        bd.ringSlotsHint = 4; // mapped once per frame
-        vb_ = gfxDev->CreateBuffer(bd);
-        vbCapacity_ = newSize;
-    }
-    if (vb_ == gfx::BufferHandle::Invalid)
+    const bool uploaded =
+        vb_.Upload<D3ParticleVertex>(*gfxDev, count, 4096, [&](D3ParticleVertex* dst) {
+            for (usize k = 0; k < vertices.size(); ++k) {
+                dst[k].position = vertices[k].position;
+                dst[k].color = vertices[k].color;
+                dst[k].uv01 = uv.uv01[k];
+                dst[k].uv23 = uv.uv23[k];
+                dst[k].color1 = uv.color1[k];
+            }
+        });
+    if (!uploaded)
         return false;
-    void* mapped = gfxDev->MapBuffer(vb_);
-    if (!mapped)
-        return false;
-    auto* dst = static_cast<D3ParticleVertex*>(mapped);
-    for (i32 i = 0; i < count; ++i) {
-        const usize k = static_cast<usize>(i);
-        dst[i].position = vertices[k].position;
-        dst[i].color = vertices[k].color;
-        dst[i].uv01 = uv.uv01[k];
-        dst[i].uv23 = uv.uv23[k];
-        dst[i].color1 = uv.color1[k];
-    }
-    gfxDev->UnmapBuffer(vb_);
     frameReady_ = true;
     return true;
 }
@@ -606,7 +591,7 @@ bool D3ParticleShading::Draw(gfx::IGFXCommandList* cmd, const particle::EmitterD
     // its whole UV transform lives in the vertex now. Refusing here is what
     // routes the draw to the SD fallback, which samples the diffuse at the raw
     // quad uv — approximate, but not garbage.
-    if (!frameReady_ || vb_ == gfx::BufferHandle::Invalid)
+    if (!frameReady_ || vb_.Handle() == gfx::BufferHandle::Invalid)
         return false;
 
     const gfx::PipelineHandle pso = GetOrBuildPso(m, frame);
@@ -656,7 +641,7 @@ bool D3ParticleShading::Draw(gfx::IGFXCommandList* cmd, const particle::EmitterD
     // `BindPipeline` re-sets the root signature on D3D12 and discards constant
     // buffers, textures and samplers bound before it.
     cmd->BindPipeline(pso);
-    cmd->BindVertexBuffer(0, vb_, sizeof(D3ParticleVertex));
+    cmd->BindVertexBuffer(0, vb_.Handle(), sizeof(D3ParticleVertex));
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, vsCb_);
     // Slot 1, not 0: slang assigns registers per MODULE, so the two constant
     // buffers are pinned to b0 and b1 or they collide.

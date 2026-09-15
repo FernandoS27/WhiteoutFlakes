@@ -1,14 +1,14 @@
 #pragma once
 
-#include "frame_capture.h"
-#include "render_pipeline.h"
 #include "core/render_detail.h"
 #include "core/render_profile.h"
 #include "core/vertex_layout.h"
+#include "frame_capture.h"
+#include "render_pipeline.h"
+#include "renderer/particle/output/multitex_particle_service.h"
+#include "renderer/particle/particle_service.h"
 #include "shading/shading_registry.h"
 #include "shading/unlit_shading.h"
-#include "renderer/particle/multitex_particle_service.h"
-#include "renderer/particle/particle_service.h"
 #if WDX_ENABLE_M2
 #include "renderer/profiles/wow/m2_shading.h"
 #endif

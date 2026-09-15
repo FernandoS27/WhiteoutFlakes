@@ -19,8 +19,8 @@
 
 #include "core/particle_dialect.h"
 #include "profiles/wc3/wc3_profile.h"
-#include "renderer/particle/particle2_emitter.h"
-#include "renderer/particle/particle_geometry.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/output/particle_geometry.h"
 #include "renderer/render_settings.h"
 #include "whiteout/flakes/model_types.h"
 #if WDX_ENABLE_M2

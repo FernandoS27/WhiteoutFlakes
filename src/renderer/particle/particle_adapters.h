@@ -1,17 +1,13 @@
 #pragma once
 
 // ============================================================================
-// Format -> EmitterDesc translation.
-//
-// One entry point per source format. Everything format-specific (WC3's packed
-// start/mid/end segments, its filter-mode numbering, its head/tail particle
-// type encoding) is confined here; the emitter and the geometry builder only
-// ever see an EmitterDesc.
-//
-// M2 and M3 adapters land beside DescFromWc3Config when those formats arrive.
+// Format -> EmitterDesc translation, one entry point per source format.
+// Everything format-specific (WC3's packed start/mid/end segments, its
+// filter-mode numbering, its head/tail type encoding) is confined here; the
+// emitter and the geometry builder only ever see an EmitterDesc.
 // ============================================================================
 
-#include "emitter_desc.h"
+#include "renderer/particle/base/emitter_desc.h"
 #include "whiteout/flakes/model_types.h"
 
 #include <memory>
@@ -34,18 +30,11 @@ DescFromWc3ChildModelConfig(const model::PE1EmitterConfig& cfg);
 std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfig& cfg,
                                                     bool linearColor);
 
-// StarCraft II `PAR_` (`Sc2ParticleEmitterConfig`) — the Family::Sc2 desc,
-// including the load-time derivations `Init` performs: the GPU/CPU motion
-// split (OP1), the legacy Bezier promotions, and the mid-time clamp.
-//
-// `siblings` is the whole emitter list this one came from, and it is here for
-// one reason: `collisionSpawnIndex` names another emitter whose SPACE the MOVE
-// stage needs, and resolving it now is what keeps that stage from looking an
-// emitter up per collision (design R4). Out-of-range indices resolve to the
-// default rather than being dropped — the child link is the loader's business.
-// Returned MUTABLE, unlike its siblings: the loader stamps `m3Surface` and
-// `priorityPlane` from the surface table before handing it to SetDesc, which
-// takes it as const. Freezing it here would only buy a const_cast there.
+// StarCraft II `PAR_` (`Sc2ParticleEmitterConfig`) — the Family::Sc2 desc, with
+// `Init`'s load-time derivations (GPU/CPU motion split OP1, legacy Bezier
+// promotions, mid-time clamp). `siblings` resolves `collisionSpawnIndex`'s SPACE
+// now, not per collision (design R4); out of range gives the default. Returned
+// MUTABLE so the loader can stamp `m3Surface` and `priorityPlane` before SetDesc.
 std::shared_ptr<EmitterDesc>
 DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
                           std::span<const effects::Sc2ParticleEmitterConfig> siblings);

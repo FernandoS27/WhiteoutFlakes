@@ -22,11 +22,11 @@
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "model/model_template_manager.h"
-#include "particle/emitter_factory.h"
-#include "particle/particle2_emitter.h"
-#include "particle/particle_adapters.h"
 #include "render_service.h"
 #include "render_service_impl.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/emitter_factory.h"
+#include "renderer/particle/particle_adapters.h"
 #include "scene_manager.h"
 
 #include "dbg_print.h"
@@ -42,7 +42,7 @@
 #include "io/d3/d3_effect_resolver.h"
 #include "io/d3/d3_model_adapter.h"
 #include "io/d3/d3_particle_adapter.h"
-#include "renderer/particle/d3_emitter.h"
+#include "renderer/particle/d3/d3_emitter.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 #endif
@@ -396,7 +396,7 @@ void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAd
         auto prt = D3Cache().Particle(snoParticle);
         if (!prt)
             return;
-        auto desc = io::d3::BuildD3EmitterDesc(*prt, snoParticle);
+        auto desc = io::d3::BuildD3EmitterDesc(*prt, snoParticle, &D3Cache());
         profiles::diablo3::D3ResolveParticleMaterial(*prt, &D3Cache(), desc->d3mat);
         profiles::diablo3::D3BindParticleTextures(actor, desc);
         const bool samplesSurface = desc->SamplesModelSurface();

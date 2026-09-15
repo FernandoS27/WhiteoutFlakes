@@ -3,9 +3,9 @@
 #include "../gfx/gfx.h"
 #include "assets/texture_asset_manager.h"
 #include "particle.h"
-#include "particle/emit_mesh.h"
-#include "particle/emitter_desc.h"
 #include "render_target.h" // RenderMode
+#include "renderer/particle/base/emit_mesh.h"
+#include "renderer/particle/base/emitter_desc.h"
 #include "whiteout/flakes/model_source.h" // IModelSource, ModelBounds
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"

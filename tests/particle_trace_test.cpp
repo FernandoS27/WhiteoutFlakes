@@ -5,7 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "renderer/particle/particle_trace.h"
+#include "renderer/particle/output/particle_trace.h"
 
 #include <filesystem>
 #include <fstream>

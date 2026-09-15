@@ -3,11 +3,11 @@
 #include "../gfx/gfx.h"
 #include "animation/animation.h"
 #include "assets/texture_asset_manager.h"
-#include "particle.h"
-#include "particle/sc2_compose.h"
 #include "core/surface_table.h"
 #include "core/surface_vocabulary.h"
 #include "core/vertex_layout.h"
+#include "particle.h"
+#include "renderer/particle/sc2/sc2_compose.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
@@ -220,7 +220,7 @@ struct PE2State {
 /// `pe2State` for the same reason that does: it is per-actor memory the
 /// emitter must not hold, because the emitter has no idea what an animation is
 /// (design R5 — the actor layer owns the crossing, the emitter owns the burst).
-using Sc2ParticleClock = particle::Sc2SquirtMemory;
+using Sc2ParticleClock = particle::sc2::SquirtMemory;
 
 struct RenderModel {
 

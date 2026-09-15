@@ -35,7 +35,7 @@
 // view, applied for the same reason.
 // ============================================================================
 
-#include "renderer/particle/emitter_desc.h"
+#include "renderer/particle/base/emitter_desc.h"
 #include "whiteout/flakes/types.h"
 
 #include <functional>

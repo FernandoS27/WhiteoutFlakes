@@ -9,12 +9,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include "renderer/particle/child_model_emitter.h"
-#include "renderer/particle/model_particle_emitter.h"
-#include "renderer/particle/particle_motion.h"
+#include "renderer/effects/splat_service.h"
+#include "renderer/particle/base/child_model_emitter.h"
+#include "renderer/particle/base/model_particle_emitter.h"
+#include "renderer/particle/base/particle_motion.h"
+#include "renderer/particle/output/particle_trace.h"
 #include "renderer/particle/particle_service.h"
-#include "renderer/particle/particle_trace.h"
-#include "renderer/particle/splat_service.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +25,7 @@
 #include <vector>
 
 using namespace whiteout::flakes::renderer::particle;
+namespace effects = whiteout::flakes::renderer::effects;
 using whiteout::flakes::f32;
 using whiteout::flakes::i32;
 using whiteout::flakes::u32;
@@ -904,7 +905,7 @@ TEST_CASE("an SPL splat sweeps its sprite cells the way CSplatKey does", "[parti
     const auto sweep = [](i32 start, i32 end, i32 repeat) {
         std::vector<i32> cells;
         for (f32 t : {0.005f, 0.255f, 0.505f, 0.755f, 0.995f})
-            cells.push_back(detail::SplatCell(start, end, repeat, t));
+            cells.push_back(effects::detail::SplatCell(start, end, repeat, t));
         return cells;
     };
     // Ascending: every cell of [0, 3], first to last.
@@ -915,6 +916,62 @@ TEST_CASE("an SPL splat sweeps its sprite cells the way CSplatKey does", "[parti
     // Two repeats run the range twice.
     CHECK(sweep(0, 1, 2) == std::vector<i32>{0, 1, 0, 1, 1});
     // Clamped to a byte, not to the range.
-    CHECK(detail::SplatCell(250, 300, 1, 0.995f) == 255);
-    CHECK(detail::SplatCell(-5, -1, 1, 0.005f) == 0);
+    CHECK(effects::detail::SplatCell(250, 300, 1, 0.995f) == 255);
+    CHECK(effects::detail::SplatCell(-5, -1, 1, 0.005f) == 0);
+}
+
+TEST_CASE("a finished SPL splat stays until its ring overwrites it", "[particle][splat]") {
+    // `CSplatEmitter::RenderSplat` @0x141FE6990 keeps drawing a finished splat
+    // with its end colour while the end alpha byte is above 8, and only
+    // `CreateSplat` @0x141FE58D0 removes one, when a full ring of 1000 per
+    // blend mode reuses its slot.
+    whiteout::flakes::io::SplEntry e;
+    e.lifespan = 1.0f;
+    e.decay = 1.0f;
+    e.endC[3] = 0.5f;
+    e.blendMode = 2;
+    e.uvDecayEnd = 0;
+    const auto drawn = [](const effects::SplatService& s) {
+        std::vector<whiteout::flakes::renderer::Vertex> v;
+        std::vector<effects::SplatDrawList> lists;
+        s.BuildGeometry(v, lists);
+        return v;
+    };
+
+    effects::SplatService svc;
+    svc.SpawnSpl(e, {0, 0, 0}, {1, 0, 0}, {0, 1, 0});
+    for (int i = 0; i < 10; ++i)
+        svc.Tick(0.5f); // five seconds, well past lifespan + decay
+    CHECK(svc.Count() == 1);
+    const auto v = drawn(svc);
+    REQUIRE(v.size() == 6);
+    CHECK(v[0].color.w == 0.5f);
+
+    SECTION("an end at alpha 8 keeps its slot and draws nothing") {
+        whiteout::flakes::io::SplEntry faint = e;
+        faint.endC[3] = 8.0f / 255.0f;
+        effects::SplatService s2;
+        s2.SpawnSpl(faint, {0, 0, 0}, {1, 0, 0}, {0, 1, 0});
+        s2.Tick(0.5f);
+        s2.Tick(0.5f);
+        s2.Tick(0.5f);
+        s2.Tick(0.5f);
+        CHECK(s2.Count() == 1);
+        CHECK(drawn(s2).empty());
+    }
+
+    SECTION("a full ring drops its oldest, and only its own blend mode's") {
+        whiteout::flakes::io::SplEntry other = e;
+        other.blendMode = 1;
+        svc.SpawnSpl(other, {0, 0, 0}, {1, 0, 0}, {0, 1, 0});
+        for (int i = 0; i < 1000; ++i)
+            svc.SpawnSpl(e, {0, 0, 0}, {1, 0, 0}, {0, 1, 0});
+        CHECK(svc.Count() == 1001);
+        // The finished splat was the oldest of blend mode 2 and is gone; the
+        // newborns all draw their start colour, alpha 1.
+        const auto all = drawn(svc);
+        CHECK(all.size() == 1001 * 6);
+        CHECK(std::none_of(all.begin(), all.end(),
+                           [](const auto& vtx) { return vtx.color.w == 0.5f; }));
+    }
 }

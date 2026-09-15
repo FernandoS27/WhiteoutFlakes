@@ -13,9 +13,9 @@
 
 #include "oracle_golden.h"
 #include "renderer/particle/particle_adapters.h"
-#include "renderer/particle/particle_stages_sc2.h"
-#include "renderer/particle/sc2_compose.h"
-#include "renderer/particle/sc2_tick.h"
+#include "renderer/particle/sc2/particle_stages_sc2.h"
+#include "renderer/particle/sc2/sc2_compose.h"
+#include "renderer/particle/sc2/sc2_tick.h"
 #include "renderer/sc2/sc2_element.h"
 #include "renderer/sc2/sc2_element_math.h"
 #include "renderer/sc2/sc2_rng.h"
@@ -259,7 +259,7 @@ TEST_CASE("op1: CanUseGpuMotion replays the binary's truth table",
         const auto& in = c["in"];
 
         // Through the CONFIG, not by hand-filling the desc: the conversion is
-        // half of what this gate is for. A `Sc2CanUseGpuMotion` that agreed
+        // half of what this gate is for. A `sc2::CanUseGpuMotion` that agreed
         // with the binary while `DescFromSc2ParticleConfig` fed it the wrong
         // force word would pass a desc-only test and ship the wrong integrator.
         effects::Sc2ParticleEmitterConfig cfg;
@@ -397,7 +397,7 @@ TEST_CASE("op3: the emit clock replays Tick's whole argument tuple",
         const auto& in = c["in"];
         const auto& want = c["out"];
 
-        particle::Sc2EmitClock clock;
+        particle::sc2::EmitClock clock;
         clock.emitterTime = in["emitterTime"].F();
         clock.variationTime = in["variationTime"].F();
         clock.lastSubStepTime = in["lastSubStepTime"].F();
@@ -406,7 +406,7 @@ TEST_CASE("op3: the emit clock replays Tick's whole argument tuple",
         clock.prevPos = {in["prevPos"][0].F(), in["prevPos"][1].F(), in["prevPos"][2].F()};
         clock.stateFlags = in["flags"].U();
 
-        particle::Sc2ClockInputs args;
+        particle::sc2::ClockInputs args;
         args.dtMs = in["dtMs"].I();
         args.timeScale = in["timeScale"].F();
         args.subStepRate = in["subStepRate"].F();
@@ -419,8 +419,8 @@ TEST_CASE("op3: the emit clock replays Tick's whole argument tuple",
 
         // The restart check first, as `Tick` makes it: ahead of the
         // once-per-frame test, so a frame that returns early still runs it.
-        const auto restart = particle::Sc2TickRestartCheck(clock, args);
-        const auto plan = particle::Sc2TickClock(clock, args);
+        const auto restart = particle::sc2::TickRestartCheck(clock, args);
+        const auto plan = particle::sc2::TickClock(clock, args);
         INFO("case " << i << " tag=" << c["tag"].S());
 
         const auto& ep = want["emitParticles"];
@@ -478,13 +478,13 @@ TEST_CASE("op7a: ComputeEmitCount replays the LOD tables and the burst gates",
         // SIGNED and drops the negative ones.
         f32 burst = 0.0f;
         if (in["allowSquirt"].B() && (flags & 2) != 0) {
-            particle::Sc2KeySink sink;
+            particle::sc2::KeySink sink;
             for (const auto& k : in["squirtKeys"].A())
                 sink.keys[sink.count++] = {static_cast<u16>(static_cast<i16>(k->I())), 0};
-            burst = particle::Sc2SquirtBurst(sink);
+            burst = particle::sc2::SquirtBurst(sink);
         }
 
-        particle::Sc2EmitCountInputs args;
+        particle::sc2::EmitCountInputs args;
         args.rate = in["rate"].F();
         args.dt = in["dt"].F();
         args.timeScale = in["timeScale"].F();
@@ -498,7 +498,7 @@ TEST_CASE("op7a: ComputeEmitCount replays the LOD tables and the burst gates",
         args.nodeVisible = in["nodeVisible"].B();
 
         INFO("case " << i << " tag=" << c["tag"].S() << " slot=" << in["slot"].I());
-        REQUIRE(particle::Sc2ComputeEmitCount(args) == c["out"]["count"].F());
+        REQUIRE(particle::sc2::ComputeEmitCount(args) == c["out"]["count"].F());
     }
 }
 
@@ -520,8 +520,8 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
         const auto& rates = in["rates"].A();
         const std::size_t slots = rates.size();
         // The recorder's stub returned `rate * dt`, and the dt it was handed is
-        // the window — the same one `Sc2ComputeEmitCount` applies internally.
-        const f32 window = particle::Sc2EmitWindow(in["fullStep"].I() != 0,
+        // the window — the same one `sc2::ComputeEmitCount` applies internally.
+        const f32 window = particle::sc2::EmitWindow(in["fullStep"].I() != 0,
                                                    in["subDt"].F(), in["frameDt"].F());
         std::vector<f32> counts(slots);
         std::vector<f32> carry(slots);
@@ -531,7 +531,7 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
             carry[s] = in["emitFracIn"][s].F();
         }
 
-        particle::Sc2ScheduleInputs args;
+        particle::sc2::ScheduleInputs args;
         args.fullStep = in["fullStep"].I() != 0;
         args.nSubSteps = in["nSubSteps"].U();
         args.subDt = in["subDt"].F();
@@ -544,9 +544,9 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
         args.haveRequests = in["spawnRequestCount"].I() != 0;
         args.counts = counts;
 
-        std::vector<particle::Sc2EmitEvent> events;
+        std::vector<particle::sc2::EmitEvent> events;
         std::vector<u32> booked(slots);
-        const auto out = particle::Sc2SpawnSchedule(args, carry, targets, booked, events);
+        const auto out = particle::sc2::SpawnSchedule(args, carry, targets, booked, events);
         INFO("case " << i << " tag=" << c["tag"].S());
 
         // The trampolines recorded WHICH call happened and in what order; a
@@ -559,19 +559,19 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
             const std::string& ev = (*log[e])["ev"].S();
             INFO("  event " << e << " want=" << ev);
             switch (events[e].kind) {
-            case particle::Sc2EmitEventKind::Count:
+            case particle::sc2::EmitEventKind::Count:
                 REQUIRE(ev == "count");
                 REQUIRE(events[e].slot == (*log[e])["slot"].U());
                 break;
-            case particle::Sc2EmitEventKind::PreEmit:
+            case particle::sc2::EmitEventKind::PreEmit:
                 REQUIRE(ev == "preemit");
                 break;
-            case particle::Sc2EmitEventKind::Spawn:
+            case particle::sc2::EmitEventKind::Spawn:
                 REQUIRE(ev == "spawn");
                 REQUIRE(events[e].slot == (*log[e])["slot"].U());
                 emitted[events[e].slot] += events[e].count;
                 break;
-            case particle::Sc2EmitEventKind::Update:
+            case particle::sc2::EmitEventKind::Update:
                 REQUIRE(ev == "update");
                 break;
             }
@@ -590,13 +590,13 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
 
         // The position lane. This replay once stopped at the time lane, and the
         // tick never made the `prevPos` write the golden records.
-        particle::Sc2SweepInputs sw;
+        particle::sc2::SweepInputs sw;
         sw.fullStep = args.fullStep;
         sw.nSubSteps = args.nSubSteps;
         sw.total = out.total;
         sw.prevPos = {in["prevPosIn"][0].F(), in["prevPosIn"][1].F(), in["prevPosIn"][2].F()};
         sw.worldPos = {in["worldPos"][0].F(), in["worldPos"][1].F(), in["worldPos"][2].F()};
-        const particle::Sc2Sweep sweep = particle::Sc2SpawnSweep(sw);
+        const particle::sc2::Sweep sweep = particle::sc2::SpawnSweep(sw);
         REQUIRE(sweep.prevPos.x == want["prevPos"][0].F());
         REQUIRE(sweep.prevPos.y == want["prevPos"][1].F());
         REQUIRE(sweep.prevPos.z == want["prevPos"][2].F());
@@ -791,9 +791,9 @@ TEST_CASE("op7b: the squirt crossing reports every key the playhead stepped over
     if (fs::exists(ctorPath)) {
         const auto ctor = wdx_golden::Load(ctorPath.string());
         const auto& o = (*ctor)["cases"][0]["out"];
-        const particle::Sc2KeySink fresh;
+        const particle::sc2::KeySink fresh;
         CHECK(fresh.count == o["count"].U());
-        CHECK(particle::Sc2KeySink::kCapacity == o["cap"].U());
+        CHECK(particle::sc2::KeySink::kCapacity == o["cap"].U());
     }
 
     const auto doc = wdx_golden::Load(path.string());
@@ -870,16 +870,16 @@ TEST_CASE("op7b: the squirt crossing reports every key the playhead stepped over
         RefSink ideal;
         seed(ideal);
         const bool refRebuilt = ReferenceCrossing(live, bias, ideal, false);
-        std::vector<particle::Sc2KeyPlayer> players;
+        std::vector<particle::sc2::KeyPlayer> players;
         for (const RefPlayer& rp : live)
             players.push_back({{rp.times, rp.values}, rp.frame});
-        particle::Sc2KeySink sink;
+        particle::sc2::KeySink sink;
         sink.cursors = cursors;
         sink.resync = resync;
         sink.prime = prime;
         for (u32 k = 0; k < pre; ++k)
             sink.keys[sink.count++] = {0xBEEF, -1};
-        const bool kernelRebuilt = particle::Sc2CollectCrossedKeys(players, bias, sink);
+        const bool kernelRebuilt = particle::sc2::CollectCrossedKeys(players, bias, sink);
         CHECK(kernelRebuilt == refRebuilt);
         rebuilt += kernelRebuilt ? 1u : 0u;
         REQUIRE(sink.count == ideal.keys.size());
@@ -893,7 +893,7 @@ TEST_CASE("op7b: the squirt crossing reports every key the playhead stepped over
         // What the binary reported, the rule reports too, in order; and each
         // key the binary lost is one of the four named losses. Not asked once
         // the rule reaches the 128 cap, where the two keep different 128.
-        if (ideal.keys.size() < particle::Sc2KeySink::kCapacity) {
+        if (ideal.keys.size() < particle::sc2::KeySink::kCapacity) {
             std::size_t r = 0;
             for (const RefKey& k : ideal.keys) {
                 if (r < retail.keys.size() && retail.keys[r].stale == k.stale &&
@@ -971,7 +971,7 @@ TEST_CASE("op3c: the pre-roll runs the lifetime peak in 33 ms blocks",
         std::vector<f32> curve;
         for (const auto& v : in["values"].A())
             curve.push_back(v->F());
-        const f32 peak = particle::Sc2PreRollPeak(curve, haveCurve, init);
+        const f32 peak = particle::sc2::PreRollPeak(curve, haveCurve, init);
 
         // The binary's budget, to show what the golden is: its clamp reads the
         // wall clock before it reads the request.
@@ -982,7 +982,7 @@ TEST_CASE("op3c: the pre-roll runs the lifetime peak in 33 ms blocks",
         const u32 retailBlocks = retailBudget == 0 ? 0u : (retailBudget + 32u) / 33u;
         REQUIRE(want["steps"].U() == retailBlocks);
 
-        const particle::Sc2PreRollPlan plan = particle::Sc2PlanPreRoll(peak, requested);
+        const particle::sc2::PreRollPlan plan = particle::sc2::PlanPreRoll(peak, requested);
         if (wantMs > nowMs && requested < wantMs) {
             // Design §8: the request caps the budget whatever the clock says.
             ++deviated;
@@ -997,8 +997,8 @@ TEST_CASE("op3c: the pre-roll runs the lifetime peak in 33 ms blocks",
         // added to float; the frame index falls by one per block.
         f32 offset = 0.0f;
         for (u32 k = 0; k < want["steps"].U(); ++k) {
-            CHECK(want["ticks"][k]["dtMs"].I() == particle::kSc2PreRollBlockMs);
-            offset = offset + particle::kSc2PreRollOffsetStep;
+            CHECK(want["ticks"][k]["dtMs"].I() == particle::sc2::kPreRollBlockMs);
+            offset = offset + particle::sc2::kPreRollOffsetStep;
         }
         CHECK(offset == want["timeOffset"].F());
         CHECK(want["lastFrameIndex"].I() == 1000 - static_cast<i32>(want["steps"].U()));
@@ -1025,13 +1025,13 @@ TEST_CASE("op8b: a spawn call takes its requests first and flushes where retail 
         const auto& want = c["out"];
         INFO("case " << i << " tag=" << c["tag"].S());
 
-        particle::Sc2SpawnBatchInputs args;
+        particle::sc2::SpawnBatchInputs args;
         args.requests = in["requests"].U();
         args.plain = in["count"].U();
         args.elementCount = in["elementCountIn"].U();
         args.maxParticles = in["maxParticles"].U();
-        particle::Sc2SpawnBatchPlan plan;
-        particle::Sc2PlanSpawnBatch(args, plan);
+        particle::sc2::SpawnBatchPlan plan;
+        particle::sc2::PlanSpawnBatch(args, plan);
 
         REQUIRE(plan.created == want["created"].U());
         CHECK(want["elementCount"].U() == args.elementCount + plan.created);
@@ -1039,7 +1039,7 @@ TEST_CASE("op8b: a spawn call takes its requests first and flushes where retail 
         // so a later case carves blocks a previous one freed, in free-list
         // order. What they do pin is the order — every element distinct, and
         // the flushes handing the initialiser exactly the live list, in append
-        // order. That is the order `Sc2ParticleStore::Acquire` links.
+        // order. That is the order `sc2::ParticleStore::Acquire` links.
         const auto& order = want["liveOrder"];
         REQUIRE(order.Size() == plan.created);
         std::vector<u32> live;
@@ -1055,7 +1055,7 @@ TEST_CASE("op8b: a spawn call takes its requests first and flushes where retail 
         std::size_t next = 0;
         for (std::size_t f = 0; f < flushes.Size(); ++f) {
             const auto& wf = flushes[f];
-            const particle::Sc2SpawnFlush& pf = plan.flushes[f];
+            const particle::sc2::SpawnFlush& pf = plan.flushes[f];
             CHECK(wf["slot"].U() == in["slot"].U());
             REQUIRE(wf["count"].U() == pf.requests + pf.plain);
             for (u32 k = 0; k < wf["count"].U(); ++k) {
@@ -1099,8 +1099,8 @@ TEST_CASE("op4: the spawn shapes replay the draw stream, not just the point",
         const auto& in = c["in"];
         const auto& want = c["out"];
 
-        particle::Sc2SpawnPosInputs args;
-        args.shape = static_cast<particle::Sc2SpawnShape>(in["shape"].U());
+        particle::sc2::SpawnPosInputs args;
+        args.shape = static_cast<particle::sc2::SpawnShape>(in["shape"].U());
         args.cutout = in["cutout"].B();
         args.shapeOuter = {in["shapeOuter"][0].F(), in["shapeOuter"][1].F(),
                            in["shapeOuter"][2].F()};
@@ -1117,7 +1117,7 @@ TEST_CASE("op4: the spawn shapes replay the draw stream, not just the point",
         args.spline = spline;
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const Vector3f got = particle::Sc2SampleSpawnPosition(rng, args);
+        const Vector3f got = particle::sc2::SampleSpawnPosition(rng, args);
 
         INFO("case " << i << " tag=" << c["tag"].S() << " shape=" << in["shape"].U()
                      << " cutout=" << in["cutout"].B() << " ex=" << in["extents"].S());
@@ -1157,7 +1157,7 @@ TEST_CASE("op5: the velocity types replay the overlay order and the speed branch
         const auto& in = c["in"];
         const auto& want = c["out"];
 
-        particle::Sc2SpawnVelInputs args;
+        particle::sc2::SpawnVelInputs args;
         args.velocityType = in["velocityType"].U();
         args.spawnYaw = in["yaw"].F();
         args.spawnPitch = in["pitch"].F();
@@ -1177,7 +1177,7 @@ TEST_CASE("op5: the velocity types replay the overlay order and the speed branch
         const auto& ov = in["overlayParams"];
         const auto& armed = in["overlays"];
         const auto group = [&](const char* key, std::size_t g) {
-            particle::Sc2Overlay o;
+            particle::sc2::Overlay o;
             // `overlays` names only the ARMED groups, so absence is type 0.
             o.type = armed.Has(key) ? armed[key].U() : 0u;
             o.amplitude = ov[2 * g].F();
@@ -1191,7 +1191,7 @@ TEST_CASE("op5: the velocity types replay the overlay order and the speed branch
         args.verticalOverlay = group("8", 8);
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const Vector3f got = particle::Sc2SampleSpawnVelocity(rng, args, position, normal);
+        const Vector3f got = particle::sc2::SampleSpawnVelocity(rng, args, position, normal);
 
         INFO("case " << i << " tag=" << c["tag"].S() << " vt=" << in["velocityType"].U()
                      << " endpoint=" << in["speedIsEndpoint"].B()
@@ -1219,9 +1219,9 @@ TEST_CASE("op5: the velocity types replay the overlay order and the speed branch
 
 namespace {
 
-particle::Sc2Overlay OverlayFrom(const wdx_golden::Value& in, const char* typeKey,
+particle::sc2::Overlay OverlayFrom(const wdx_golden::Value& in, const char* typeKey,
                                  std::size_t group) {
-    particle::Sc2Overlay o;
+    particle::sc2::Overlay o;
     o.type = in[typeKey].U();
     o.amplitude = in["overlayParams"][2 * group].F();
     o.frequency = in["overlayParams"][2 * group + 1].F();
@@ -1244,7 +1244,7 @@ TEST_CASE("op6: SampleParticleColor replays the integer lerp and the alpha clamp
         const auto& c = cases[i];
         const auto& in = c["in"];
 
-        particle::Sc2ColorInputs args;
+        particle::sc2::ColorInputs args;
         for (std::size_t k = 0; k < 3; ++k) {
             args.keys[k] = in["colors"][k].U();
             args.randomKeys[k] = in["colors"][k + 3].U();
@@ -1256,7 +1256,7 @@ TEST_CASE("op6: SampleParticleColor replays the integer lerp and the alpha clamp
         args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const auto got = particle::Sc2SampleColor(rng, args);
+        const auto got = particle::sc2::SampleColor(rng, args);
 
         INFO("case " << i << " random=" << in["colorRandomEnable"].I()
                      << " wave=" << in["alphaOverlayType"].U()
@@ -1284,7 +1284,7 @@ TEST_CASE("op6: SampleParticleSize returns half extents, unquantised",
         const auto& c = cases[i];
         const auto& in = c["in"];
 
-        particle::Sc2SizeInputs args;
+        particle::sc2::SizeInputs args;
         for (std::size_t k = 0; k < 3; ++k) {
             args.keys[k] = in["size"][k].F();
             args.randomKeys[k] = in["sizeRandom"][k].F();
@@ -1296,7 +1296,7 @@ TEST_CASE("op6: SampleParticleSize returns half extents, unquantised",
         args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const auto got = particle::Sc2SampleSize(rng, args, in["blend"].F());
+        const auto got = particle::sc2::SampleSize(rng, args, in["blend"].F());
 
         INFO("case " << i << " random=" << in["sizeRandomEnable"].I()
                      << " wave=" << in["sizeOverlayType"].U()
@@ -1325,7 +1325,7 @@ TEST_CASE("op6: SampleParticleRotation collapses its mid key only when randomise
         const auto& c = cases[i];
         const auto& in = c["in"];
 
-        particle::Sc2RotationInputs args;
+        particle::sc2::RotationInputs args;
         for (std::size_t k = 0; k < 3; ++k) {
             args.keys[k] = in["rotation"][k].F();
             args.randomKeys[k] = in["rotationRandom"][k].F();
@@ -1337,7 +1337,7 @@ TEST_CASE("op6: SampleParticleRotation collapses its mid key only when randomise
         args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const auto got = particle::Sc2SampleRotation(rng, args);
+        const auto got = particle::sc2::SampleRotation(rng, args);
 
         INFO("case " << i << " random=" << in["rotationRandomEnable"].I()
                      << " relative=" << in["rotationFlags"].U()
@@ -1415,7 +1415,7 @@ TEST_CASE("op8: InitSpawnedParticles replays the element and the space arms",
         const auto& par = in["par"];
         const auto& sys = in["sys"];
 
-        particle::Sc2InitInputs args;
+        particle::sc2::InitInputs args;
         args.parFlags = par["flags"].U();
         args.additionalFlags = par["additionalFlags"].U();
         args.rotationFlags = par["rotationFlags"].U();
@@ -1442,7 +1442,7 @@ TEST_CASE("op8: InitSpawnedParticles replays the element and the space arms",
         args.inheritVelocityScale = sys["inheritVelocityScale"].F();
         args.nowMs = in["nowMs"].U();
 
-        args.shape.shape = static_cast<particle::Sc2SpawnShape>(par["emitterShape"].U());
+        args.shape.shape = static_cast<particle::sc2::SpawnShape>(par["emitterShape"].U());
         args.shape.cutout = (args.parFlags & 0x10) != 0;
         args.shape.shapeOuter = Vec3From(sys["shapeOuter"]);
         args.shape.shapeInner = Vec3From(sys["shapeInner"]);
@@ -1482,23 +1482,23 @@ TEST_CASE("op8: InitSpawnedParticles replays the element and the space arms",
         args.rotation.relative = (args.rotationFlags & 2) != 0;
         args.rotation.rotationMidTime = SysF(sys, "rotationMidTime", 0.0f);
 
-        std::vector<particle::SpawnRequest> reqs;
+        std::vector<particle::sc2::SpawnRequest> reqs;
         for (const auto& r : in["requests"].A()) {
-            particle::SpawnRequest q;
+            particle::sc2::SpawnRequest q;
             q.position = Vec3From((*r)[0]);
             q.velocityScale = Vec3From((*r)[1]);
             q.orientVec = Vec3From((*r)[2]);
             reqs.push_back(q);
         }
 
-        particle::Sc2InitState st;
+        particle::sc2::InitState st;
         st.emitterTime = sys["emitterTime"].F();
         st.expireFrameMs = in["expireIn"].U();
 
         const std::size_t count = static_cast<std::size_t>(in["count"].U());
-        std::vector<particle::Sc2SpawnedElement> elems(count);
+        std::vector<particle::sc2::SpawnedElement> elems(count);
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        particle::Sc2InitSpawned(rng, args, reqs, st, elems);
+        particle::sc2::InitSpawned(rng, args, reqs, st, elems);
 
         if ((args.additionalFlags & 8) != 0 && reqs.empty()) {
             ++worldArm;
@@ -1579,7 +1579,7 @@ TEST_CASE("op9: RetireExpiredParticles walks the list both ways",
         const auto& c = cases[i];
         const auto& in = c["in"];
         const bool useRetire =
-            particle::Sc2UseRetirePath(in["stateFlags"].U(), in["forceCpu"].U() != 0);
+            particle::sc2::UseRetirePath(in["stateFlags"].U(), in["forceCpu"].U() != 0);
         (useRetire ? selectedRetire : selectedSimulate)++;
 
         // The CPU branch is X4's. Its vectors still contribute the selection
@@ -1590,19 +1590,19 @@ TEST_CASE("op9: RetireExpiredParticles walks the list both ways",
 
         const auto& src = in["elementsIn"];
         const std::size_t n = src.Size();
-        std::vector<particle::Sc2SpawnedElement> elems(n);
+        std::vector<particle::sc2::SpawnedElement> elems(n);
         for (std::size_t k = 0; k < n; ++k) {
             elems[k].deathTime = src[k]["deathTime"].F();
             elems[k].vbSlot = src[k]["vbSlot"].I();
         }
 
-        particle::Sc2ElementList list;
+        particle::sc2::ElementList list;
         list.Reset(n);
-        particle::Sc2RecycleArray recycle;
+        particle::sc2::RecycleArray recycle;
         recycle.enabled = c["out"].Has("recycleCount");
 
         const u32 retired =
-            particle::Sc2RetireExpired(list, elems, in["emitterTime"].F(), recycle);
+            particle::sc2::RetireExpired(list, elems, in["emitterTime"].F(), recycle);
 
         INFO("case " << i << " tag=" << c["tag"].S() << " n=" << n);
         std::vector<i32> alive;
@@ -1680,7 +1680,7 @@ TEST_CASE("op12: the analytic step replays the shader's closed form",
         const auto& i1 = vtx["interp1"];
         const auto& i2 = vtx["interp2"];
 
-        particle::Sc2AnalyticInputs args;
+        particle::sc2::AnalyticInputs args;
         args.position = {vtx["position"][0].F(), vtx["position"][1].F(),
                          vtx["position"][2].F()};
         args.velocity0 = {i1[0].F(), i1[1].F(), i1[2].F()};
@@ -1707,7 +1707,7 @@ TEST_CASE("op12: the analytic step replays the shader's closed form",
             bat["midKey"][0].F(), bat["invMidKey"][0].F(), bat["hold"][0].F(),
             static_cast<int>(in["sizeInterp"].U()));
 
-        const auto step = particle::Sc2StepAnalytic(args);
+        const auto step = particle::sc2::StepAnalytic(args);
 
         if (args.systemTime < args.birthTime)
             ++beforeBirth;
@@ -1789,7 +1789,7 @@ TEST_CASE("op11b: the analytic vertex body is the element, uploaded once",
         const auto& src = in["elementsIn"];
         const std::size_t n = src.Size();
 
-        std::vector<particle::Sc2SpawnedElement> elems(n);
+        std::vector<particle::sc2::SpawnedElement> elems(n);
         for (std::size_t k = 0; k < n; ++k) {
             const auto& e = src[k];
             elems[k].position = Vec3From(e["position"]);
@@ -1811,7 +1811,7 @@ TEST_CASE("op11b: the analytic vertex body is the element, uploaded once",
             }
         }
 
-        particle::Sc2VertexBodyInputs vin;
+        particle::sc2::VertexBodyInputs vin;
         vin.drag = in["drag"].F();
         vin.gravity = in["gravity"].F();
         vin.worldGravityScale =
@@ -1824,14 +1824,14 @@ TEST_CASE("op11b: the analytic vertex body is the element, uploaded once",
         INFO("case " << i << " tag=" << c["tag"].S());
 
         // The seam: these vectors ran a real retirement before the upload, so
-        // the list the walk sees is one `Sc2RetireExpired` produced rather
+        // the list the walk sees is one `sc2::RetireExpired` produced rather
         // than one a fixture linked. Replaying both kernels in order is the
         // only way this test can measure the handover at all.
         if (!out["afterRetire"].IsNull()) {
-            particle::Sc2ElementList list;
+            particle::sc2::ElementList list;
             list.Reset(n);
-            particle::Sc2RecycleArray recycle;
-            const u32 gone = particle::Sc2RetireExpired(
+            particle::sc2::RecycleArray recycle;
+            const u32 gone = particle::sc2::RetireExpired(
                 list, elems, in["emitterTime"].F(), recycle);
             (void)gone;
 
@@ -1879,12 +1879,12 @@ TEST_CASE("op11b: the analytic vertex body is the element, uploaded once",
             if (want.IsNull())
                 continue;
             REQUIRE(want.Size() == 4);
-            const particle::Sc2GpuVertex body = particle::Sc2VertexBody(vin, elems[k]);
+            const particle::sc2::GpuVertex body = particle::sc2::VertexBody(vin, elems[k]);
             for (std::size_t j = 0; j < 4; ++j) {
                 // Retail's four copies differ only in `vOffset`.
-                particle::Sc2GpuVertex corner = body;
-                corner.corner[0] = particle::kSc2Corners[j][0];
-                corner.corner[1] = particle::kSc2Corners[j][1];
+                particle::sc2::GpuVertex corner = body;
+                corner.corner[0] = particle::sc2::kCorners[j][0];
+                corner.corner[1] = particle::sc2::kCorners[j][1];
                 std::array<u32, 29> words{};
                 std::memcpy(words.data(), &corner, sizeof(corner));
                 for (std::size_t w = 0; w < words.size(); ++w) {
@@ -1955,7 +1955,7 @@ TEST_CASE("op12: every instance type builds the shader quad, corner for corner",
         const auto& bsrc = in["batch"];
         const auto& csrc = in["camera"];
 
-        particle::Sc2QuadInput v;
+        particle::sc2::QuadInput v;
         v.position = Vec3From(vsrc["position"]);
         v.size = arr4(vsrc["size"]);
         for (std::size_t k = 0; k < 3; ++k)
@@ -1976,7 +1976,7 @@ TEST_CASE("op12: every instance type builds the shader quad, corner for corner",
         v.noise = {nz[0], nz[1], nz[2]};
         v.flipbookRandStart = nz[3];
 
-        particle::Sc2QuadBatch b;
+        particle::sc2::QuadBatch b;
         b.midKey = arr4(bsrc["midKey"]);
         b.invMidKey = arr4(bsrc["invMidKey"]);
         b.hold = arr4(bsrc["hold"]);
@@ -1992,13 +1992,13 @@ TEST_CASE("op12: every instance type builds the shader quad, corner for corner",
         b.prWorld = mat(bsrc["prWorld"]);
         b.instanceTransform = mat(bsrc["instanceTransform"]);
 
-        particle::Sc2QuadCamera cam;
+        particle::sc2::QuadCamera cam;
         cam.billboardRight = Vec3From(csrc["right"]);
         cam.billboardUp = Vec3From(csrc["up"]);
         cam.direction = Vec3From(csrc["direction"]);
         cam.eye = Vec3From(csrc["eye"]);
 
-        particle::Sc2QuadFlags fl;
+        particle::sc2::QuadFlags fl;
         fl.instanceType = in["type"].U();
         fl.fixedTailLength = in["fixedTail"].B();
         fl.clampedTailLength = in["clampedTail"].B();
@@ -2016,7 +2016,7 @@ TEST_CASE("op12: every instance type builds the shader quad, corner for corner",
         fl.uvRandomOffset = in["uvRandomOffset"][0].I() != 0;
 
         INFO("case " << i << " tag=" << c["tag"].S());
-        const auto q = particle::Sc2ExpandQuad(v, b, cam, fl);
+        const auto q = particle::sc2::ExpandQuad(v, b, cam, fl);
         REQUIRE(q.supported);
 
         // The corner positions come out of a chain of adds around values in
@@ -2128,7 +2128,7 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
         const auto& out = c["out"];
         INFO("case " << i << " tag=" << c["tag"].S());
 
-        particle::Sc2BatchDesc d;
+        particle::sc2::BatchDesc d;
         d.sizeMidTime = in["sizeMidTime"].F();
         d.colorMidTime = in["colorMidTime"].F();
         d.alphaMidTime = in["alphaMidTime"].F();
@@ -2153,9 +2153,9 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
         // The same row, reached through the load-time desc. Everything above
         // is the row OP15 measured; this is the adapter that has to hand it
         // those values, and a transposed lane on THIS side would otherwise be
-        // invisible — the gate ends at `Sc2BatchDesc` and the loader starts
+        // invisible — the gate ends at `sc2::BatchDesc` and the loader starts
         // after it.
-        particle::Sc2EmitterDesc ed;
+        particle::sc2::EmitterDesc ed;
         ed.look.midTime[0] = d.sizeMidTime;
         ed.look.midTime[1] = d.colorMidTime;
         ed.look.midTime[2] = d.alphaMidTime;
@@ -2173,7 +2173,7 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
         ed.look.flipbookColumnFraction = d.flipbookColumnFraction;
         ed.look.flipbookRowFraction = d.flipbookRowFraction;
         ed.emit.worldSpace = d.worldSpace;
-        const particle::Sc2BatchDesc via = particle::Sc2BatchDescFrom(ed);
+        const particle::sc2::BatchDesc via = particle::sc2::BatchDescFrom(ed);
         CHECK(via.sizeMidTime == d.sizeMidTime);
         CHECK(via.colorMidTime == d.colorMidTime);
         CHECK(via.alphaMidTime == d.alphaMidTime);
@@ -2192,7 +2192,7 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
         CHECK(via.flipbookRowFraction == d.flipbookRowFraction);
         CHECK(via.worldSpace == d.worldSpace);
 
-        particle::Sc2BatchFrame f;
+        particle::sc2::BatchFrame f;
         f.world = mat(in["world"]);
         f.hasInstanceNode = !in["instance"].IsNull();
         if (f.hasInstanceNode)
@@ -2201,7 +2201,7 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
 
         // A row nobody has written yet, filled so that "left alone" is a
         // readable state rather than a zero that could have come from anywhere.
-        particle::Sc2QuadBatch row;
+        particle::sc2::QuadBatch row;
         u32 k = 0;
         for (auto& v : row.prWorld) v = sentinel(k++);
         for (auto& v : row.instanceTransform) v = sentinel(k++);
@@ -2214,9 +2214,9 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
         row.elementScale = sentinel(k++);
         row.flipbookMidKeyTime = sentinel(k++);
         row.flipbookColumns = sentinel(k++);
-        const particle::Sc2QuadBatch before = row;
+        const particle::sc2::QuadBatch before = row;
 
-        particle::Sc2WriteQuadBatch(row, d, f);
+        particle::sc2::WriteQuadBatch(row, d, f);
 
         // A lane the golden marks poisoned must still hold OUR fill; every
         // other lane is compared bit for bit, because all of these are copies
@@ -2312,7 +2312,7 @@ TEST_CASE("op15: the batch row is the emitter's constants, lane for lane",
 
 TEST_CASE("compose: the pool links, retires and recycles in retail's order",
           "[sc2_particle][compose]") {
-    particle::Sc2ParticleStore store;
+    particle::sc2::ParticleStore store;
     store.Init(8);
     REQUIRE(store.Capacity() == 8u);
     REQUIRE(store.AliveCount() == 0u);
@@ -2320,7 +2320,7 @@ TEST_CASE("compose: the pool links, retires and recycles in retail's order",
     std::vector<i32> walk;
     store.list.Walk(walk);
     CHECK(walk.empty());
-    // Everything free, in index order — the opposite of `Sc2ElementList::Reset`,
+    // Everything free, in index order — the opposite of `sc2::ElementList::Reset`,
     // which links a pool that is entirely LIVE.
     store.list.WalkFree(walk);
     CHECK(walk == std::vector<i32>{0, 1, 2, 3, 4, 5, 6, 7});
@@ -2341,7 +2341,7 @@ TEST_CASE("compose: the pool links, retires and recycles in retail's order",
     CHECK(walk == std::vector<i32>{4, 3, 2, 1, 0});
 
     // Everything born at or before t = 3 dies: `deathTime <= emitterTime`.
-    const u32 retired = particle::Sc2RetireExpired(
+    const u32 retired = particle::sc2::RetireExpired(
         store.list, store.elements, 3.0f, store.recycle);
     CHECK(retired == 3u);
     CHECK(store.AliveCount() == 2u);
@@ -2372,17 +2372,17 @@ TEST_CASE("compose: the pool links, retires and recycles in retail's order",
 
 TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
           "[sc2_particle][compose]") {
-    particle::Sc2ParticleStore store;
+    particle::sc2::ParticleStore store;
     store.Init(4);
 
-    particle::Sc2QuadBatch batch;
+    particle::sc2::QuadBatch batch;
     batch.systemTime = 1.0f;
     batch.elementScale = 1.0f;
-    particle::Sc2QuadCamera cam;
-    particle::Sc2QuadFlags fl;
+    particle::sc2::QuadCamera cam;
+    particle::sc2::QuadFlags fl;
 
     std::vector<renderer::Vertex> out;
-    CHECK(particle::Sc2BuildQuads(store, batch, cam, fl, false, out) == 0u);
+    CHECK(particle::sc2::BuildQuads(store, batch, cam, fl, false, out) == 0u);
     CHECK(out.empty());
 
     for (i32 i = 0; i < 3; ++i) {
@@ -2404,7 +2404,7 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
         v.rotation[1] = 0;
         v.rotation[2] = 0;
         // Read only through the random-UV arm, and zero here until 2026-09-10:
-        // dropping it from `Sc2QuadInputFrom` stayed green over the whole
+        // dropping it from `sc2::QuadInputFrom` stayed green over the whole
         // suite, which is a hole in this fixture and not in the kernel.
         v.flipbookRand = 0x0507u;
         v.noise[0] = 0.5f;
@@ -2418,14 +2418,14 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
     }
 
     out.clear();
-    CHECK(particle::Sc2BuildQuads(store, batch, cam, fl, false, out) == 3u);
+    CHECK(particle::sc2::BuildQuads(store, batch, cam, fl, false, out) == 3u);
     REQUIRE(out.size() == 18u);
 
     // Two triangles per particle, wound c0 c1 c2 / c3 c2 c1 — the same winding
     // every other dialect emits, so one pipeline state draws all of them.
     for (std::size_t p = 0; p < 3; ++p) {
-        const auto q = particle::Sc2ExpandQuad(
-            particle::Sc2QuadInputFrom(store.vertices[p]), batch, cam, fl);
+        const auto q = particle::sc2::ExpandQuad(
+            particle::sc2::QuadInputFrom(store.vertices[p]), batch, cam, fl);
         REQUIRE(q.supported);
         const std::size_t order[6] = {0, 1, 2, 3, 2, 1};
         for (std::size_t k = 0; k < 6; ++k) {
@@ -2445,10 +2445,10 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
 
     // What the channels ARE, not merely that they agree. The nodes are packed
     // with alpha in the high byte then r, g, b - the packing OP6 pinned for
-    // `Sc2SampleColor`. Nothing measures the vertex DECLARATION's own decode,
+    // `sc2::SampleColor`. Nothing measures the vertex DECLARATION's own decode,
     // so this pins our side of it and says so.
     {
-        const auto q = particle::Sc2QuadInputFrom(store.vertices[0]);
+        const auto q = particle::sc2::QuadInputFrom(store.vertices[0]);
         constexpr f32 k = 1.0f / 255.0f;
         CHECK(q.color[0][0] == 0x10 * k);   // r
         CHECK(q.color[0][1] == 0x20 * k);   // g
@@ -2469,10 +2469,10 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
 
     // The random-UV arm, so `.w` is not merely carried but READ.
     {
-        particle::Sc2QuadFlags rnd = fl;
+        particle::sc2::QuadFlags rnd = fl;
         rnd.uvRandomOffset = true;
         std::vector<renderer::Vertex> ruv;
-        CHECK(particle::Sc2BuildQuads(store, batch, cam, rnd, false, ruv) == 3u);
+        CHECK(particle::sc2::BuildQuads(store, batch, cam, rnd, false, ruv) == 3u);
         REQUIRE(ruv.size() == 18u);
         // 0x0507 splits to (5, 7) over 255 - a shift both axes can see.
         CHECK(ruv[0].uv.x != out[0].uv.x);
@@ -2484,7 +2484,7 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
     // The reverse walk is the SortReverse order, and it is the only thing that
     // changes — same particles, same corners, opposite sequence.
     std::vector<renderer::Vertex> rev;
-    CHECK(particle::Sc2BuildQuads(store, batch, cam, fl, true, rev) == 3u);
+    CHECK(particle::sc2::BuildQuads(store, batch, cam, fl, true, rev) == 3u);
     REQUIRE(rev.size() == 18u);
     for (std::size_t p = 0; p < 3; ++p)
         for (std::size_t k = 0; k < 6; ++k)
@@ -2494,10 +2494,10 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
     // tail is not the billboard with a different flag. Past the eleven there
     // is no branch to transcribe, so a type 11 still shows as nothing rather
     // than as the billboard the shader's final `else` would fall into.
-    particle::Sc2QuadFlags tail = fl;
+    particle::sc2::QuadFlags tail = fl;
     tail.instanceType = 1;
     std::vector<renderer::Vertex> tailQuads;
-    CHECK(particle::Sc2BuildQuads(store, batch, cam, tail, false, tailQuads) == 3u);
+    CHECK(particle::sc2::BuildQuads(store, batch, cam, tail, false, tailQuads) == 3u);
     REQUIRE(tailQuads.size() == out.size());
     bool reshaped = false;
     for (std::size_t k = 0; k < out.size(); ++k)
@@ -2506,16 +2506,16 @@ TEST_CASE("compose: an empty pool draws nothing and a full one draws in order",
                     tailQuads[k].position.z != out[k].position.z;
     CHECK(reshaped);
 
-    particle::Sc2QuadFlags past = fl;
+    particle::sc2::QuadFlags past = fl;
     past.instanceType = 11;
     std::vector<renderer::Vertex> none;
-    CHECK(particle::Sc2BuildQuads(store, batch, cam, past, false, none) == 0u);
+    CHECK(particle::sc2::BuildQuads(store, batch, cam, past, false, none) == 0u);
     CHECK(none.empty());
 }
 
 TEST_CASE("compose: the shader permutation follows the record",
           "[sc2_particle][compose]") {
-    particle::Sc2EmitterDesc d;
+    particle::sc2::EmitterDesc d;
     d.look.instanceType = 4;
     d.look.sizeSmoothing = 1;
     d.look.colorSmoothing = 2;
@@ -2524,7 +2524,7 @@ TEST_CASE("compose: the shader permutation follows the record",
     d.emit.worldSpace = false;
     d.flags = particle::ParticleFlag::RandomFlipbookStart;
 
-    auto f = particle::Sc2QuadFlagsFrom(d, /*flipbookUv=*/true,
+    auto f = particle::sc2::QuadFlagsFrom(d, /*flipbookUv=*/true,
                                         /*uvRandomOffset=*/false);
     CHECK(f.instanceType == 4u);
     CHECK(f.sizeInterp == 1);
@@ -2543,7 +2543,7 @@ TEST_CASE("compose: the shader permutation follows the record",
     d.emit.worldSpace = true;
     d.motion.analytic = false;
     d.flags = particle::ParticleFlag::None;
-    f = particle::Sc2QuadFlagsFrom(d, false, true);
+    f = particle::sc2::QuadFlagsFrom(d, false, true);
     CHECK_FALSE(f.localSpace);
     CHECK_FALSE(f.proceduralPosition);
     CHECK_FALSE(f.randomFlipbookStart);
@@ -2563,7 +2563,7 @@ TEST_CASE("compose: the matrix and the camera keep the renderer's convention",
 
     const Vector3f p{1.25f, -3.5f, 2.0f};
     const Vector3f want = whiteout::transform_point(p, m);
-    const Vector3f got = vs::MulPointMat4(p, particle::Sc2Mat16(m));
+    const Vector3f got = vs::MulPointMat4(p, particle::sc2::Mat16(m));
     // The two associate their sums differently, so this is close, not equal —
     // what it pins is the LAYOUT, which a transpose would miss by whole units.
     CloseRel(got.x, want.x, 1e-6f, "MulPointMat4.x");
@@ -2588,7 +2588,7 @@ TEST_CASE("compose: the matrix and the camera keep the renderer's convention",
         view.data[3][c] = -(eye.x * axis[c].x + eye.y * axis[c].y + eye.z * axis[c].z);
     }
 
-    const auto cam = particle::Sc2CameraFromView(view);
+    const auto cam = particle::sc2::CameraFromView(view);
     CloseRel(cam.billboardRight.x, right.x, 1e-6f, "right.x");
     CloseRel(cam.billboardRight.y, right.y, 1e-6f, "right.y");
     CloseRel(cam.billboardUp.z, up.z, 1e-6f, "up.z");
@@ -2620,19 +2620,19 @@ namespace {
 
 /// One emitter, driven a frame at a time.
 struct Sc2Rig {
-    particle::Sc2EmitterDesc d;
-    particle::Sc2Runtime rt;
-    particle::Sc2TickFrame f;
+    particle::sc2::EmitterDesc d;
+    particle::sc2::Runtime rt;
+    particle::sc2::TickFrame f;
     /// What an emitter hands the tick as its surface.
     particle::EmitSurface surface;
 
     /// The GPU-motion selector, and the state bit derived from it the way
-    /// `Sc2Runtime::Arm` derives it — so the rig cannot hold one without the
+    /// `sc2::Runtime::Arm` derives it — so the rig cannot hold one without the
     /// other. A rig that set the flag and left `stateFlags & 0x10` clear would
     /// quietly run a closed-form case on the CPU step.
     void SetAnalytic(bool on) {
         d.motion.analytic = on;
-        const u32 bit = particle::Sc2InitRuntimeWords(d).stateFlags & sc2::kStateGpuMotion;
+        const u32 bit = particle::sc2::InitRuntimeWords(d).stateFlags & sc2::kStateGpuMotion;
         rt.clock.stateFlags = (rt.clock.stateFlags & ~sc2::kStateGpuMotion) | bit;
     }
 
@@ -2655,13 +2655,13 @@ struct Sc2Rig {
         f.elemScaleX = 1.0f;
     }
 
-    particle::Sc2TickResult Step(f32 dt) {
+    particle::sc2::TickResult Step(f32 dt) {
         f.dtMs = static_cast<i32>(dt * 1000.0f + 0.5f);
         rt.wallMs += f.dtMs;
         f.nowMs = rt.wallMs;
         f.frameIndex = ++rt.frameIndex;
         f.surface = &surface;
-        return particle::Sc2TickEmitter(rt, d, f);
+        return particle::sc2::TickEmitter(rt, d, f);
     }
 
     u32 Run(int frames, f32 dt) {
@@ -2732,7 +2732,7 @@ TEST_CASE("compose: a frame of an emitter spawns, ages and retires",
         // The recycle array stays EMPTY, and that is not a leak. `vbSlot`
         // indexes retail's shared ParticleVB arena; this store keeps each
         // particle's vertex at the element's own index, so there is no second
-        // index space to hand back and `Sc2RetireExpired` guards on
+        // index space to hand back and `sc2::RetireExpired` guards on
         // `vbSlot != -1`.
         CHECK(brief.rt.store.recycle.slots.empty());
     }
@@ -2835,9 +2835,9 @@ TEST_CASE("compose: a frame of an emitter spawns, ages and retires",
         const u32 alive = rig.rt.store.AliveCount();
         const f32 t = rig.rt.clock.emitterTime;
 
-        // The same frame index, which is the guard `Sc2TickClock` keeps.
+        // The same frame index, which is the guard `sc2::TickClock` keeps.
         rig.f.dtMs = 16;
-        const auto again = particle::Sc2TickEmitter(rig.rt, rig.d, rig.f);
+        const auto again = particle::sc2::TickEmitter(rig.rt, rig.d, rig.f);
         CHECK_FALSE(again.plan.ticked);
         CHECK(again.spawned == 0u);
         CHECK(rig.rt.store.AliveCount() == alive);
@@ -2859,15 +2859,15 @@ TEST_CASE("compose: a frame of an emitter spawns, ages and retires",
         const u32 alive = rig.rt.store.AliveCount();
         REQUIRE(alive > 0u);
 
-        particle::Sc2BatchFrame bf;
+        particle::sc2::BatchFrame bf;
         bf.emitterTime = rig.rt.clock.emitterTime;
-        particle::Sc2WriteQuadBatch(rig.rt.batch, particle::Sc2BatchDescFrom(rig.d), bf);
-        particle::Sc2QuadCamera cam;
-        const auto flags = particle::Sc2QuadFlagsFrom(rig.d, false, false);
+        particle::sc2::WriteQuadBatch(rig.rt.batch, particle::sc2::BatchDescFrom(rig.d), bf);
+        particle::sc2::QuadCamera cam;
+        const auto flags = particle::sc2::QuadFlagsFrom(rig.d, false, false);
 
         std::vector<renderer::Vertex> out;
         const usize drawn =
-            particle::Sc2BuildQuads(rig.rt.store, rig.rt.batch, cam, flags, false, out);
+            particle::sc2::BuildQuads(rig.rt.store, rig.rt.batch, cam, flags, false, out);
         CHECK(drawn == alive);
         CHECK(out.size() == alive * 6u);
         // Nothing NaN reached the buffer — a zero mass or a zero mid time would
@@ -2896,7 +2896,7 @@ TEST_CASE("compose: a frame of an emitter spawns, ages and retires",
     }
 
     SECTION("the stored vertex is the element's, built once at spawn") {
-        // `Sc2VertexBody` is what turns an initialised element into the vertex
+        // `sc2::VertexBody` is what turns an initialised element into the vertex
         // the shader reads, and retail runs it exactly once, when the slot is
         // acquired. Every lane below is one the expander needs; a tick that
         // allocated the slot without building it left them all zero, which is
@@ -2928,7 +2928,7 @@ TEST_CASE("compose: a frame of an emitter spawns, ages and retires",
         }
         CHECK(gv.size[0] == 256u); // the authored 2, as a half extent x 256
         // The two lanes that are NOT the element's: the drag pair is floored
-        // by `Sc2ComputeDragLanes` and the gravity is a product with the map's
+        // by `sc2::ComputeDragLanes` and the gravity is a product with the map's
         // scale, so a body that copied the element blind would miss both.
         CHECK(gv.drag == 0.25f);
         CHECK(gv.invDrag == 4.0f);
@@ -2963,13 +2963,13 @@ TEST_CASE("compose: a frame of an emitter spawns, ages and retires",
     }
 
     SECTION("a spawn REQUEST builds its vertex too") {
-        // The inbox is a separate spawn path with its own `Sc2InitSpawned`
+        // The inbox is a separate spawn path with its own `sc2::InitSpawned`
         // call, so it has its own chance to allocate a slot and leave the
         // vertex behind. Nothing else in this file drives it far enough to
         // look at what it stored.
         Sc2Rig rig(64, 0.0f, 7.0f); // rate 0: every particle here is a request
         for (int i = 0; i < 4; ++i) {
-            particle::SpawnRequest req;
+            particle::sc2::SpawnRequest req;
             req.position = {static_cast<f32>(i), 0.0f, 0.0f};
             rig.rt.inbox.push_back(req);
             rig.Step(kSixtieth);
@@ -3043,7 +3043,7 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
         // Every row but one `select` is a Simulate row. That one is the
         // selector's retire arm, which the retire case replays; anything else
         // picking Retire means the selector and the replay disagree.
-        if (particle::Sc2UseRetirePath(in["stateFlags"].U(), in["forceCpu"].U() != 0)) {
+        if (particle::sc2::UseRetirePath(in["stateFlags"].U(), in["forceCpu"].U() != 0)) {
             REQUIRE(tag == "select");
             ++retireSelects;
             continue;
@@ -3051,7 +3051,7 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
 
         const auto& src = in["elementsIn"];
         const std::size_t n = src.Size();
-        std::vector<particle::Sc2SpawnedElement> elems(n);
+        std::vector<particle::sc2::SpawnedElement> elems(n);
         for (std::size_t k = 0; k < n; ++k) {
             const auto& e = src[k];
             elems[k].position = Vec3From(e["position"]);
@@ -3074,7 +3074,7 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
         const auto parU = [&](const char* key, u32 def) {
             return par.Has(key) ? par[key].U() : def;
         };
-        particle::Sc2SimulateInputs si;
+        particle::sc2::SimulateInputs si;
         si.dt = in["dt"].F();
         si.emitterTime = in["emitterTime"].F();
         si.gravity = Vec3From(in["gravity"]);
@@ -3092,7 +3092,7 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
         si.collisionEnabled = in["collisionEnabled"].I() != 0;
         si.rotationSmoothing = static_cast<i32>(parU("rotationSmoothing", 0));
         si.rotationMidTime = parF("rotationMidTime", 0.0f);
-        si.worldMatrix = particle::Sc2Mat16(MatFrom(in["worldMatrix"]));
+        si.worldMatrix = particle::sc2::Mat16(MatFrom(in["worldMatrix"]));
         si.worldSpace = (parU("additionalFlags", 0) & 8u) != 0;
         si.trailRate = in["trailRate"].F();
         // The fixture's child 0 is always a world-space system, so its presence
@@ -3110,10 +3110,10 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
         Probe probe;
         probe.terrain = &in["hit"];
         probe.objects = &in["objectHit"];
-        particle::Sc2Collider collider;
+        particle::sc2::Collider collider;
         collider.ctx = &probe;
         collider.terrain = [](void* ctx, const Vector3f& a, const Vector3f& b,
-                              particle::Sc2Contact& o) {
+                              particle::sc2::Contact& o) {
             auto* p = static_cast<Probe*>(ctx);
             p->segments.push_back({a.x, a.y, a.z, b.x, b.y, b.z});
             o.hit = (*p->terrain)["on"].I() != 0;
@@ -3123,7 +3123,7 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
             return true;
         };
         collider.objects = [](void* ctx, const Vector3f&, const Vector3f&,
-                              particle::Sc2Contact& o) {
+                              particle::sc2::Contact& o) {
             auto* p = static_cast<Probe*>(ctx);
             o.hit = (*p->objects)["on"].I() != 0;
             o.position = Vec3From((*p->objects)["pos"]);
@@ -3132,12 +3132,12 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
             return true;
         };
 
-        particle::Sc2ElementList list;
+        particle::sc2::ElementList list;
         list.Reset(n);
         sc2::Rng rng(out["rngIn"][0].U(), out["rngIn"][1].U());
-        particle::Sc2ChildRequests children;
+        particle::sc2::ChildRequests children;
         const auto res =
-            particle::Sc2SimulateParticles(list, elems, si, collider, rng, children);
+            particle::sc2::SimulateParticles(list, elems, si, collider, rng, children);
 
         const auto& want = out["elements"];
         REQUIRE(want.Size() == n);
@@ -3213,11 +3213,11 @@ TEST_CASE("op9: the CPU sub-step replays SimulateParticles",
                 CHECK(probe.segments[k][j] == (*collides[k])[j].F());
 
         // What reached each child, through the receiver's 128 cap.
-        const auto sameQueue = [&](const std::vector<particle::SpawnRequest>& asked,
+        const auto sameQueue = [&](const std::vector<particle::sc2::SpawnRequest>& asked,
                                    const wdx_golden::Value& want) {
-            std::vector<particle::SpawnRequest> inbox;
+            std::vector<particle::sc2::SpawnRequest> inbox;
             for (const auto& r : asked)
-                particle::Sc2QueueSpawnRequest(inbox, r);
+                particle::sc2::QueueSpawnRequest(inbox, r);
             REQUIRE(inbox.size() == want["count"].U());
             const auto& entries = want["entries"];
             for (std::size_t k = 0; k < entries.Size(); ++k) {
@@ -3268,7 +3268,7 @@ TEST_CASE("op9: Update pushes the basis row lengths onto the children",
                 ++want;
 
         const Vector3f got =
-            particle::Sc2ChildScale(particle::Sc2Mat16(MatFrom(in["worldMatrix"])));
+            particle::sc2::ChildScale(particle::sc2::Mat16(MatFrom(in["worldMatrix"])));
         unsigned seen = 0;
         const auto& log = c["out"]["log"];
         for (std::size_t k = 0; k < log.Size(); ++k) {
@@ -3309,7 +3309,7 @@ TEST_CASE("compose: a pushed scale replaces the child bone's own",
     const Vector3f pushed{0.758f, 0.758f, 1.5f};
 
     SECTION("every row takes the pushed length and the position stays") {
-        const Matrix44f got = particle::Sc2PushChildScale(bone, {2.0f, 0.5f, 3.0f}, pushed);
+        const Matrix44f got = particle::sc2::PushChildScale(bone, {2.0f, 0.5f, 3.0f}, pushed);
         Matrix44f want = local;
         want.data[0] = {c * 0.758f, s * 0.758f, 0.0f, 0.0f};
         want.data[1] = {-s * 0.758f, c * 0.758f, 0.0f, 0.0f};
@@ -3324,7 +3324,7 @@ TEST_CASE("compose: a pushed scale replaces the child bone's own",
     }
 
     SECTION("a row with no length keeps what it had") {
-        const Matrix44f flat = particle::Sc2PushChildScale(bone, {2.0f, 0.0f, 3.0f}, pushed);
+        const Matrix44f flat = particle::sc2::PushChildScale(bone, {2.0f, 0.0f, 3.0f}, pushed);
         for (usize k = 0; k < 4; ++k)
             CHECK(flat.data[1][k] == bone.data[1][k]);
     }
@@ -3335,7 +3335,7 @@ TEST_CASE("op11: the CPU quad builder writes the element's vertex",
     const fs::path path = GoldenDir() / "op11_quadverts.json";
     if (!fs::exists(path))
         SKIP("no golden at " + path.string() + "; record with tools/sc2_particle_oracle");
-    REQUIRE(sizeof(particle::Sc2GpuVertex) == 116);
+    REQUIRE(sizeof(particle::sc2::GpuVertex) == 116);
 
     const auto doc = wdx_golden::Load(path.string());
     const auto& cases = (*doc)["cases"];
@@ -3380,7 +3380,7 @@ TEST_CASE("op11: the CPU quad builder writes the element's vertex",
             continue;
         }
 
-        particle::Sc2CpuVertexInputs cin;
+        particle::sc2::CpuVertexInputs cin;
         cin.instanceType = in["instanceType"].U();
         cin.tailLength = in["tailLength"].F();
         cin.instanceAngle = Vec3From(in["instanceAngle"]);
@@ -3428,7 +3428,7 @@ TEST_CASE("op11: the CPU quad builder writes the element's vertex",
             }
             REQUIRE(srcIndex < src.Size());
             const auto& g = src[srcIndex];
-            particle::Sc2SpawnedElement e;
+            particle::sc2::SpawnedElement e;
             e.position = Vec3From(g["position"]);
             e.velocity = Vec3From(g["velocity"]);
             e.orientVec = Vec3From(g["orientVec"]);
@@ -3448,7 +3448,7 @@ TEST_CASE("op11: the CPU quad builder writes the element's vertex",
             }
 
             // The element's GPU lanes, which this store keeps in the vertex.
-            particle::Sc2GpuVertex cache{};
+            particle::sc2::GpuVertex cache{};
             cache.positionW = g["posW"].U();
             cache.drag = g["drag"].F();
             cache.invDrag = g["invDrag"].F();
@@ -3468,7 +3468,7 @@ TEST_CASE("op11: the CPU quad builder writes the element's vertex",
             cache.instanceVec[2] = iv.z;
             cache.gravityZ = g["gravityZ"].F();
 
-            particle::Sc2CpuVertexBody(cin, e, cache);
+            particle::sc2::CpuVertexBody(cin, e, cache);
 
             // The clamp's short branch and the noise go through rsqrt; every
             // other lane is a copy or a product and has to match to the bit.
@@ -3485,9 +3485,9 @@ TEST_CASE("op11: the CPU quad builder writes the element's vertex",
             REQUIRE(wantV.Size() == nv);
             for (std::size_t k = 0; k < nv; ++k) {
                 const auto& words = wantV[k];
-                particle::Sc2GpuVertex v = cache;
-                v.corner[0] = particle::kSc2Corners[k][0];
-                v.corner[1] = particle::kSc2Corners[k][1];
+                particle::sc2::GpuVertex v = cache;
+                v.corner[0] = particle::sc2::kCorners[k][0];
+                v.corner[1] = particle::sc2::kCorners[k][1];
                 u32 got[29];
                 std::memcpy(got, &v, sizeof(got));
                 const std::size_t nw = instanced ? 28 : 29;
@@ -3632,8 +3632,8 @@ TEST_CASE("the runtime words Init derives from the record", "[sc2_particle][init
     // `CParticleSystem::Init` (4.8 `0x102923140`). No oracle row records these
     // words, so this pins the decompile — and the ORDER of the writes is part
     // of it, because one of them is an assignment.
-    particle::Sc2EmitterDesc d;
-    const auto words = [&] { return particle::Sc2InitRuntimeWords(d); };
+    particle::sc2::EmitterDesc d;
+    const auto words = [&] { return particle::sc2::InitRuntimeWords(d); };
 
     SECTION("noise is on strictly above 0.001") {
         d.motion.noiseAmplitude = 0.001f;
@@ -3689,14 +3689,14 @@ TEST_CASE("compose: a sorted emitter draws back to front", "[sc2_particle][compo
     // out back to front unless `SortReverse` flips it. No golden records a
     // sorted order, so this pins the decompile's keys and the one choice made
     // where it is silent: ties keep the walk order.
-    particle::Sc2ParticleStore store;
+    particle::sc2::ParticleStore store;
     store.Init(4);
-    particle::Sc2QuadBatch batch;
+    particle::sc2::QuadBatch batch;
     batch.systemTime = 1.0f;
     batch.elementScale = 1.0f;
     // Looking down +Y from the origin, so depth is the position's y.
-    particle::Sc2QuadCamera cam;
-    particle::Sc2QuadFlags fl;
+    particle::sc2::QuadCamera cam;
+    particle::sc2::QuadFlags fl;
 
     // Spawned in an order that is neither sorted nor reverse-sorted.
     constexpr f32 kDepth[3] = {5.0f, 20.0f, 10.0f};
@@ -3716,12 +3716,12 @@ TEST_CASE("compose: a sorted emitter draws back to front", "[sc2_particle][compo
     }
 
     // The depth each written quad was drawn at: its corners share the y.
-    const auto drawnDepths = [&](bool reverse, particle::Sc2SortKey sort) {
+    const auto drawnDepths = [&](bool reverse, particle::sc2::SortKey sort) {
         std::vector<renderer::Vertex> q;
-        REQUIRE(particle::Sc2BuildQuads(store, batch, cam, fl, reverse, q, sort) == 3u);
+        REQUIRE(particle::sc2::BuildQuads(store, batch, cam, fl, reverse, q, sort) == 3u);
         return std::vector<f32>{q[0].position.y, q[6].position.y, q[12].position.y};
     };
-    using Key = particle::Sc2SortKey;
+    using Key = particle::sc2::SortKey;
 
     SECTION("unsorted keeps the list, both ways") {
         CHECK(drawnDepths(false, Key::None) == std::vector<f32>{5.0f, 20.0f, 10.0f});
@@ -3775,10 +3775,10 @@ TEST_CASE("compose: a sorted emitter draws back to front", "[sc2_particle][compo
 
 TEST_CASE("compose: the squirt crossing owes each key once and primes a frame behind",
           "[sc2_particle][compose][squirt]") {
-    // `Sc2CrossSquirtKeys` is the actor layer's half: every OP7b rule underneath
+    // `sc2::CrossSquirtKeys` is the actor layer's half: every OP7b rule underneath
     // it is replayed on its own. What these rows pin is the join — which window
     // a frame asks for, when the cursor is primed, and what reaches the burst.
-    particle::Sc2EmitterDesc d;
+    particle::sc2::EmitterDesc d;
     d.emit.slotBones = {0};
     // Container 0's block ends at 600 and container 1's at 200. Container 3's
     // has a key and ends at 0, which the reader skips outright; container 2
@@ -3791,10 +3791,10 @@ TEST_CASE("compose: the squirt crossing owes each key once and primes a frame be
                       {0, 500.0f, 9.0f, 600}, {0, 700.0f, 19.0f, 600},
                       {1, 50.0f, 11.0f, 200}, {1, 100.0f, 17.0f, 200},
                       {3, 0.0f, 13.0f, 0}}};
-    particle::Sc2SquirtMemory memory;
-    const auto walk = [&](std::initializer_list<particle::Sc2ClockSample> players) {
-        const std::vector<particle::Sc2ClockSample> list(players);
-        return particle::Sc2CrossSquirtKeys(d, list, memory, 16);
+    particle::sc2::SquirtMemory memory;
+    const auto walk = [&](std::initializer_list<particle::sc2::ClockSample> players) {
+        const std::vector<particle::sc2::ClockSample> list(players);
+        return particle::sc2::CrossSquirtKeys(d, list, memory, 16);
     };
     const auto at = [&](u16 stc, i32 timeMs, bool loop = true) {
         return walk({{stc, timeMs, loop}});
@@ -3917,7 +3917,7 @@ TEST_CASE("compose: the squirt crossing owes each key once and primes a frame be
     }
 
     SECTION("no player is not a sample") {
-        CHECK(particle::Sc2CrossSquirtKeys(d, {}, memory, 16).bursts.empty());
+        CHECK(particle::sc2::CrossSquirtKeys(d, {}, memory, 16).bursts.empty());
         CHECK_FALSE(memory.valid);
     }
 }
@@ -3928,7 +3928,7 @@ TEST_CASE("compose: a Bezier channel's sampled keys become its control point",
     // value the curve passes THROUGH at the mid time, and the keys a particle
     // is born with carry the control point instead — every channel against
     // `sizeMidTime`.
-    particle::Sc2EmitterDesc d;
+    particle::sc2::EmitterDesc d;
     d.look.midTime[0] = 0.5f; // sizeMidTime
     d.look.midTime[1] = 0.9f; // the colour's own, which the pass never reads
     renderer::model::FrameState::ParticleFrameState::Sc2ParticleFrame s;
@@ -3945,7 +3945,7 @@ TEST_CASE("compose: a Bezier channel's sampled keys become its control point",
     s.colorRandomBGRA[2] = 0u;
 
     SECTION("nothing moves while every channel is linear") {
-        particle::Sc2ConvertBezierKeys(s, d);
+        particle::sc2::ConvertBezierKeys(s, d);
         CHECK(s.size3.y == 4.0f);
         CHECK(s.rotation3.y == 3.0f);
         CHECK(s.colorBGRA[1] == 0x40404040u);
@@ -3954,7 +3954,7 @@ TEST_CASE("compose: a Bezier channel's sampled keys become its control point",
     SECTION("each Bezier channel converts, and only it") {
         d.look.sizeSmoothing = 2;
         d.look.colorSmoothing = 2;
-        particle::Sc2ConvertBezierKeys(s, d);
+        particle::sc2::ConvertBezierKeys(s, d);
         CHECK(s.size3.y == 7.0f);       // (4 - 0.25 - 0.25) / 0.5
         CHECK(s.sizeRandom3.y == 3.0f); // (2 - 0.25 - 0.25) / 0.5
         CHECK(s.rotation3.y == 3.0f);   // still linear
@@ -3966,7 +3966,7 @@ TEST_CASE("compose: a Bezier channel's sampled keys become its control point",
     SECTION("the colour's random converts with random colour on") {
         d.look.colorSmoothing = 2;
         d.emit.colorRandom = true;
-        particle::Sc2ConvertBezierKeys(s, d);
+        particle::sc2::ConvertBezierKeys(s, d);
         CHECK(s.colorRandomBGRA[1] == 0x80808080u);
     }
 
@@ -3975,7 +3975,7 @@ TEST_CASE("compose: a Bezier channel's sampled keys become its control point",
         d.look.midTime[2] = 0.9f;
         d.look.midTime[3] = 0.9f;
         s.rotationRandom3 = {0.0f, 1.0f, 0.0f};
-        particle::Sc2ConvertBezierKeys(s, d);
+        particle::sc2::ConvertBezierKeys(s, d);
         CHECK(s.rotation3.y == 6.0f);       // 3 / 0.5
         CHECK(s.rotationRandom3.y == 2.0f); // 1 / 0.5
         CHECK(s.size3.y == 4.0f);           // still linear
@@ -3986,7 +3986,7 @@ TEST_CASE("compose: a squirt burst counts in every count its host frame makes",
           "[sc2_particle][compose][squirt]") {
     SECTION("once in a plain frame, and then it is gone") {
         Sc2Rig rig(256, 0.0f, 100.0f);
-        rig.rt.slots.assign(1, particle::Sc2Runtime::Slot{});
+        rig.rt.slots.assign(1, particle::sc2::Runtime::Slot{});
         rig.rt.slots[0].burst = 10;
         const auto r = rig.Step(kSixtieth);
         CHECK(r.spawned == 10u);
@@ -3999,7 +3999,7 @@ TEST_CASE("compose: a squirt burst counts in every count its host frame makes",
         rig.d.emit.preRollInit = 0.2f; // 200 ms: seven blocks
         rig.rt.activeSequence = 0;
         rig.rt.preRollPending = true;
-        rig.rt.slots.assign(1, particle::Sc2Runtime::Slot{});
+        rig.rt.slots.assign(1, particle::sc2::Runtime::Slot{});
         rig.rt.slots[0].burst = 3;
         const auto r = rig.Step(kSixtieth);
         CHECK(r.preRollBlocks == 7u);
@@ -4064,7 +4064,7 @@ TEST_CASE("compose: the pre-roll runs at creation and on a gap, never on a chang
 
 TEST_CASE("compose: the pre-roll follows the active sequence, not the player list",
           "[sc2_particle][compose][preroll]") {
-    using Sample = particle::Sc2ClockSample;
+    using Sample = particle::sc2::ClockSample;
     const auto player = [](u16 sequence, u16 priority, bool global, bool fading) {
         Sample s;
         s.sequence = sequence;
@@ -4078,12 +4078,12 @@ TEST_CASE("compose: the pre-roll follows the active sequence, not the player lis
         // A cross-fade reports the incoming sequence the moment the outgoing
         // one starts to fade: `GetActiveSequenceIndex` passes over flag 4.
         const std::vector<Sample> fading = {player(3, 0, false, true), player(5, 0, false, false)};
-        CHECK(particle::Sc2ActiveSequence(fading) == 5);
+        CHECK(particle::sc2::ActiveSequence(fading) == 5);
         const std::vector<Sample> steady = {player(7, 0, false, false), player(5, 0, false, false)};
-        CHECK(particle::Sc2ActiveSequence(steady) == 7);
+        CHECK(particle::sc2::ActiveSequence(steady) == 7);
         const std::vector<Sample> gone = {player(3, 0, false, true)};
-        CHECK(particle::Sc2ActiveSequence(gone) == -1);
-        CHECK(particle::Sc2ActiveSequence({}) == -1);
+        CHECK(particle::sc2::ActiveSequence(gone) == -1);
+        CHECK(particle::sc2::ActiveSequence({}) == -1);
     }
 
     SECTION("a global loop loses a priority tie, as the oldest player") {
@@ -4091,42 +4091,42 @@ TEST_CASE("compose: the pre-roll follows the active sequence, not the player lis
         // blend budget. Retail started it with the animation state, and its
         // tie rule puts the newest player first.
         const std::vector<Sample> tie = {player(9, 0, true, false), player(2, 0, false, false)};
-        CHECK(particle::Sc2ActiveSequence(tie) == 2);
+        CHECK(particle::sc2::ActiveSequence(tie) == 2);
         // At a higher priority it leads all the same.
         const std::vector<Sample> above = {player(9, 5, true, false), player(2, 0, false, false)};
-        CHECK(particle::Sc2ActiveSequence(above) == 9);
+        CHECK(particle::sc2::ActiveSequence(above) == 9);
         // A fading host play hands the tie back to the global.
         const std::vector<Sample> fadingHost = {player(9, 0, true, false),
                                                 player(2, 0, false, true)};
-        CHECK(particle::Sc2ActiveSequence(fadingHost) == 9);
+        CHECK(particle::sc2::ActiveSequence(fadingHost) == 9);
         const std::vector<Sample> alone = {player(9, 0, true, false)};
-        CHECK(particle::Sc2ActiveSequence(alone) == 9);
+        CHECK(particle::sc2::ActiveSequence(alone) == 9);
     }
 
     SECTION("a SimulateInit emitter asks when the sequence moves, and only then") {
         Sc2Rig rig(64, 0.0f, 100.0f);
         rig.d.flags = particle::ParticleFlag::SimulateInit;
         // The constructor's -1 makes the first resolution a change.
-        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 2);
+        particle::sc2::NoteActiveSequence(rig.rt, rig.d, 2);
         CHECK(rig.rt.preRollPending);
         CHECK(rig.rt.activeSequence == 2);
         // The same sequence again — whatever else the player list did — asks
         // nothing.
         rig.rt.preRollPending = false;
-        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 2);
+        particle::sc2::NoteActiveSequence(rig.rt, rig.d, 2);
         CHECK_FALSE(rig.rt.preRollPending);
-        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 4);
+        particle::sc2::NoteActiveSequence(rig.rt, rig.d, 4);
         CHECK(rig.rt.preRollPending);
         // Nothing left playing is a change too, and is remembered.
         rig.rt.preRollPending = false;
-        particle::Sc2NoteActiveSequence(rig.rt, rig.d, -1);
+        particle::sc2::NoteActiveSequence(rig.rt, rig.d, -1);
         CHECK(rig.rt.preRollPending);
         CHECK(rig.rt.activeSequence == -1);
     }
 
     SECTION("an emitter without SimulateInit remembers nothing") {
         Sc2Rig rig(64, 0.0f, 100.0f);
-        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 2);
+        particle::sc2::NoteActiveSequence(rig.rt, rig.d, 2);
         CHECK_FALSE(rig.rt.preRollPending);
         CHECK(rig.rt.activeSequence == -1);
     }
@@ -4169,7 +4169,7 @@ TEST_CASE("compose: the pre-roll follows the active sequence, not the player lis
 TEST_CASE("compose: requests go first, and wait while nothing can be made",
           "[sc2_particle][compose][requests]") {
     const auto request = [](f32 x) {
-        particle::SpawnRequest q;
+        particle::sc2::SpawnRequest q;
         q.position = {x, 0.0f, 0.0f};
         return q;
     };
@@ -4208,9 +4208,9 @@ TEST_CASE("compose: requests go first, and wait while nothing can be made",
     }
 
     SECTION("the inbox holds 128 and drops the rest") {
-        std::vector<particle::SpawnRequest> inbox;
+        std::vector<particle::sc2::SpawnRequest> inbox;
         for (int k = 0; k < 200; ++k)
-            particle::Sc2QueueSpawnRequest(inbox, request(static_cast<f32>(k)));
+            particle::sc2::QueueSpawnRequest(inbox, request(static_cast<f32>(k)));
         REQUIRE(inbox.size() == 128u);
         CHECK(inbox.back().position.x == 127.0f);
     }
@@ -4338,7 +4338,7 @@ TEST_CASE("op10: EvalAnimCurve2D replays lane for lane", "[sc2_particle][oracle]
         const auto& want = cases[i]["out"]["values"].A();
         REQUIRE(ts.size() == want.size());
         for (std::size_t n = 0; n < ts.size(); ++n) {
-            const auto got = particle::Sc2EvalCurve2D(mode, k[0], k[1], k[2], ts[n]->F(), mid, hold);
+            const auto got = particle::sc2::EvalCurve2D(mode, k[0], k[1], k[2], ts[n]->F(), mid, hold);
             for (std::size_t l = 0; l < 4; ++l) {
                 INFO("case " << i << " mode=" << mode << " mid=" << mid << " hold=" << hold
                              << " t=" << ts[n]->F() << " lane " << l);
@@ -4382,15 +4382,15 @@ TEST_CASE("op13: the Mesh shape replays the rejection walk, draw for draw",
     std::vector<u32> faces;
     for (const auto& f : fx["faces"].A())
         faces.push_back(f->U());
-    std::vector<particle::Sc2MeshRegionBase> regions;
+    std::vector<particle::sc2::MeshRegionBase> regions;
     for (const auto& r : fx["regions"].A())
         regions.push_back({(*r)[0].U(), (*r)[1].U()});
-    std::vector<particle::Sc2MeshTriangle> tris;
+    std::vector<particle::sc2::MeshTriangle> tris;
     for (const auto& t : fx["tris"].A())
         tris.push_back({(*t)[0].U(), (*t)[1].U()});
-    std::map<std::string, std::vector<particle::Sc2MeshTriangle>> slots;
+    std::map<std::string, std::vector<particle::sc2::MeshTriangle>> slots;
     for (const auto& s : fx["slots"].A()) {
-        std::vector<particle::Sc2MeshTriangle> table;
+        std::vector<particle::sc2::MeshTriangle> table;
         if (!(*s)["tris"].IsNull()) {
             for (const auto& t : (*s)["tris"].A())
                 table.push_back(tris.at(t->U()));
@@ -4404,7 +4404,7 @@ TEST_CASE("op13: the Mesh shape replays the rejection walk, draw for draw",
         const auto& out = cases[i]["out"];
         const std::string slot = in["slot"].S();
 
-        particle::Sc2MeshSurfaceInputs mi;
+        particle::sc2::MeshSurfaceInputs mi;
         mi.haveAsset = in["hasAsset"].B();
         mi.haveVertexDesc = in["hasVertexDesc"].B();
         const auto& table = slots.at(slot);
@@ -4422,7 +4422,7 @@ TEST_CASE("op13: the Mesh shape replays the rejection walk, draw for draw",
         mi.position = &Op13Vertex;
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const particle::Sc2MeshSample s = particle::Sc2SampleMeshSurface(rng, mi);
+        const particle::sc2::MeshSample s = particle::sc2::SampleMeshSurface(rng, mi);
         INFO("case " << i << " tag=" << cases[i]["tag"].S() << " slot=" << slot);
         REQUIRE(s.hit == (out["ret"].U() == 1u));
         REQUIRE(s.tries == out["tries"].U());
@@ -4468,7 +4468,7 @@ TEST_CASE("op14: UpdateModelParticle's pose replays all eleven instance types",
     REQUIRE(presets.Size() == 7u);
     for (std::size_t k = 0; k < 7; ++k)
         for (std::size_t l = 0; l < 4; ++l)
-            REQUIRE(particle::kSc2ModelOrientPresets[k][l] == presets[k][l].F());
+            REQUIRE(particle::sc2::kModelOrientPresets[k][l] == presets[k][l].F());
 
     std::size_t posed = 0, exactRotations = 0, bare = 0;
     std::map<u32, std::size_t> types;
@@ -4485,7 +4485,7 @@ TEST_CASE("op14: UpdateModelParticle's pose replays all eleven instance types",
         }
         REQUIRE(out["order"].Size() == 8u);
 
-        particle::Sc2ModelPoseInputs p;
+        particle::sc2::ModelPoseInputs p;
         p.instanceType = in["instanceType"].U();
         p.legacyOrient = std::bit_cast<u32>(in["preset"].F()) != 0u;
         p.orientVariant = in["ribbonLinkIndex"].I();
@@ -4527,7 +4527,7 @@ TEST_CASE("op14: UpdateModelParticle's pose replays all eleven instance types",
         p.birthTime = in["birthTime"].F();
         p.deathTime = in["deathTime"].F();
 
-        const particle::Sc2ModelPose pose = particle::Sc2ModelParticlePose(p);
+        const particle::sc2::ModelPose pose = particle::sc2::ModelParticlePose(p);
 
         // A reciprocal root reaches the position only through type 10's shift,
         // and the scale through the longest row (`AlwaysSet`) and the three
@@ -4609,8 +4609,8 @@ TEST_CASE("op14b: the path pick and the random direction replay from the seed",
         for (std::size_t e = 0; e < deaths.size(); ++e) {
             // One system per entry under `perEntrySystem`, its clock 0.25 on.
             const f32 clock = perEntry ? et + 0.25f * static_cast<f32>(e) : et;
-            particle::Sc2PendingDraw d;
-            const bool ok = particle::Sc2PendingSpawnDraw(rng, deaths[e]->F(), clock, nPaths, rd, d);
+            particle::sc2::PendingDraw d;
+            const bool ok = particle::sc2::PendingSpawnDraw(rng, deaths[e]->F(), clock, nPaths, rd, d);
             const auto& want = *elems[e];
             INFO("entry " << e);
             REQUIRE(ok == want["processed"].B());
@@ -4649,8 +4649,8 @@ TEST_CASE("op14b: the path pick and the random direction replay from the seed",
     // Design §8: retail divides by an empty path table and faults. The port
     // skips before the draw, so the stream does not move.
     sc2::Rng rng(0x12345678u, 0x0100FF1Cu);
-    particle::Sc2PendingDraw d;
-    CHECK_FALSE(particle::Sc2PendingSpawnDraw(rng, 2.0f, 1.0f, 0u, true, d));
+    particle::sc2::PendingDraw d;
+    CHECK_FALSE(particle::sc2::PendingSpawnDraw(rng, 2.0f, 1.0f, 0u, true, d));
     CHECK(rng.acc() == 0x12345678u);
     CHECK(rng.idx4() == 0x0100FF1Cu);
 }
@@ -4665,14 +4665,14 @@ TEST_CASE("compose: a camera-facing model particle's rows are the camera's",
     const Vector3f right{c, s, 0.0f};
     const Vector3f view{-s * cp, c * cp, -sp};
     const Vector3f up{-s * sp, c * sp, cp};
-    particle::Sc2ModelPoseInputs p;
+    particle::sc2::ModelPoseInputs p;
     p.instanceType = 0;
     p.emitterTime = 1.0f;
     p.birthTime = 0.0f;
     p.deathTime = 2.0f;
     p.camera = {right, view, up};
-    const particle::Sc2ModelPose pose = particle::Sc2ModelParticlePose(p);
-    const auto rows = particle::Sc2QuatRows(pose.rotation);
+    const particle::sc2::ModelPose pose = particle::sc2::ModelParticlePose(p);
+    const auto rows = particle::sc2::QuatRows(pose.rotation);
     const auto near = [](const Vector3f& a, const Vector3f& b) {
         return std::fabs(a.x - b.x) < 1e-5f && std::fabs(a.y - b.y) < 1e-5f &&
                std::fabs(a.z - b.z) < 1e-5f;
@@ -4690,7 +4690,7 @@ TEST_CASE("compose: a model particle's pose runs in SC2 units and lands in the h
     // child actor applies the world scale itself — fed the renderer's matrix,
     // `AlwaysSet`'s longest-row factor would be the 100 and the child would be
     // drawn a hundred times too big.
-    particle::Sc2Runtime rt;
+    particle::sc2::Runtime rt;
     rt.store.Init(4);
     const i32 node = rt.store.Acquire();
     REQUIRE(node >= 0);
@@ -4703,12 +4703,12 @@ TEST_CASE("compose: a model particle's pose runs in SC2 units and lands in the h
     rt.frame.size3 = {1.0f, 1.0f, 1.0f};
     rt.actorWorldScale = 100.0f;
 
-    particle::Sc2EmitterDesc d;
+    particle::sc2::EmitterDesc d;
     d.rotationFlags = static_cast<particle::ParticleRotationFlag>(4u); // AlwaysSet
     const Matrix44f world =
         Matrix44f::scaling({100.0f, 100.0f, 100.0f}) * Matrix44f::translation({500.0f, 0.0f, 0.0f});
-    const particle::Sc2ModelPose pose = particle::Sc2PoseModelParticle(
-        rt, d, particle::Sc2FromHostSpace(world, rt.actorWorldScale), node);
+    const particle::sc2::ModelPose pose = particle::sc2::PoseModelParticle(
+        rt, d, particle::sc2::FromHostSpace(world, rt.actorWorldScale), node);
 
     CHECK(pose.scale.x == Catch::Approx(1.0f).epsilon(1e-5));
     CHECK(pose.scale.z == Catch::Approx(1.0f).epsilon(1e-5));
@@ -4735,7 +4735,7 @@ TEST_CASE("compose: a Mesh emitter is born on its surface, and type 4 follows th
     SECTION("on the triangle, moving along its normal") {
         Sc2Rig rig(256, 120.0f, 100.0f);
         rig.surface.mesh = triangle();
-        rig.rt.meshTriangles = {particle::Sc2MeshTriangle{0u, 0u}};
+        rig.rt.meshTriangles = {particle::sc2::MeshTriangle{0u, 0u}};
         rig.d.emit.shape = 7;
         rig.d.emit.velocityType = 4;
         rig.rt.frame.speed = 3.0f;

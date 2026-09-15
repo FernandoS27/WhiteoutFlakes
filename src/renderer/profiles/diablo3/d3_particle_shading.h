@@ -24,8 +24,9 @@
 // ============================================================================
 
 #include "gfx/gfx.h"
-#include "renderer/particle/d3_emitter_desc.h"
+#include "renderer/particle/d3/d3_emitter_desc.h"
 #include "renderer/particle/particle_service.h"
+#include "renderer/stream_vertex_buffer.h"
 #include "whiteout/flakes/types.h"
 
 #include <memory>
@@ -144,8 +145,7 @@ private:
     RenderService& rs_;
     bool initTried_ = false;
     /// The repacked stream and whether this frame filled it.
-    gfx::BufferHandle vb_ = gfx::BufferHandle::Invalid;
-    i32 vbCapacity_ = 0;
+    StreamVertexBuffer vb_;
     bool frameReady_ = false;
 
     gfx::ShaderHandle vs_ = gfx::ShaderHandle::Invalid;

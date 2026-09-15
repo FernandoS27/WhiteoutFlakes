@@ -1,0 +1,813 @@
+#include "renderer/particle/sc2/sc2_tick.h"
+
+#include "renderer/sc2/sc2_element.h"
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+namespace whiteout::flakes::renderer::particle::sc2 {
+
+namespace {
+
+using Frame = model::FrameState::ParticleFrameState::Sc2ParticleFrame;
+
+/// What `GroundContact` needs: the host's query, and the scale between the
+/// runtime's SC2 units and the host's.
+struct GroundContext {
+    const GroundQuery* query = nullptr;
+    f32 hostScale = 1.0f;
+};
+
+/// `CollideParticle` against the host's ground query: a HEIGHT where retail
+/// sweeps a 0.05 sphere, so a sub-step hits where it crosses the surface going
+/// down. World-space segment, the grid's normal. See SC2_PARTICLE_RE.md §17.10.
+bool GroundContact(void* ctx, const Vector3f& a, const Vector3f& b, Contact& out) {
+    const GroundContext& ground = *static_cast<const GroundContext*>(ctx);
+    const f32 k = ground.hostScale;
+    f32 z = 0.0f;
+    const f32 reach = std::fabs(a.z - b.z) + 1.0f;
+    // The segment is in SC2 units and the ground in the host's: asked in the
+    // host's, and the height brought back.
+    if (!(*ground.query)(Vector3f{b.x * k, b.y * k, b.z * k}, reach * k, reach * k, z))
+        return false;
+    z = z / k;
+    if (a.z < z || b.z >= z)
+        return false;
+    const f32 t = (a.z - z) / (a.z - b.z);
+    out.hit = true;
+    out.position = {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, z};
+    out.normal = {0.0f, 0.0f, 1.0f};
+    out.toi = t;
+    return true;
+}
+
+/// The nine overlay groups, in the order the runtime groups them: yaw, pitch,
+/// speed, size, alpha, colour (dead), rotation, horizontal, vertical. Group 0
+/// drives YAW and group 1 PITCH — the swap RE §11.5 records, kept because it is
+/// the file's field names that are wrong and not the runtime's behaviour.
+Overlay OverlayFor(const EmitterDesc& d, const Frame& s, i32 group) {
+    Overlay o;
+    o.type = d.emit.overlayType[group];
+    o.amplitude = s.overlayAmp[group];
+    o.frequency = s.overlayFreq[group];
+    return o;
+}
+
+/// `M3_ComputeSkinnedRegionPositions` for one vertex, in model space: the rest
+/// position through each influence's `invBind · pose`, weighted, stopping at
+/// the first zero weight as retail's loop does and never renormalised. OP13
+/// stubbed this, so the mesh's own skin is the port's and not a measurement.
+Vector3f MeshVertexPosition(void* ctx, u32 v) {
+    const EmitSurface& surface = *static_cast<const EmitSurface*>(ctx);
+    const EmitMesh& m = *surface.mesh;
+    if (v >= m.rest.size())
+        return {0.0f, 0.0f, 0.0f};
+    const Vector3f& rest = m.rest[v];
+    if (v >= m.bones.size() || v >= m.weights.size() || surface.pose.empty() ||
+        surface.invBind.empty())
+        return rest;
+    Vector3f acc{0.0f, 0.0f, 0.0f};
+    for (usize k = 0; k < kEmitMeshBones; ++k) {
+        const f32 w = m.weights[v][k];
+        if (!(w > 0.0f))
+            break;
+        const i32 b = m.bones[v][k];
+        if (b < 0 || static_cast<usize>(b) >= surface.pose.size() ||
+            static_cast<usize>(b) >= surface.invBind.size())
+            continue;
+        const Vector3f p = whiteout::transform_point(
+            rest, surface.invBind[static_cast<usize>(b)] * surface.pose[static_cast<usize>(b)]);
+        acc = {acc.x + p.x * w, acc.y + p.y * w, acc.z + p.z * w};
+    }
+    return acc;
+}
+
+SpawnPosInputs ShapeInputs(const EmitterDesc& d, const Frame& s) {
+    SpawnPosInputs in;
+    in.shape = static_cast<SpawnShape>(d.emit.shape);
+    in.cutout = d.Has(ParticleFlag::EmitShapeCutout);
+    in.shapeOuter = s.shapeOuter;
+    in.shapeInner = s.shapeInner;
+    in.outerRadius = s.outerRadius;
+    in.innerRadius = s.innerRadius;
+    in.spline = s.splinePoints;
+    in.splineLowerBound = s.splineLower;
+    in.splineUpperBound = s.splineUpper;
+    return in;
+}
+
+SpawnVelInputs VelocityInputs(const EmitterDesc& d, const Frame& s,
+                                 const EmitClock& clock) {
+    SpawnVelInputs in;
+    in.velocityType = d.emit.velocityType;
+    in.spawnYaw = s.yawDeg;
+    in.spawnPitch = s.pitchDeg;
+    in.spawnHorizontal = s.horizontal;
+    in.spawnVertical = s.vertical;
+    in.speed = s.speed;
+    in.speedRandom = s.speedRandom;
+    in.speedIsEndpoint = d.Has(ParticleAdditionalFlag::EmitSpeedRandomize);
+    in.flattenXY = d.Has(RotationBit::FlattenVelocityXY);
+    in.variation = {clock.variationTime, s.overlayPhase};
+    in.yawOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Yaw);
+    in.pitchOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Pitch);
+    in.speedOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Speed);
+    in.horizontalOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Horizontal);
+    in.verticalOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Vertical);
+    return in;
+}
+
+ClockInputs ClockInputsFor(const Runtime& rt, const TickFrame& f) {
+    ClockInputs ci;
+    ci.dtMs = f.dtMs;
+    ci.timeScale = f.timeScale;
+    ci.subStepRate = rt.subStepRate;
+    ci.timeOffset = rt.timeOffset;
+    ci.nowMs = f.nowMs;
+    ci.frameIndex = f.frameIndex;
+    ci.worldPos = f.worldPos;
+    ci.modelPaused = f.modelPaused;
+    // Retail's `g_force60Hz` debug byte is 0 in a shipped client.
+    ci.force60Hz = false;
+    return ci;
+}
+
+/// What one `TickOnce` reads and what its stages hand each other. Built on
+/// the stack per call; the buffers it fills are the runtime's scratch.
+struct FrameCtx {
+    FrameCtx(Runtime& runtime, const EmitterDesc& desc, const TickFrame& frame)
+        : rt(runtime), d(desc), f(frame), s(runtime.frame) {}
+    FrameCtx(const FrameCtx&) = delete; // the inputs below point into it
+
+    Runtime& rt;
+    const EmitterDesc& d;
+    const TickFrame& f;
+    const Frame& s;
+    TickResult out;
+
+    // PREP
+    f32 startTime = 0.0f;
+    Vector3f startPos{0, 0, 0};
+
+    // EMIT
+    usize slots = 1;
+    Schedule sched;
+    Vector3f posStep{0, 0, 0};
+
+    // The inputs constant over the frame's events.
+    VertexBodyInputs vb;
+    SimulateInputs sim;
+    GroundContext ground{nullptr, 1.0f};
+    Collider collider;
+    MeshRegionBase meshRegion{};
+    MeshSurfaceInputs meshIn;
+    bool haveMesh = false;
+    bool modelParticles = false;
+    PendingModels* pending = nullptr;
+};
+
+/// PREP: the clock. False when this frame already ticked, which leaves the
+/// clock untouched.
+bool PrepSc2(FrameCtx& c) {
+    // The sweep's two endpoints have to be read BEFORE the clock advances:
+    // `TickClock` overwrites `emitterTime` with the frame's end and may
+    // refresh `prevPos`, and the batch is laid from where the frame STARTED to
+    // where it ended. Recovering the start by subtracting `catchUp` afterwards
+    // would not even be the same float.
+    c.startTime = c.rt.clock.emitterTime;
+    c.startPos = c.rt.clock.prevPos;
+
+    c.out.plan = TickClock(c.rt.clock, ClockInputsFor(c.rt, c.f));
+    if (!c.out.plan.ticked)
+        return false;
+    c.rt.curPos = c.f.worldPos;
+    return true;
+}
+
+/// EMIT: each slot's count, the schedule of the frame's events, and the sweep
+/// the batch is laid along.
+void ScheduleSc2(FrameCtx& c) {
+    Runtime& rt = c.rt;
+    const EmitterDesc& d = c.d;
+    const TickFrame& f = c.f;
+    const Frame& s = c.s;
+    TickScratch& scratch = rt.scratch;
+
+    const usize slots = (std::max)(usize{1}, d.emit.slotBones.size());
+    c.slots = slots;
+    if (rt.slots.size() != slots)
+        rt.slots.assign(slots, Runtime::Slot{});
+
+    const f32 window = EmitWindow(c.out.plan.fullStep, c.out.plan.subDt, c.out.plan.dt);
+    scratch.counts.assign(slots, 0.0f);
+    for (usize i = 0; i < slots; ++i) {
+        EmitCountInputs ec;
+        ec.rate = (i == 0 ? s.emissionRate
+                          : (i - 1 < s.slots.size() ? s.slots[i - 1].emissionRate : 0.0f)) *
+                  f.emissionScaler;
+        ec.dt = window;
+        ec.timeScale = f.playerTimeScale;
+        // What the squirt keys the playhead crossed this host frame owe. Not
+        // spent here: retail re-reads the same crossed keys on every count it
+        // makes until the playhead moves again (OP7b's early-out), so each of
+        // a pre-roll's blocks sees them. `TickEmitter` clears it once the
+        // host frame is done.
+        ec.burst = static_cast<f32>(rt.slots[i].burst);
+        ec.lodCut = d.emit.lodCut;
+        ec.lodReduce = d.emit.lodReduce;
+        ec.quality = f.quality;
+        ec.elemScaleX = f.elemScaleX;
+        ec.suppressed = (rt.emitFlagsWord & renderer::sc2::kEmitSuppressed) != 0;
+        ec.nodeVisible = s.active;
+        scratch.counts[i] = ComputeEmitCount(ec);
+    }
+
+    scratch.carry.assign(slots, 0.0f);
+    scratch.targets.assign(slots, 0u);
+    scratch.emitted.resize(slots);
+    for (usize i = 0; i < slots; ++i)
+        scratch.carry[i] = rt.slots[i].carry;
+
+    ScheduleInputs si;
+    si.fullStep = c.out.plan.fullStep;
+    si.nSubSteps = c.out.plan.nSteps;
+    si.subDt = c.out.plan.subDt;
+    si.frameDt = c.out.plan.dt;
+    si.catchUp = c.out.plan.catchUp;
+    si.remainder = c.out.plan.remainder;
+    si.accumTime = rt.accumTime;
+    si.frozen = rt.emissionFrozen;
+    si.anythingAlive = rt.store.AliveCount() != 0;
+    si.haveRequests = !rt.inbox.empty();
+    si.counts = scratch.counts;
+
+    c.sched =
+        SpawnSchedule(si, scratch.carry, scratch.targets, scratch.emitted, scratch.events);
+    for (usize i = 0; i < slots; ++i) {
+        rt.slots[i].carry = scratch.carry[i];
+        rt.slots[i].target = scratch.targets[i];
+        rt.slots[i].emitted = 0;
+    }
+    rt.accumTime = c.sched.accumTime;
+
+    // The batch is laid along the frame: `spawnTimeStep` from the schedule,
+    // `spawnPosStep` from the sweep, which also moves `prevPos` on for the next
+    // frame. The clock touched `prevPos` only on a full step, so on the
+    // sub-stepped path it is still `startPos`.
+    SweepInputs swi;
+    swi.fullStep = c.out.plan.fullStep;
+    swi.nSubSteps = c.out.plan.nSteps;
+    swi.total = c.sched.total;
+    swi.prevPos = rt.clock.prevPos;
+    swi.worldPos = f.worldPos;
+    const Sweep sweep = SpawnSweep(swi);
+    c.posStep = sweep.spawnPosStep;
+    rt.clock.prevPos = sweep.prevPos;
+
+    // `InitSpawned` advances these per element. The gate's fixture left
+    // `curPos` at zero, so where the sweep BEGINS is a composition choice and
+    // not a measurement: it begins where the frame did and, after `total`
+    // elements, lands on where the emitter ended up.
+    rt.initState.emitterTime = c.startTime;
+    rt.initState.curPos = c.startPos;
+}
+
+/// The MOVE and SPAWN inputs that hold for every event of the frame.
+void ArmEventsSc2(FrameCtx& c) {
+    Runtime& rt = c.rt;
+    const EmitterDesc& d = c.d;
+    const TickFrame& f = c.f;
+    const Frame& s = c.s;
+
+    // The body the element's ONE stored vertex is built through. Constant for
+    // the whole frame: every field of it is a load-time desc value or a host
+    // one, so it is built once rather than per element.
+    VertexBodyInputs& vb = c.vb;
+    vb.drag = d.motion.drag;
+    vb.gravity = d.motion.gravity3.z;
+    vb.worldGravityScale = f.worldGravityScale;
+    vb.instanceType = d.look.instanceType;
+    vb.tailLength = d.look.tailLength;
+    vb.instanceAngle = d.look.instanceAngle;
+    // One emitter's constants are bound at row 0 — see `GpuVertex::batchIndex`.
+    vb.batchIndex = 0;
+
+    // The CPU step's emitter-wide inputs, the same for every sub-step of the
+    // frame. A viewer has no scene wind object, so the sample stays zero and
+    // the multiplier multiplies nothing.
+    SimulateInputs& sim = c.sim;
+    sim.gravity = d.motion.gravity3;
+    sim.gravityScale = f.worldGravityScale;
+    sim.windMultiplier = d.motion.windMultiplier;
+    sim.parFlags = static_cast<u32>(d.flags);
+    sim.instanceType = d.look.instanceType;
+    sim.drag = d.motion.drag;
+    sim.bounce = d.motion.bounce;
+    sim.friction = d.motion.friction;
+    sim.collisionDieBounce = d.motion.collisionDieBounce;
+    sim.killRadius = d.motion.killRadius;
+    // The kill radius is measured in the ELEMENTS' space: a local-space
+    // emitter's particles sit relative to its own origin.
+    sim.origin = d.emit.worldSpace ? f.worldPos : Vector3f{0.0f, 0.0f, 0.0f};
+    sim.rotationSmoothing = d.look.rotationSmoothing;
+    sim.rotationMidTime = d.look.midTime[renderer::sc2::MidChannel::Rotation];
+    sim.rotationMidHold = d.look.midHold[renderer::sc2::MidChannel::Rotation];
+
+    sim.worldMatrix = Mat16(f.worldMatrix);
+    sim.worldSpace = d.emit.worldSpace;
+    sim.trailRate = s.trailEmissionRate;
+    // The children as the desc resolved them at load, so the step never looks
+    // an emitter up. A collision child counts only when it is world-space.
+    sim.collisionChild =
+        d.children.collisionSpawnIndex >= 0 && d.children.collisionChildIsWorldSpace;
+    sim.trailChild = d.children.trailLinkIndex >= 0;
+    sim.collisionSpawnChance = d.children.collisionSpawnChance;
+    sim.collisionSpawnMin = d.children.collisionSpawnMin;
+    sim.collisionSpawnMax = d.children.collisionSpawnMax;
+    sim.collisionSpawnEnergy = d.children.collisionSpawnEnergy;
+    sim.splat = d.children.splatProjectorIndex != -1;
+    sim.splatChance = d.children.splatChance;
+
+    c.ground = GroundContext{f.surface ? &f.surface->groundQuery : nullptr,
+                                HostScale(f.hostScale)};
+    if (f.surface && f.surface->groundQuery) {
+        c.collider.ctx = &c.ground;
+        c.collider.terrain = &GroundContact;
+    }
+    // Everything the frame's sub-steps ask of the children, sent once MOVE is
+    // done.
+    rt.scratch.asked.collision.clear();
+    rt.scratch.asked.trail.clear();
+    // The scene switch is "is there anything to collide with". Objects stay
+    // unqueried: a viewer has no other units for a particle to hit.
+    sim.collisionEnabled = c.collider.terrain != nullptr;
+
+    // The Mesh shape's surface, the same for every spawn of the frame. An
+    // emitter pointed at no mesh gets none, and spawns at its origin drawing
+    // nothing — as retail's does with no model asset.
+    c.haveMesh =
+        d.emit.shape == static_cast<u8>(SpawnShape::Mesh) && f.surface && f.surface->mesh;
+    if (c.haveMesh) {
+        c.meshIn.triangles = rt.meshTriangles;
+        c.meshIn.faces = f.surface->mesh->tris;
+        c.meshIn.regions = std::span<const MeshRegionBase>(&c.meshRegion, 1);
+        c.meshIn.colorR = f.surface->mesh->colorR;
+        c.meshIn.ctx = const_cast<EmitSurface*>(f.surface);
+        c.meshIn.position = &MeshVertexPosition;
+    }
+
+    // ModelParticles: each element waits in the pending list for its model,
+    // and one that dies first is unregistered at the kill.
+    c.modelParticles = d.Has(ParticleFlag::ModelParticles);
+    c.pending = rt.pending != nullptr ? rt.pending : &rt.ownPending;
+}
+
+/// Every spawn event's `InitInputs` but the three that depend on the slot.
+/// Reads the frame and the clock and draws nothing, so building it once ahead
+/// of the events is the same inputs each event built for itself.
+InitInputs SpawnInputsFor(FrameCtx& c) {
+    const Runtime& rt = c.rt;
+    const EmitterDesc& d = c.d;
+    const TickFrame& f = c.f;
+    const Frame& s = c.s;
+
+    // One overlay clock for every sampler the spawn calls.
+    const Variation variation{rt.clock.variationTime, s.overlayPhase};
+
+    InitInputs in;
+    in.shape = ShapeInputs(d, s);
+    in.shape.mesh = c.haveMesh ? &c.meshIn : nullptr;
+    in.velocity = VelocityInputs(d, s, rt.clock);
+    in.color.keys = {s.colorBGRA[0], s.colorBGRA[1], s.colorBGRA[2]};
+    in.color.randomKeys = {s.colorRandomBGRA[0], s.colorRandomBGRA[1], s.colorRandomBGRA[2]};
+    in.color.randomEnable = d.emit.colorRandom;
+    in.color.colorMidTime = d.look.midTime[renderer::sc2::MidChannel::Color];
+    in.color.alphaMidTime = d.look.midTime[renderer::sc2::MidChannel::Alpha];
+    in.color.alphaOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Alpha);
+    in.color.variation = variation;
+
+    in.size.keys = {s.size3.x, s.size3.y, s.size3.z};
+    in.size.randomKeys = {s.sizeRandom3.x, s.sizeRandom3.y, s.sizeRandom3.z};
+    in.size.randomEnable = d.emit.sizeRandom;
+    in.size.sizeOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Size);
+    in.size.instanceType = d.look.instanceType;
+    in.size.instanceDistance = d.look.instanceDistance;
+    in.size.variation = variation;
+
+    in.rotation.keys = {s.rotation3.x, s.rotation3.y, s.rotation3.z};
+    in.rotation.randomKeys = {s.rotationRandom3.x, s.rotationRandom3.y, s.rotationRandom3.z};
+    in.rotation.randomEnable = d.emit.rotationRandom;
+    in.rotation.relative = d.Has(RotationBit::Relative);
+    in.rotation.rotationMidTime = d.look.midTime[renderer::sc2::MidChannel::Rotation];
+    in.rotation.rotationOverlay = OverlayFor(d, s, renderer::sc2::OverlayGroup::Rotation);
+    in.rotation.variation = variation;
+
+    in.parFlags = static_cast<u32>(d.flags);
+    in.additionalFlags = static_cast<u32>(d.additionalFlags);
+    in.rotationFlags = static_cast<u32>(d.rotationFlags);
+    in.instanceType = d.look.instanceType;
+    in.emitFlagsWord = rt.emitFlagsWord;
+    in.stateFlags = rt.clock.stateFlags;
+    in.noiseCoherence = d.motion.noiseCoherence;
+    in.mass = d.motion.mass;
+    in.massRandom = d.motion.massRandom;
+    in.lifetime = s.lifetime;
+    in.lifetimeRandom = s.lifetimeRandom;
+    in.trailChance = d.children.trailChance;
+    in.flipbookColumns = d.look.flipbookColumns;
+    in.flipbookRows = d.look.flipbookRows;
+    in.hasChildEmitter1 = d.children.trailLinkIndex >= 0;
+    in.worldMatrix = f.worldMatrix;
+    in.spawnPosStep = c.posStep;
+    in.spawnTimeStep = c.sched.spawnTimeStep;
+    in.smoothedPos = s.parentVelocityScale != 0.0f ? rt.curPos : Vector3f{0, 0, 0};
+    in.inheritVelocityScale = s.parentVelocityScale;
+    in.nowMs = static_cast<u32>(f.nowMs);
+    in.shape.elemScale = {f.elemScaleX, f.elemScaleX, f.elemScaleX};
+    return in;
+}
+
+/// MOVE: one `Update` event.
+void MoveSc2(FrameCtx& c) {
+    Runtime& rt = c.rt;
+    // `Update`'s own pick (A8). The analytic emitter integrates nothing — the
+    // vertex shader moves its particles from the birth state — so its whole
+    // MOVE is the retirement; every other one takes a CPU sub-step.
+    if (UseRetirePath(rt.clock.stateFlags, false)) {
+        c.out.retired += RetireExpired(rt.store.list, rt.store.elements, rt.clock.emitterTime,
+                                          rt.store.recycle);
+        return;
+    }
+    std::vector<i32>& killed = rt.scratch.killed;
+    c.sim.dt = c.out.plan.fullStep ? c.out.plan.dt : c.out.plan.subDt;
+    c.sim.emitterTime = rt.clock.emitterTime;
+    killed.clear();
+    c.out.retired += SimulateParticles(rt.store.list, rt.store.elements, c.sim, c.collider,
+                                          rt.rng, rt.scratch.asked,
+                                          c.modelParticles ? &killed : nullptr)
+                         .killed;
+    if (!c.modelParticles)
+        return;
+    // `SimulateParticles` re-poses every element holding a model inside its
+    // walk, after the move and before the kill test; one element's pose reads
+    // nothing another's step writes, so posing after the walk is the same
+    // poses.
+    for (i32 node = rt.store.list.head; node >= 0;
+         node = rt.store.list.next[static_cast<usize>(node)]) {
+        if (static_cast<usize>(node) < rt.hasModel.size() &&
+            rt.hasModel[static_cast<usize>(node)] != 0) {
+            rt.modelPose[static_cast<usize>(node)] =
+                PoseModelParticle(rt, c.d, c.f.worldMatrix, node);
+        }
+    }
+    for (const i32 node : killed) {
+        const usize n = static_cast<usize>(node);
+        if (n < rt.hasModel.size() && rt.hasModel[n] != 0) {
+            rt.modelDeaths.push_back(node);
+            rt.hasModel[n] = 0;
+        } else {
+            SwapRemovePending(*c.pending, &rt, node);
+        }
+    }
+}
+
+/// SPAWN: one `Spawn` event, from @p base with the slot's own three fields.
+void SpawnSc2(FrameCtx& c, const InitInputs& base, const EmitEvent& ev) {
+    Runtime& rt = c.rt;
+    const Frame& s = c.s;
+
+    const usize slot = (std::min)(static_cast<usize>(ev.slot), c.slots - 1);
+    InitInputs in = base;
+    in.slot = static_cast<u32>(slot);
+    // A `PARC` copy emits from its own bone. Without `hasBone` the initialiser
+    // treats slot > 0 as slot 0 — every copy spawning on the emitter itself at
+    // the emitter's size. See SC2_PARTICLE_DESIGN.md §16.7.
+    const bool copy = slot > 0 && slot - 1 < s.slots.size();
+    // The copy's bone arrives in host units, as the frame's did.
+    in.boneMatrix =
+        copy ? FromHostSpace(s.slots[slot - 1].boneWorld, c.f.hostScale) : c.f.boneMatrix;
+    in.hasBone = copy;
+
+    // `SpawnParticles` in the order OP8b pins: the inbox first, then this
+    // pass's own count, every element tested against the ceiling in turn, and
+    // initialised in the flushes retail makes. Every spawn call of the frame is
+    // handed the waiting requests; the first one that initialises anything
+    // consumes them, and one that cannot leaves them for the next.
+    const u32 plain = static_cast<i32>(ev.count) > 0 ? ev.count : 0u;
+    SpawnBatchInputs bi;
+    bi.requests = static_cast<u32>(rt.inbox.size());
+    bi.plain = plain;
+    bi.elementCount = rt.store.AliveCount();
+    bi.maxParticles = rt.store.Capacity();
+    SpawnBatchPlan& batchPlan = rt.scratch.batchPlan;
+    PlanSpawnBatch(bi, batchPlan);
+    u32 requestsMade = 0;
+    u32 plainMade = 0;
+    std::vector<SpawnedElement>& batch = rt.scratch.batch;
+    for (const SpawnFlush& fl : batchPlan.flushes) {
+        batch.assign(fl.requests + fl.plain, SpawnedElement{});
+        std::span<const SpawnRequest> requests;
+        if (fl.requests != 0)
+            requests = std::span<const SpawnRequest>(rt.inbox.data() + fl.requestBegin, fl.requests);
+        InitSpawned(rt.rng, in, requests, rt.initState, batch);
+        for (const SpawnedElement& e : batch) {
+            // The plan stopped at the pool's own ceiling, so this cannot come
+            // back empty.
+            const i32 node = rt.store.Acquire();
+            if (node < 0)
+                break;
+            rt.store.elements[static_cast<usize>(node)] = e;
+            // `InitSpawnedParticles` appends the element to the batch and nulls
+            // its instance; the model comes at the walk.
+            if (c.modelParticles && static_cast<usize>(node) < rt.hasModel.size()) {
+                rt.hasModel[static_cast<usize>(node)] = 0;
+                c.pending->push_back({&rt, node});
+            }
+            // Written once, here; on the analytic path never touched again. One
+            // stands for all four, `BuildQuads` supplying the corner.
+            // See SC2_PARTICLE_RE.md §17.1.
+            rt.store.vertices[static_cast<usize>(node)] = VertexBody(c.vb, e);
+        }
+        requestsMade += fl.requests;
+        plainMade += fl.plain;
+    }
+    c.out.spawned += batchPlan.created;
+    c.out.refused += plain - plainMade;
+    if (batchPlan.requestsConsumed) {
+        c.out.refused += bi.requests - requestsMade;
+        rt.inbox.clear();
+    }
+    // The whole count is booked whether it was made or not: the shortfall is
+    // never retried (RE §16.9).
+    rt.slots[slot].emitted += plain;
+}
+
+/// What MOVE asked of the children leaves through the outbox, addressed by the
+/// child's index. The service delivers it into the child's inbox, and the 128
+/// cap applies THERE, where every parent's requests meet.
+void RouteChildRequests(FrameCtx& c) {
+    const ChildRequests& asked = c.rt.scratch.asked;
+    for (const SpawnRequest& r : asked.collision)
+        c.rt.outbox.push_back({c.d.children.collisionSpawnIndex, r});
+    for (const SpawnRequest& r : asked.trail)
+        c.rt.outbox.push_back({c.d.children.trailLinkIndex, r});
+}
+
+/// BUILD, CPU half: `BuildParticleQuadVertices_List` (OP11) over every live
+/// element, run once MOVE is done rather than in the render build, so the
+/// geometry build stays `const`. See SC2_PARTICLE_DESIGN.md §16.7.
+void RebuildCpuVertices(FrameCtx& c) {
+    Runtime& rt = c.rt;
+    const EmitterDesc& d = c.d;
+    if (UseRetirePath(rt.clock.stateFlags, false))
+        return;
+    CpuVertexInputs cv;
+    cv.instanceType = d.look.instanceType;
+    cv.tailLength = d.look.tailLength;
+    cv.instanceAngle = d.look.instanceAngle;
+    cv.drag = d.motion.drag;
+    cv.gravity = d.motion.gravity3.z;
+    cv.gravityScale = c.f.worldGravityScale;
+    cv.sizeMidTime = d.look.midTime[renderer::sc2::MidChannel::Size];
+    cv.parFlags = static_cast<u32>(d.flags);
+    cv.noise = (rt.emitFlagsWord & renderer::sc2::kEmitNoise) != 0;
+    cv.noiseAmplitude = d.motion.noiseAmplitude;
+    cv.noiseFrequency = d.motion.noiseFrequency;
+    cv.noiseCoherence = d.motion.noiseCoherence;
+    cv.noiseEdge = d.motion.noiseEdge;
+    cv.emitterTime = rt.clock.emitterTime;
+    cv.gpuMotion = false;
+    // One emitter's constants are bound at row 0, as at spawn.
+    cv.batchIndex = 0;
+    for (i32 node = rt.store.list.head; node >= 0;
+         node = rt.store.list.next[static_cast<usize>(node)]) {
+        CpuVertexBody(cv, rt.store.elements[static_cast<usize>(node)],
+                         rt.store.vertices[static_cast<usize>(node)]);
+    }
+}
+
+/// One `Tick` from its once-per-frame test on: the clock, emission, the
+/// sub-step events and the CPU vertex rebuild. The pre-roll check retail runs
+/// ahead of all that is `TickEmitter`'s, which calls this once per pre-roll
+/// block and once for the frame.
+TickResult TickOnce(Runtime& rt, const EmitterDesc& d, const TickFrame& f) {
+    FrameCtx c(rt, d, f);
+    if (!PrepSc2(c))
+        return c.out; // already ticked this frame; the clock is untouched
+    ScheduleSc2(c);
+    ArmEventsSc2(c);
+    const InitInputs spawnBase = SpawnInputsFor(c);
+    for (const EmitEvent& ev : rt.scratch.events) {
+        if (ev.kind == EmitEventKind::Update)
+            MoveSc2(c);
+        else if (ev.kind == EmitEventKind::Spawn)
+            SpawnSc2(c, spawnBase, ev);
+        // `Count` and `PreEmit` mark the schedule's shape and do nothing here.
+    }
+    RouteChildRequests(c);
+    RebuildCpuVertices(c);
+
+    // A frame that ran no `Update` retires NOTHING, as retail's does: the
+    // retirement lives inside the sub-step loop. Do not add a defensive one.
+    // See SC2_PARTICLE_RE.md §17.10.
+    return c.out;
+}
+
+/// The frame with the host's world scale off its transforms and position. The
+/// slot bones and the ground query are converted where they are read, off the
+/// `hostScale` this keeps.
+TickFrame InSc2Units(const TickFrame& host) {
+    TickFrame f = host;
+    const f32 k = HostScale(host.hostScale);
+    if (k == 1.0f)
+        return f;
+    f.worldMatrix = FromHostSpace(host.worldMatrix, k);
+    f.boneMatrix = FromHostSpace(host.boneMatrix, k);
+    f.worldPos = {host.worldPos.x / k, host.worldPos.y / k, host.worldPos.z / k};
+    return f;
+}
+
+} // namespace
+
+Matrix44f FromHostSpace(const Matrix44f& m, f32 hostScale) {
+    Matrix44f out = m;
+    const f32 k = HostScale(hostScale);
+    if (k == 1.0f)
+        return out;
+    for (usize r = 0; r < 4; ++r)
+        for (usize c = 0; c < 3; ++c)
+            out.data[r][c] = m.data[r][c] / k;
+    return out;
+}
+
+void NoteActiveSequence(Runtime& rt, const EmitterDesc& d, i32 sequence) {
+    if (!d.Has(ParticleFlag::SimulateInit) || sequence == rt.activeSequence)
+        return;
+    rt.activeSequence = sequence;
+    rt.preRollPending = true;
+}
+
+f32 PreRollPeakFor(const EmitterDesc& d, i32 sequence) {
+    // A sequence past the columns needs more sequences than containers; retail
+    // would read the next row there, and the init value stands in.
+    const auto& peaks = d.emit.preRollPeaks;
+    if (sequence < 0 || static_cast<usize>(sequence) >= peaks.size())
+        return d.emit.preRollInit;
+    return peaks[static_cast<usize>(sequence)];
+}
+
+TickResult TickEmitter(Runtime& rt, const EmitterDesc& d,
+                             const TickFrame& host) {
+    // Everything below runs in SC2 units.
+    const TickFrame f = InSc2Units(host);
+
+    // The actor layer's ask becomes bit 31, which is the only thing `Tick`
+    // reads.
+    if (rt.preRollPending) {
+        rt.clock.stateFlags |= renderer::sc2::kStateSequenceChanged;
+        rt.preRollPending = false;
+    }
+
+    TickResult out;
+    // `Tick`'s first act, ahead of its once-per-frame test.
+    const bool neverTicked = rt.clock.lastFrameIndex < 0;
+    const RestartCheck restart = TickRestartCheck(rt.clock, ClockInputsFor(rt, f));
+    // An emitter that has never ticked has, for the pre-roll, been waiting
+    // forever: retail's session clock is already large when an emitter is
+    // created, so its gap is the whole session. This wall clock starts with
+    // the emitter, and would never show more than one frame.
+    if (restart.armed && (restart.owed || neverTicked)) {
+        const u32 gap = neverTicked ? 0xFFFFFFFFu : restart.gapMs;
+        // `EmitBurst` returns before its first block while no sequence has
+        // resolved.
+        const PreRollPlan plan =
+            rt.activeSequence < 0 ? PreRollPlan{}
+                                  : PlanPreRoll(PreRollPeakFor(d, rt.activeSequence), gap);
+        rt.clock.stateFlags |= renderer::sc2::kStateRestartBusy;
+        for (u32 k = 0; k < plan.blocks; ++k) {
+            // `EmitBurst`: the frame index forced back so the block ticks,
+            // and the offset pushed on first — so the emitter clock runs ahead
+            // of the scene by the whole pre-roll from here on.
+            --rt.clock.lastFrameIndex;
+            rt.timeOffset = rt.timeOffset + kPreRollOffsetStep;
+            TickFrame block = f;
+            block.dtMs = kPreRollBlockMs;
+            // Design §8: retail leaves `timeOffset` in the register this
+            // argument is read from.
+            block.timeScale = 1.0f;
+            const TickResult r = TickOnce(rt, d, block);
+            out.spawned += r.spawned;
+            out.retired += r.retired;
+            out.refused += r.refused;
+            ++out.preRollBlocks;
+        }
+        rt.clock.stateFlags &= ~static_cast<u32>(renderer::sc2::kStateRestartBusy);
+    }
+
+    // The frame itself. After a pre-roll its once-per-frame test returns at
+    // once — the last block already stamped this frame — as retail's does.
+    const TickResult frame = TickOnce(rt, d, f);
+    out.plan = frame.plan;
+    out.spawned += frame.spawned;
+    out.retired += frame.retired;
+    out.refused += frame.refused;
+
+    // The squirt bursts were owed to every count this host frame made.
+    for (Runtime::Slot& slot : rt.slots)
+        slot.burst = 0;
+    return out;
+}
+
+ModelPose PoseModelParticle(const Runtime& rt, const EmitterDesc& d,
+                                  const Matrix44f& world, i32 node) {
+    const usize n = static_cast<usize>(node);
+    const SpawnedElement& e = rt.store.elements[n];
+    const GpuVertex& vert = rt.store.vertices[n];
+    const f32 unit = HostScale(rt.actorWorldScale);
+
+    ModelPoseInputs in;
+    in.position = e.position;
+    in.velocity = e.velocity;
+    in.orientVec = e.orientVec;
+    in.spawnOrigin = e.spawnOrigin;
+    in.randomDirection = {vert.velocity[0], vert.velocity[1], vert.velocity[2]};
+    in.birthTime = e.birthTime;
+    in.deathTime = e.deathTime;
+    for (usize k = 0; k < 3; ++k) {
+        in.elementSize[k] = e.size[k];
+        in.elementRotation[k] = e.rotation[k];
+        in.elementColors[k] = e.colorNodes[k];
+    }
+
+    in.world = Mat16(world);
+    in.emitterTime = rt.clock.emitterTime;
+    in.stateFlags = rt.clock.stateFlags;
+    const auto& s = rt.frame;
+    in.sizeKeys = {s.size3.x, s.size3.y, s.size3.z};
+    in.rotationKeys = {s.rotation3.x, s.rotation3.y, s.rotation3.z};
+    in.colorKeys = {s.colorBGRA[0], s.colorBGRA[1], s.colorBGRA[2]};
+
+    in.parFlags = static_cast<u32>(d.flags);
+    in.additionalFlags = static_cast<u32>(d.additionalFlags);
+    in.rotationFlags = static_cast<u32>(d.rotationFlags);
+    in.instanceType = d.look.instanceType;
+    in.sizeSmoothing = d.look.sizeSmoothing;
+    in.colorSmoothing = d.look.colorSmoothing;
+    in.rotationSmoothing = d.look.rotationSmoothing;
+    for (usize k = 0; k < renderer::sc2::MidChannel::kCount; ++k) {
+        in.midTime[k] = d.look.midTime[k];
+        in.midHold[k] = d.look.midHold[k];
+    }
+    in.instanceAngle = d.look.instanceAngle;
+    in.tailLength = d.look.tailLength;
+    in.legacyOrient = d.children.modelOrientLegacy;
+    in.orientVariant = d.children.modelOrientVariant;
+    in.camera = rt.camera;
+
+    ModelPose pose = ModelParticlePose(in);
+    pose.position = {pose.position.x * unit, pose.position.y * unit, pose.position.z * unit};
+    return pose;
+}
+
+void SwapRemovePending(PendingModels& list, const Runtime* runtime, i32 node) {
+    for (usize i = 0; i < list.size(); ++i) {
+        if (list[i].runtime == runtime && list[i].node == node) {
+            list[i] = list.back();
+            list.pop_back();
+            return;
+        }
+    }
+}
+
+void ConvertBezierKeys(model::FrameState::ParticleFrameState::Sc2ParticleFrame& s,
+                          const EmitterDesc& d) {
+    namespace element = whiteout::flakes::renderer::sc2;
+    constexpr u8 kBezier = element::SmoothingMode::Bezier;
+    // `sizeMidTime` for all three channels, as `UpdateAnimatedParams` passes it.
+    const f32 t = d.look.midTime[element::MidChannel::Size];
+    const auto convert = [t](Vector3f& keys) {
+        f32 k[3] = {keys.x, keys.y, keys.z};
+        element::ConvertColorNode(k, t);
+        keys.y = k[1];
+    };
+    if (d.look.sizeSmoothing == kBezier) {
+        convert(s.size3);
+        convert(s.sizeRandom3);
+    }
+    if (d.look.rotationSmoothing == kBezier) {
+        convert(s.rotation3);
+        convert(s.rotationRandom3);
+    }
+    if (d.look.colorSmoothing == kBezier) {
+        s.colorBGRA[1] =
+            element::ConvertColorNode3(s.colorBGRA[0], s.colorBGRA[1], s.colorBGRA[2], t);
+        // The randoms are sampled, and converted, only with random colour on.
+        if (d.emit.colorRandom) {
+            s.colorRandomBGRA[1] = element::ConvertColorNode3(
+                s.colorRandomBGRA[0], s.colorRandomBGRA[1], s.colorRandomBGRA[2], t);
+        }
+    }
+}
+
+} // namespace whiteout::flakes::renderer::particle::sc2

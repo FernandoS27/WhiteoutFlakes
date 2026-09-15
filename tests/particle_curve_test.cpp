@@ -5,7 +5,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include "renderer/particle/particle_curve.h"
+#include "renderer/particle/base/particle_curve.h"
 
 #include <cmath>
 #include <vector>

@@ -541,7 +541,7 @@ bool RenderPipeline::RenderSplatsBls() {
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
     std::vector<Vertex> verts;
-    std::vector<particle::SplatDrawList> drawLists;
+    std::vector<effects::SplatDrawList> drawLists;
     Matrix44f viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
     rs_.Splats().BuildGeometry(verts, drawLists);
     if (verts.empty())
@@ -2590,7 +2590,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         auto* svc = rs_.GetM3DeferredLightService();
         if (!svc || !rs_.Settings().DeferredLightsEnabled())
             return;
-        std::vector<sc2::M3DeferredLightService::Light> lights;
+        std::vector<renderer::sc2::M3DeferredLightService::Light> lights;
         auto toView = [&](const Vector3f& p) {
             return Vector3f{
                 p.x * view.data[0][0] + p.y * view.data[1][0] + p.z * view.data[2][0] +
@@ -2618,7 +2618,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                     continue;
                 if (ls.attenEnd <= 0.0f)
                     continue;
-                sc2::M3DeferredLightService::Light l;
+                renderer::sc2::M3DeferredLightService::Light l;
                 l.posVS = toView(ls.worldPos);
                 l.color = ls.diffuse;
                 if (ls.useSpecular)
@@ -2629,7 +2629,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             }
         }
         if (rs_.Settings().DebugPointLightEnabled()) {
-            sc2::M3DeferredLightService::Light l;
+            renderer::sc2::M3DeferredLightService::Light l;
             l.posVS = toView(rs_.Settings().DebugPointLightPos());
             l.color = rs_.Settings().DebugPointLightColor();
             // A scripted viewer light, so it carries no LITE record to read a

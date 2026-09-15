@@ -1,11 +1,11 @@
 #pragma once
 
-#include "particle2_emitter.h"
-#include "particle_draw.h"
-#include "particle_emitter.h"
-#include "particle_geometry.h"
-#include "particle_output.h"
-#include "sc2_kernel_types.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/base/particle_emitter.h"
+#include "renderer/particle/output/particle_draw.h"
+#include "renderer/particle/output/particle_geometry.h"
+#include "renderer/particle/output/particle_output.h"
+#include "renderer/particle/sc2/sc2_kernel_types.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -80,21 +80,11 @@ public:
     // Simulate. Empty when no such emitter is registered.
     void DrainChildModelEvents(std::vector<ChildModelEvent>& out);
 
-    // Builds every emitter's geometry for this frame.
-    //
-    // A refraction emitter goes to `out.refraction` instead of the ordinary lists;
-    // pass null and it is skipped outright, which is the correct answer for a
-    // frame with no refraction pass — drawing it into the scene would paint a
-    // distortion mask as if it were colour.
-    //
-    // A multi-texture emitter puts its VERTICES in `out.multiTex` but its draw in
-    // `out.draws`, so it still sorts with everything else in the
-    // transparent pass; pass null and it falls back to single-texture shading
-    // off the ordinary stream.
-    // A Diablo III emitter additionally fills the D3 stream with its four baked
-    // texcoords and its second colour per vertex, kept index-parallel with the
-    // vertices; pass null and it falls back to sampling every layer at the raw
-    // quad uv.
+    // Builds every emitter's geometry for this frame. Side streams, and what a
+    // null one does: refraction → `out.refraction` (null skips it); multi-texture
+    // → VERTICES in `out.multiTex`, draw in `out.draws` (null: single-texture off
+    // the ordinary stream); Diablo III → also `out.d3`, index-parallel (null:
+    // every layer at the raw quad uv). M2_PARTICLE_DESIGN.md §11.10.
     void BuildGeometry(const Matrix44f& worldToView, const ParticleStreams& out) const;
 
     // Whether any registered emitter (or trail) draws refraction. Cheap enough
@@ -102,9 +92,7 @@ public:
     // not ask yet.
     bool HasRefractionEmitters() const;
 
-    // Emission-rate multiplier for every emitter in THIS service. Per-scene:
-    // it used to be a process global, which meant scaling one viewport's
-    // particles silently scaled every other scene's too.
+    // Emission-rate multiplier for every emitter in THIS service — per scene.
     void SetEmissionScaler(f32 s);
 
     /// @brief Install the surface every emitter's particles collide against.
@@ -126,7 +114,7 @@ private:
     // The SC2 ModelParticles elements every emitter registered this frame,
     // walked once after all of them have updated. Declared before the emitters
     // so it outlives them: an emitter's destructor takes its own entries out.
-    Sc2PendingModels sc2PendingModels_;
+    sc2::PendingModels sc2PendingModels_;
     std::map<EmitterKey, std::unique_ptr<ParticleEmitter>> emitters_;
 
     // Accumulated during Simulate, moved out by DrainChildModelEvents.

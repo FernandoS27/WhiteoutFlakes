@@ -1,21 +1,15 @@
 #pragma once
 
 // ============================================================================
-// EmitterFactory — the one place a particle emitter is made.
-//
-// Class choice, describe, behaviour and seed, in that order, inside one
-// function. The order is load-bearing: `SetSeed` draws the random flipbook
-// start off the emitter's stream when the DESC asks for one, so a seed set
-// before the desc skips a draw the desc wanted. Each registration site used to
-// spell that order itself.
-//
-// The behaviour stays a registration argument rather than a desc field (the
-// ribbon's choice): a particle desc is shared by every actor of a template,
-// and the behaviour is the load-time profile's, not the model's.
+// EmitterFactory — the one place a particle emitter is made: class, describe,
+// behaviour, seed, in that order. Load-bearing: `SetSeed` draws the random
+// flipbook start when the DESC asks for one. The behaviour is a registration
+// argument, not a desc field: it is the load-time profile's, not the model's.
+// See M2_PARTICLE_DESIGN.md §11.14.
 // ============================================================================
 
 #include "core/particle_dialect.h"
-#include "particle_output.h"
+#include "renderer/particle/output/particle_output.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 

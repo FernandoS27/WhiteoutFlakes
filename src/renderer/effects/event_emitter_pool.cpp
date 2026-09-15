@@ -2,7 +2,7 @@
 
 #include "renderer/effects/event_crossing.h"
 
-#include "particle/splat_service.h"
+#include "effects/splat_service.h"
 #include "renderer/effects/spn_spawner.h"
 #include "renderer/model/model_instance.h"
 #include "whiteout/flakes/sound_emitter.h"
@@ -89,7 +89,7 @@ void ProjectToGroundPlane(Vector3f& origin, Vector3f& right, Vector3f& forward,
 
 void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& boneWorldMatrices,
                             i32 activeSeqIdx, i32 localTimeMs, i32 globalTimeMs, i32 seqStartMs,
-                            i32 seqEndMs, particle::SplatService* splats, SpnSpawner* spn,
+                            i32 seqEndMs, SplatService* splats, SpnSpawner* spn,
                             ISoundEmitter* sounds) {
     if (entries_.empty())
         return;

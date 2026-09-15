@@ -25,14 +25,14 @@
 #include "io/d3/d3_particle_adapter.h"
 #include "io/d3/d3_sno_cache.h"
 #include "io/file_content_provider.h"
-#include "renderer/particle/d3_channels.h"
-#include "renderer/particle/d3_emit_mesh.h"
-#include "renderer/particle/d3_emitter.h"
-#include "renderer/particle/d3_orientation.h"
-#include "renderer/particle/d3_emitter_desc.h"
-#include "renderer/particle/d3_path.h"
-#include "renderer/particle/particle_geometry.h"
-#include "renderer/particle/particle2_emitter.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/d3/d3_channels.h"
+#include "renderer/particle/d3/d3_emit_mesh.h"
+#include "renderer/particle/d3/d3_emitter.h"
+#include "renderer/particle/d3/d3_emitter_desc.h"
+#include "renderer/particle/d3/d3_orientation.h"
+#include "renderer/particle/d3/d3_path.h"
+#include "renderer/particle/output/particle_geometry.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
@@ -861,9 +861,15 @@ TEST_CASE("d3 particle P4: channel 16's difference is REVERSED", "[d3][particle]
         e.Update(1.0f / 60.0f, 1.0f);
 
     const u32 idx = e.Pool().AliveAt(0);
-    const Quaternion q = e.States()[idx].orientation;
-    // A rotation about +Z with a negative angle has a negative z component.
-    REQUIRE(q.z < 0.0f);
+    // The spin goes on the left of the camera-facing seat, so taking the seat
+    // back off leaves the world-space turn. A rotation about +Z with a negative
+    // angle has a negative z component, and no y: on the right of the seat it
+    // would be a turn about the seat's own Z, which is world -Y here.
+    Quaternion seat = Quaternion::identity();
+    REQUIRE(pd3::SpinBirthSeat({0, 1, 0}, {1, 0, 0}, seat));
+    const Quaternion r = e.States()[idx].orientation * seat.conjugate();
+    REQUIRE(r.z < 0.0f);
+    CHECK(std::fabs(r.y) < 1e-4f);
 }
 
 // ---------------------------------------------------------------------------
@@ -2063,14 +2069,169 @@ TEST_CASE("d3 particle: foliage turns each newborn about Z, and the turn is its 
     REQUIRE(e.Pool().AliveCount() == 6);
     std::set<f32> phases;
     for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
-        const Quaternion q = e.States()[e.Pool().AliveAt(i)].birthEmitterQuat;
+        const pd3::ParticleState& st = e.States()[e.Pool().AliveAt(i)];
+        const Quaternion q = st.birthEmitterQuat;
         CHECK(q.x == 0.0f);
         CHECK(q.y == 0.0f);
         CHECK(q.z >= 0.0f);
         CHECK(q.z * q.z + q.w * q.w == Catch::Approx(1.0f).margin(1e-5f));
         phases.insert(q.w);
+        // The quad keeps the emitter's orientation; only particle+184 turns.
+        CHECK(st.orientation.w == 1.0f);
     }
     CHECK(phases.size() > 1);
+}
+
+TEST_CASE("d3 particle: dwPrtFlags bit 2 stands a newborn on the ground, or drops it",
+          "[d3][particle]") {
+    // `Particle_InitLifeAndSize` @0x71000B6D08: the shape's point takes the
+    // ground's height under its XY, and a birth over no ground is not made.
+    const auto born = [](bool ground, std::size_t& alive) {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->prtFlags = static_cast<u32>(pd3::PrtFlag::PlaceOnGround);
+        pd3::Emitter e;
+        e.SetGroundQuery([ground](const Vector3f&, f32, f32, f32& z) {
+            z = 2.5f;
+            return ground;
+        });
+        SpawnOne(e, d, {1, 2, 40});
+        alive = e.Pool().AliveCount();
+        return alive == 1 ? Only(e).position : Vector3f{0, 0, 0};
+    };
+    std::size_t alive = 0;
+    const Vector3f on = born(true, alive);
+    REQUIRE(alive == 1);
+    CHECK(on.x == 1.0f);
+    CHECK(on.y == 2.0f);
+    CHECK(on.z == 2.5f);
+    born(false, alive);
+    CHECK(alive == 0);
+}
+
+TEST_CASE("d3 particle: dwPrtFlags bit 13 keeps a particle its offset's height off the ground",
+          "[d3][particle]") {
+    // `ParticleSystem_UpdateParticles` @0x71000BEA84: after the move, the Z is
+    // the ground's plus the offset channels' Z, and over no ground the particle
+    // dies.
+    auto d = MakeDesc(1.0f, 600.0f);
+    d->prtFlags = static_cast<u32>(pd3::PrtFlag::FollowGround);
+    d->channels[pd3::kChOffsetA] = ConstVectorPath(0.0f, 0.0f, 3.0f);
+    d->channels[pd3::kChVelocityA] = ConstVectorPath(1.0f, 0.0f, 0.0f);
+    d->DeriveCapabilities();
+    REQUIRE(d->Cap(pd3::kCapTripleA));
+    bool ground = true;
+    pd3::Emitter e;
+    // A slope, so the height is read under each new XY.
+    e.SetGroundQuery([&ground](const Vector3f& p, f32, f32, f32& z) {
+        z = p.x * 0.5f;
+        return ground;
+    });
+    SpawnOne(e, d);
+    for (int i = 0; i < 10; ++i) {
+        e.Update(1.0f / 60.0f, 1.0f);
+        const Vector3f p = Only(e).position;
+        CHECK(p.x > 0.0f);
+        CHECK(p.z == Catch::Approx(3.0f + p.x * 0.5f).margin(1e-5f));
+    }
+    ground = false;
+    e.Update(1.0f / 60.0f, 1.0f);
+    CHECK(e.Pool().AliveCount() == 0);
+}
+
+TEST_CASE("d3 particle: the birth seats particle+216", "[d3][particle]") {
+    // `ParticleSystem_EmitParticle` @0x71000B2310: the emitter quaternion, the
+    // identity in render mode 1, and a camera-facing frame for a spinning
+    // system. The unit axis starts as the emitter's X.
+    const Quaternion turned = Quaternion::from_axis_angle({0, 0, 1}, 1.0f);
+    const auto born = [&turned](const std::shared_ptr<pd3::EmitterDesc>& d, pd3::Emitter& e) {
+        e.SetEmitterOrientation(turned);
+        e.SetCameraForward({0.6f, 0.8f, 0.0f});
+        SpawnOne(e, d);
+        return e.States()[e.Pool().AliveAt(0)];
+    };
+
+    SECTION("render mode 1 at the identity, and the unit axis at the emitter's X") {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->renderMode = pd3::PrtRenderMode::Unoriented;
+        pd3::Emitter e;
+        const pd3::ParticleState st = born(d, e);
+        CHECK(st.orientation.x == 0.0f);
+        CHECK(st.orientation.y == 0.0f);
+        CHECK(st.orientation.z == 0.0f);
+        CHECK(st.orientation.w == 1.0f);
+        CHECK(st.axisUnit.x == Catch::Approx(std::cos(1.0f)).margin(1e-5f));
+        CHECK(st.axisUnit.y == Catch::Approx(std::sin(1.0f)).margin(1e-5f));
+    }
+
+    SECTION("render mode 8 at the emitter's orientation") {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->renderMode = pd3::PrtRenderMode::UnorientedAlt;
+        pd3::Emitter e;
+        const pd3::ParticleState st = born(d, e);
+        CHECK(st.orientation.z == turned.z);
+        CHECK(st.orientation.w == turned.w);
+    }
+
+    SECTION("a spinning system facing the camera") {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->renderMode = pd3::PrtRenderMode::Unoriented;
+        d->channels[pd3::kChSpinRate] = ConstPath(0.01f);
+        d->DeriveCapabilities();
+        REQUIRE(d->Cap(pd3::kCapSpin));
+        pd3::Emitter e;
+        const pd3::ParticleState st = born(d, e);
+        // The quad's normal is the frame's Z: back along the view, less the
+        // one birth step of spin.
+        const Vector3f n = st.orientation.rotate_vector({0, 0, 1});
+        CHECK(-(n.x * 0.6f + n.y * 0.8f) > 0.99f);
+    }
+}
+
+TEST_CASE("d3 particle: a child actor is sized by its actor's scale tags", "[d3][particle]") {
+    using whiteout::flakes::renderer::particle::ChildModelEvent;
+    // The emit path reads tag 65543 and adds a draw times tag 65544
+    // (@0x71000B1E38), then multiplies the birth size channel by it.
+    const auto sizes = [](f32 scale, f32 width) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = pd3::SystemType::Ribbon;
+        d->snoActor = 4242;
+        d->emissionPeriod = 1.0f;
+        d->lifetime = 1.0f;
+        d->actorScale = scale;
+        d->actorScaleRandom = width;
+        d->channels[pd3::kChTargetCount] = ConstPath(6.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(60.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(2.0f);
+        d->DeriveCapabilities();
+        pd3::Emitter em;
+        em.SetD3Desc(d);
+        em.SetVisible(true);
+        u32 next = 1;
+        em.SetChildOwner(7, 3, [&next] { return next++; });
+        em.SetWorldPosition({0, 0, 0});
+        em.Update(1.0f / 60.0f, 1.0f);
+        std::vector<ChildModelEvent> events;
+        em.CollectOutputEvents(events);
+        std::vector<f32> out;
+        for (const ChildModelEvent& ev : events) {
+            const auto& c = ev.transform.data[0];
+            out.push_back(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]));
+        }
+        return out;
+    };
+    const std::vector<f32> fixed = sizes(1.5f, 0.0f);
+    REQUIRE(fixed.size() == 6);
+    for (f32 s : fixed)
+        CHECK(s == Catch::Approx(3.0f).margin(1e-4f));
+    const std::vector<f32> wide = sizes(1.5f, 0.5f);
+    REQUIRE(wide.size() == 6);
+    std::set<f32> distinct;
+    for (f32 s : wide) {
+        CHECK(s >= 3.0f - 1e-4f);
+        CHECK(s < 4.0f);
+        distinct.insert(s);
+    }
+    CHECK(distinct.size() > 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -19,12 +19,12 @@
 #include "oracle_golden.h"
 
 #include "io/d3/d3_types.h"
-#include "renderer/particle/d3_channels.h"
-#include "renderer/particle/d3_emitter.h"
-#include "renderer/particle/d3_orientation.h"
-#include "renderer/particle/d3_particle.h"
-#include "renderer/particle/d3_path.h"
-#include "renderer/particle/particle_pool.h"
+#include "renderer/particle/base/particle_pool.h"
+#include "renderer/particle/d3/d3_channels.h"
+#include "renderer/particle/d3/d3_emitter.h"
+#include "renderer/particle/d3/d3_orientation.h"
+#include "renderer/particle/d3/d3_particle.h"
+#include "renderer/particle/d3/d3_path.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -624,7 +624,7 @@ TEST_CASE("oracle A4: the birth record, draw for draw", "[d3][oracle][a4]") {
     const auto doc = LoadGolden("a4_init_life_and_size");
     const auto& cases = (*doc)["cases"];
     REQUIRE(cases.Size() >= 18);
-    std::size_t sawType1 = 0, sawFloor = 0;
+    std::size_t sawType1 = 0, sawFloor = 0, sawTurned = 0;
     for (std::size_t i = 0; i < cases.Size(); ++i) {
         const auto& c = cases[i];
         const auto& in = c["in"];
@@ -654,6 +654,9 @@ TEST_CASE("oracle A4: the birth record, draw for draw", "[d3][oracle][a4]") {
         const Vector3f pos{in["pos"][0].F(), in["pos"][1].F(), in["pos"][2].F()};
         const Vector3f prev{in["prev_pos"][0].F(), in["prev_pos"][1].F(), in["prev_pos"][2].F()};
         const f32 dt = in["dt"].F();
+        Quaternion quat = Quaternion::identity();
+        if (!in["quat"].IsNull())
+            quat = {in["quat"][0].F(), in["quat"][1].F(), in["quat"][2].F(), in["quat"][3].F()};
 
         pd3::MwcRng rng = pd3::MwcRng::Seed(0x1234567u);
         const auto& births = c["out"]["births"];
@@ -674,7 +677,15 @@ TEST_CASE("oracle A4: the birth record, draw for draw", "[d3][oracle][a4]") {
 
             pd3::ParticleState st;
             st.seed = draw.seed;
-            pd3::InitLifeAndSize(rng, d, ctx, prev, pos, 1.0f, dt, st);
+            pd3::InitLifeAndSize(rng, d, ctx, prev, pos, 1.0f, dt, quat, st);
+            if (!b["axis_unit"].IsNull()) {
+                for (std::size_t a = 0; a < 3; ++a)
+                    CHECK(SameBits(st.axisUnit.data[a], b["axis_unit"][a].F()));
+                for (std::size_t a = 0; a < 4; ++a)
+                    CHECK(SameBits(st.birthEmitterQuat.data[a], b["birth_quat"][a].F()));
+                if (quat.w != 1.0f)
+                    ++sawTurned;
+            }
             CHECK(SameBits(st.baseSize, b["base_size"].F()));
             CHECK(SameBits(st.lifetime, b["life"].F()));
             if (d.Cap(pd3::kCapSpin)) {
@@ -703,6 +714,7 @@ TEST_CASE("oracle A4: the birth record, draw for draw", "[d3][oracle][a4]") {
     // zero lifetime to a frame rather than leaving it to be rejected.
     CHECK(sawType1 > 0);
     CHECK(sawFloor > 0);
+    CHECK(sawTurned > 0);
 }
 
 // ---------------------------------------------------------------------------

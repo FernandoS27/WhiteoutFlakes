@@ -1,7 +1,7 @@
 #pragma once
 
 #include "bls_permuter.h"
-#include "particle/particle_material.h"
+#include "renderer/particle/output/particle_material.h"
 #include "types.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"

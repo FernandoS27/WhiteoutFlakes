@@ -185,7 +185,7 @@ const NoiseTable& GlobalNoiseTable();
 // the control point that puts it there —
 // `c = (k1 − (1−t)²·k0 − t²·k2) / (2t(1−t))`. `UpdateAnimatedParams` runs it on
 // the sampled keys whenever a channel's smoothing is Bezier (2); the port's
-// caller is `particle::Sc2ConvertBezierKeys`.
+// caller is `particle::sc2::ConvertBezierKeys`.
 //
 // Note whose `midTime`: the emitter passes `sizeMidTime` for size, rotation AND
 // colour (RE §5.4), so a model whose `colorMidTime` differs gets a control

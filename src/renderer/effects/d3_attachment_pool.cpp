@@ -5,10 +5,10 @@
 #include "io/d3/d3_particle_adapter.h"
 #include "renderer/effects/event_crossing.h"
 #include "renderer/model/model_instance.h"
-#include "renderer/particle/d3_emitter.h"
+#include "renderer/particle/base/rnd_seed.h"
+#include "renderer/particle/d3/d3_emitter.h"
 #include "renderer/particle/emitter_factory.h"
 #include "renderer/particle/particle_service.h"
-#include "renderer/particle/rnd_seed.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 
 #include <utility>
@@ -105,7 +105,7 @@ void D3AttachmentPool::Tick(Actor& actor, i32 activeSeq, i32 localTimeMs, i32 se
                     e.dead = true;
                     continue;
                 }
-                auto desc = io::d3::BuildD3EmitterDesc(*prt, e.snoParticle);
+                auto desc = io::d3::BuildD3EmitterDesc(*prt, e.snoParticle, cache_);
                 profiles::diablo3::D3ResolveParticleMaterial(*prt, cache_, desc->d3mat);
                 profiles::diablo3::D3BindParticleTextures(actor, desc);
                 e.emitterId = nextEmitterId_++;

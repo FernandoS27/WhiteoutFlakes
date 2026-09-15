@@ -64,7 +64,7 @@
 // ============================================================================
 
 #include "io/m3/m3_animation.h"
-#include "renderer/particle/emit_mesh.h"
+#include "renderer/particle/base/emit_mesh.h"
 #include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/model_source.h"
 

@@ -17,10 +17,10 @@
 
 #include "io/m3/m3_billboard.h"
 #include "io/mdx_animation.h"
-#include "renderer/particle/particle_curve.h"
-#include "renderer/particle/particle_motion.h"
-#include "renderer/particle/particle_shape.h"
-#include "renderer/particle/particle_stages_sc2.h"
+#include "renderer/particle/base/particle_curve.h"
+#include "renderer/particle/base/particle_motion.h"
+#include "renderer/particle/base/particle_shape.h"
+#include "renderer/particle/sc2/particle_stages_sc2.h"
 #include "renderer/ribbon/ribbon_emitter.h"
 #include "renderer/sc2/sc2_rng.h"
 #include "renderer/types.h"
@@ -351,7 +351,7 @@ constexpr Vector3f kUp{0.0f, 0.0f, 1.0f};
 
 std::vector<f32> Sc2Polars(u32 seed, f32 horizontal, f32 vertical) {
     sc2r::Rng rng(seed, seed * 2654435761u);
-    part::Sc2SpawnVelInputs in;
+    part::sc2::SpawnVelInputs in;
     in.velocityType = 0;
     in.spawnHorizontal = horizontal;
     in.spawnVertical = vertical;
@@ -359,7 +359,7 @@ std::vector<f32> Sc2Polars(u32 seed, f32 horizontal, f32 vertical) {
     in.speedRandom = 1.0f;
     std::vector<f32> out;
     for (int i = 0; i < kDraws; ++i)
-        out.push_back(PolarOf(part::Sc2SampleSpawnVelocity(rng, in, kAtOrigin, kUp)));
+        out.push_back(PolarOf(part::sc2::SampleSpawnVelocity(rng, in, kAtOrigin, kUp)));
     return out;
 }
 
@@ -391,7 +391,7 @@ TEST_CASE("E2 a line emitter's fan is the cone with no vertical spread",
     const f32 rad = lat * kPiF / 180.0f;
     part::RndSeed rnd(0xBEEFu);
     sc2r::Rng rng(11u, 0x01020304u);
-    part::Sc2SpawnVelInputs in;
+    part::sc2::SpawnVelInputs in;
     in.spawnHorizontal = rad;
     in.spawnVertical = 0.0f;
     in.speed = 1.0f;
@@ -400,7 +400,7 @@ TEST_CASE("E2 a line emitter's fan is the cone with no vertical spread",
     f32 wc3Off = 0.0f, sc2Off = 0.0f;
     for (int i = 0; i < kDraws; ++i) {
         const Vector3f w = Wc3Spawn(rnd, lat, true, 0.0f, 0.0f).localVel;
-        const Vector3f s = part::Sc2SampleSpawnVelocity(rng, in, kAtOrigin, kUp);
+        const Vector3f s = part::sc2::SampleSpawnVelocity(rng, in, kAtOrigin, kUp);
         // The fan lies in the X-Z plane of the bone in BOTH -- the frame claim.
         wc3Off = std::max(wc3Off, std::fabs(w.y));
         sc2Off = std::max(sc2Off, std::fabs(s.y));
@@ -417,7 +417,7 @@ TEST_CASE("E2 a line emitter's fan is the cone with no vertical spread",
     in.spawnHorizontal = rad * 0.5f;
     std::vector<f32> halfFan;
     for (int i = 0; i < kDraws; ++i) {
-        const Vector3f s = part::Sc2SampleSpawnVelocity(rng2, in, kAtOrigin, kUp);
+        const Vector3f s = part::sc2::SampleSpawnVelocity(rng2, in, kAtOrigin, kUp);
         halfFan.push_back(std::atan2(-s.x, s.z));
     }
     CHECK(Ks(wc3Fan, halfFan) > 0.2f);
@@ -427,8 +427,8 @@ TEST_CASE("E2 the spawn plane lays its width across the bone's X", "[wc3_sc2][eq
     const f32 width = 40.0f, length = 20.0f;
     part::RndSeed rnd(0xC0FFEEu);
     sc2r::Rng rng(5u, 0x0A0B0C0Du);
-    part::Sc2SpawnPosInputs in;
-    in.shape = part::Sc2SpawnShape::Plane;
+    part::sc2::SpawnPosInputs in;
+    in.shape = part::sc2::SpawnShape::Plane;
     in.shapeOuter = {width * kLengthScale, length * kLengthScale, 0.0f};
     Vector3f wMin{1e9f, 1e9f, 1e9f}, wMax{-1e9f, -1e9f, -1e9f};
     Vector3f sMin = wMin, sMax = wMax;
@@ -439,7 +439,7 @@ TEST_CASE("E2 the spawn plane lays its width across the bone's X", "[wc3_sc2][eq
     u32 nonFinite = 0;
     for (int i = 0; i < kDraws; ++i) {
         const Vector3f w = Wc3Spawn(rnd, 0.0f, false, width, length).localPos * kLengthScale;
-        const Vector3f s = part::Sc2SampleSpawnPosition(rng, in);
+        const Vector3f s = part::sc2::SampleSpawnPosition(rng, in);
         nonFinite += (std::isfinite(w.x) && std::isfinite(s.x)) ? 0u : 1u;
         grow(wMin, wMax, w);
         grow(sMin, sMax, s);
@@ -465,7 +465,7 @@ TEST_CASE("E2 a particle falls as far under the crossed gravity", "[wc3_sc2][equ
         part::IntegrateWc3(p, m, 1.0f / 60.0f);
 
     const auto fall = [&](f32 parGravity) {
-        part::Sc2AnalyticInputs in;
+        part::sc2::AnalyticInputs in;
         in.velocity0 = {0.0f, 0.0f, 30.0f * kLengthScale};
         in.birthTime = 0.0f;
         in.deathTime = 10.0f;
@@ -477,7 +477,7 @@ TEST_CASE("E2 a particle falls as far under the crossed gravity", "[wc3_sc2][equ
         // gravity`, the scale 1 in a game (R1). The shader negates it into a
         // helper that subtracts, so a negative `PAR_.gravity` falls.
         in.gravityZ = parGravity;
-        return part::Sc2StepAnalytic(in).position.z / kLengthScale;
+        return part::sc2::StepAnalytic(in).position.z / kLengthScale;
     };
     const f32 chosen = fall(-gravity * kLengthScale);
     INFO("wc3 " << p.position.z << ", crossed " << chosen);
@@ -495,16 +495,16 @@ TEST_CASE("E2 a sprite sheet runs its cells over the same ages, up to StarCraft 
     wc3.AddSegment(1.0f, 8, 15, 1);
 
     const auto sc2Cell = [](f32 age, const std::array<f32, 3>& frames, f32 mid) {
-        part::Sc2QuadInput v;
-        part::Sc2QuadBatch b;
+        part::sc2::QuadInput v;
+        part::sc2::QuadBatch b;
         b.flipbookMidKeyTime = mid;
         b.flipbookColumns = 4.0f;
         b.flipbookFrames = frames;
         b.cellSize = {0.25f, 0.25f};
-        part::Sc2QuadFlags fl;
+        part::sc2::QuadFlags fl;
         fl.flipbookUv = true;
         const i16 corner[2] = {-1, 1};
-        const Vector2f uv = part::Sc2ParticleUv(v, corner, age, b, fl);
+        const Vector2f uv = part::sc2::ParticleUv(v, corner, age, b, fl);
         const int x = static_cast<int>(std::floor(uv.x / 0.25f + 1e-3f));
         const int y = static_cast<int>(std::floor(uv.y / 0.25f + 1e-3f));
         return y * 4 + x;
@@ -537,19 +537,19 @@ TEST_CASE("E2 a tail is as long as Warcraft III's velocity times its time",
     const f32 tailTime = 0.5f;  // seconds
     const f32 speedWc3 = 300.0f;
     const auto length = [&](f32 tailLength) {
-        part::Sc2QuadInput v;
+        part::sc2::QuadInput v;
         // The size lanes: the key (full width 2 s L) halved, as u16 * 1/256.
         const f32 half = scale * kLengthScale;
         v.size = {half * 256.0f, half * 256.0f, half * 256.0f, 256.0f};
         v.velocity = {speedWc3 * kLengthScale, 0.0f, 0.0f};
         v.instanceVec = {tailLength, 0.0f, 0.0f};
         v.deathTime = 1.0f;
-        part::Sc2QuadBatch b;
-        part::Sc2QuadCamera cam;
+        part::sc2::QuadBatch b;
+        part::sc2::QuadCamera cam;
         cam.direction = {0.0f, 1.0f, 0.0f};
-        part::Sc2QuadFlags fl;
+        part::sc2::QuadFlags fl;
         fl.instanceType = 10; // Trail
-        const part::Sc2QuadResult q = part::Sc2ExpandQuad(v, b, cam, fl);
+        const part::sc2::QuadResult q = part::sc2::ExpandQuad(v, b, cam, fl);
         f32 lo = 1e9f, hi = -1e9f;
         for (const auto& c : q.corner) {
             lo = std::min(lo, c.position.x);
@@ -573,13 +573,13 @@ TEST_CASE("E2 a cone past 120 degrees is nearest StarCraft II's random sphere",
     // shipped emitters are 90 or wider, 411 of them exactly 180 (C0.5).
     const auto sphere = [](u32 seed) {
         sc2r::Rng rng(seed, seed * 2654435761u);
-        part::Sc2SpawnVelInputs in;
+        part::sc2::SpawnVelInputs in;
         in.velocityType = 3;
         in.speed = 1.0f;
         in.speedRandom = 1.0f;
         std::vector<f32> out;
         for (int i = 0; i < kDraws; ++i)
-            out.push_back(PolarOf(part::Sc2SampleSpawnVelocity(rng, in, kAtOrigin, kUp)));
+            out.push_back(PolarOf(part::sc2::SampleSpawnVelocity(rng, in, kAtOrigin, kUp)));
         return out;
     };
     for (const f32 lat : {90.0f, 150.0f, 180.0f}) {
@@ -602,7 +602,7 @@ TEST_CASE("E2 a spawned model stands unturned at its size, as Warcraft III stamp
     // at scale 1 (`ChildModelEmitter::TransformFor`). The crossing writes a
     // world-space model particle facing world -Y with a size key of 1 (C8.1).
     const auto pose = [](u32 instanceType, const Vector3f& angle) {
-        part::Sc2ModelPoseInputs in;
+        part::sc2::ModelPoseInputs in;
         in.position = {1.5f, -2.0f, 0.75f};
         in.velocity = {3.0f, 1.0f, -4.0f};
         in.birthTime = 0.0f;
@@ -622,12 +622,12 @@ TEST_CASE("E2 a spawned model stands unturned at its size, as Warcraft III stamp
         // identity by accident.
         in.camera = {Vector3f{0.8f, 0.6f, 0.0f}, Vector3f{-0.42f, 0.56f, -0.71f},
                      Vector3f{-0.42f, 0.56f, 0.71f}};
-        return part::Sc2ModelParticlePose(in);
+        return part::sc2::ModelParticlePose(in);
     };
     const auto turn = [](const std::array<f32, 4>& q) {
         return std::acos(std::min(std::fabs(q[3]), 1.0f)) * 2.0f;
     };
-    const part::Sc2ModelPose chosen = pose(3, {0.0f, -1.0f, 0.0f});
+    const part::sc2::ModelPose chosen = pose(3, {0.0f, -1.0f, 0.0f});
     INFO("chosen turn " << turn(chosen.rotation) << ", scale " << chosen.scale.x);
     CHECK(turn(chosen.rotation) < 2e-3f);
     CHECK(chosen.scale.x == Catch::Approx(1.0f));

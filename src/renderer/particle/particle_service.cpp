@@ -1,6 +1,6 @@
 #include "renderer/particle/particle_service.h"
 
-#include "renderer/particle/sc2_runtime.h"
+#include "renderer/particle/sc2/sc2_runtime.h"
 
 namespace whiteout::flakes::renderer::particle {
 
@@ -19,7 +19,7 @@ void ParticleService::AddEmitter(ModelId model, i32 emitterId,
     if (groundQuery_ && emitter)
         emitter->SetGroundQuery(groundQuery_);
     if (Emitter2* e2 = emitter ? emitter->AsEmitter2() : nullptr)
-        e2->AttachSc2PendingList(&sc2PendingModels_);
+        e2->AttachPendingListSc2(&sc2PendingModels_);
     emitters_[{model, output, emitterId}] = std::move(emitter);
 }
 
@@ -112,7 +112,7 @@ bool ParticleService::RemoveEmitter(ModelId model, ParticleOutput output, i32 em
 
 void ParticleService::Simulate(f32 dt) {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<RoutedSpawnRequest> routed;
+    std::vector<sc2::RoutedSpawnRequest> routed;
     for (auto& [k, e] : emitters_) {
         e->Update(dt, emissionScaler_);
         Emitter2* e2 = e->AsEmitter2();
@@ -126,7 +126,7 @@ void ParticleService::Simulate(f32 dt) {
         // draws, so both id spaces are asked.
         routed.clear();
         e2->DrainSpawnRequests(routed);
-        for (const RoutedSpawnRequest& r : routed) {
+        for (const sc2::RoutedSpawnRequest& r : routed) {
             auto it = emitters_.find(EmitterKey{k.model, ParticleOutput::Billboard, r.targetEmitterId});
             if (it == emitters_.end())
                 it = emitters_.find(
@@ -141,9 +141,9 @@ void ParticleService::Simulate(f32 dt) {
     // update job. The count is re-read each iteration, as both of retail's
     // loops re-read theirs.
     for (usize i = 0; i < sc2PendingModels_.size(); ++i) {
-        const Sc2PendingModel entry = sc2PendingModels_[i];
+        const sc2::PendingModel entry = sc2PendingModels_[i];
         if (entry.runtime != nullptr && entry.runtime->host != nullptr)
-            entry.runtime->host->ServiceSc2PendingModel(entry.node);
+            entry.runtime->host->ServicePendingModelSc2(entry.node);
     }
     sc2PendingModels_.clear();
 
@@ -207,21 +207,10 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, const Particle
     if (out.multiTex)
         multiTexIn.extraUV = &out.multiTex->extraUV;
 
-    // One emitter's own particles, then its trails'. A trail is an ordinary
-    // billboard emitter with its own texture, blend mode and sheet, so it needs
-    // its own draw list; it sorts on its OWNER's origin so the two stay
-    // together in the transparent pass instead of drifting apart.
-    //
-    // A refraction emitter is routed to its own arrays instead — it belongs to
-    // one pass or the other, never both.
-    //
-    // A multi-texture emitter takes a third route: its vertices need the extra
-    // UV sets so they go to their own stream, but the emitter itself is
-    // ordinary transparent colour, so its DRAW joins the sorted list and the
-    // material's `multiTexture` bit is what tells the dispatcher which stream
-    // the offsets belong to. With nowhere to put them it falls back to the
-    // single-texture path: the result is too bright and misses two layers, but
-    // an approximate particle beats a missing one.
+    // One emitter's own particles, then its trails' (own draw list, sorted on the
+    // OWNER's origin). Refraction goes to its own arrays; multi-texture puts its
+    // vertices in its own stream and its DRAW in the sorted list, flagged by the
+    // material's `multiTexture` bit. M2_PARTICLE_DESIGN.md §11.10.
     auto build = [&](const ParticleEmitter& e, const EmitterDrawHeader& h, ModelId model, i32 id,
                      const Vector3f& origin) {
         if (h.refraction) {

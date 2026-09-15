@@ -21,10 +21,10 @@ class ISoundEmitter;
 } // namespace whiteout::flakes::renderer
 namespace whiteout::flakes::renderer::effects {
 class SpnSpawner;
+class SplatService;
 }
 namespace whiteout::flakes::renderer::particle {
 class ParticleService;
-class SplatService;
 } // namespace whiteout::flakes::renderer::particle
 namespace whiteout::flakes::renderer::ribbon {
 class RibbonService;
@@ -62,7 +62,7 @@ struct ActorEvalContext {
     std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)> queryGround;
     SceneManager* scene = nullptr;
     particle::ParticleService* particles = nullptr;
-    particle::SplatService* splats = nullptr;
+    effects::SplatService* splats = nullptr;
     ribbon::RibbonService* ribbons = nullptr;
     corn_effects::CornEffectsService* cornEffects = nullptr;
     effects::SpnSpawner* spnSpawner = nullptr;

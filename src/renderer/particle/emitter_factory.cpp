@@ -1,10 +1,10 @@
 #include "renderer/particle/emitter_factory.h"
 
-#include "renderer/particle/child_model_emitter.h"
-#include "renderer/particle/d3_emitter.h"
-#include "renderer/particle/model_particle_emitter.h"
-#include "renderer/particle/particle2_emitter.h"
-#include "renderer/particle/sc2_model_particle_emitter.h"
+#include "renderer/particle/base/child_model_emitter.h"
+#include "renderer/particle/base/model_particle_emitter.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/d3/d3_emitter.h"
+#include "renderer/particle/sc2/sc2_model_particle_emitter.h"
 
 namespace whiteout::flakes::renderer::particle {
 

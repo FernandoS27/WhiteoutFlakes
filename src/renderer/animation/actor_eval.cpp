@@ -17,14 +17,14 @@
 #include "effects/spn_spawner.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
-#include "particle/child_model_emitter.h"
+#include "renderer/particle/base/child_model_emitter.h"
 #if WDX_ENABLE_D3
-#include "particle/d3_emitter.h"
+#include "renderer/particle/d3/d3_emitter.h"
 #endif
-#include "particle/particle_service.h"
-#include "particle/rnd_seed.h"
-#include "particle/sc2_compose.h"
-#include "particle/splat_service.h"
+#include "effects/splat_service.h"
+#include "renderer/particle/base/rnd_seed.h"
+#include "renderer/particle/particle_service.h"
+#include "renderer/particle/sc2/sc2_compose.h"
 #include "ribbon/ribbon_service.h"
 #include "scene_manager.h"
 #include "whiteout/flakes/model_types.h"
@@ -154,11 +154,11 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         if (em->IsSc2()) {
             // What a model particle's pose reads from the scene, and the
             // actor's world scale it runs its SC2 units against.
-            em->SetSc2Scene(view, mi.worldScale);
+            em->SetSceneSc2(view, mi.worldScale);
             // Shape 7 is born on the live surface. Node matrices, not the
             // palette's offsets, for the reason the Diablo III push gives:
             // these were written by ApplyBoneMatrices at the top of this pass.
-            if (em->Desc().sc2.emit.shape == static_cast<u8>(particle::Sc2SpawnShape::Mesh)) {
+            if (em->Desc().sc2.emit.shape == static_cast<u8>(particle::sc2::SpawnShape::Mesh)) {
                 const auto data = mi.render.skinning.SharedData();
                 em->SetEmitMeshPose(mi.render.skinning.NodeMatrices(),
                                     data ? std::span<const Matrix44f>(data->inverseBindMatrices)
@@ -172,7 +172,7 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         // squirt edge below. Every player the model is playing, not the top
         // layer alone.
         if (em->IsSc2() && i < mi.render.sc2ParticleClocks.size()) {
-            const particle::Sc2Crossing crossing = particle::Sc2CrossSquirtKeys(
+            const particle::sc2::Crossing crossing = particle::sc2::CrossSquirtKeys(
                 em->Desc().sc2, state.sc2AnimPlayers, mi.render.sc2ParticleClocks[i], frameDtMs);
             for (usize s = 0; s < crossing.bursts.size(); ++s) {
                 if (crossing.bursts[s] != 0)
@@ -180,7 +180,7 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
             }
             // The pre-roll follows the ACTIVE sequence, which the player list
             // does not name: a global loop starting under it asks nothing.
-            em->SetSc2ActiveSequence(particle::Sc2ActiveSequence(state.sc2AnimPlayers));
+            em->SetActiveSequenceSc2(particle::sc2::ActiveSequence(state.sc2AnimPlayers));
         }
 
         // The squirt edge (rate crossing zero) is actor state, not emitter

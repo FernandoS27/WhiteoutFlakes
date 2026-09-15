@@ -721,7 +721,7 @@ gfx::PipelineHandle M3StandardShading::GetOrBuildWorldVertexPso(const WorldVerte
     // quad DOES carry a normal (OP12 writes one per corner) and this drops it:
     // the VS builds its shading frame from the view vector instead, which for
     // a camera-facing billboard is the vector that normal holds anyway —
-    // `Sc2ExpandQuad` writes `cross(right, up)`, and rotating the camera basis
+    // `sc2::ExpandQuad` writes `cross(right, up)`, and rotating the camera basis
     // about `direction` leaves that cross alone, so it is `-direction` for
     // every instance type this phase draws. The types where it would not be
     // are X4's, and they are skipped rather than drawn.

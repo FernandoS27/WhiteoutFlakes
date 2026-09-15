@@ -61,14 +61,6 @@ constexpr f32 kColorScale = 0.5f;
 // for themselves by carrying the coverage the debug view shows.
 constexpr gfx::Format kMaskFormat = gfx::Format::R16G16B16A16_FLOAT;
 
-Matrix44f Transposed(const Matrix44f& m) {
-    Matrix44f o;
-    for (i32 r = 0; r < 4; ++r)
-        for (i32 c = 0; c < 4; ++c)
-            o.data[r][c] = m.data[c][r];
-    return o;
-}
-
 void SetBlendFor(gfx::BlendDesc& b, particle::FilterMode mode) {
     b.enable = true;
     b.opColor = gfx::BlendOp::Add;
@@ -232,7 +224,8 @@ void RefractionService::Shutdown() {
             gfx_->Destroy(*s);
         *s = gfx::ShaderHandle::Invalid;
     }
-    for (gfx::BufferHandle* b : {&vb_, &maskVsCb_, &maskPsCb_, &applyCb_}) {
+    vb_.Release(*gfx_);
+    for (gfx::BufferHandle* b : {&maskVsCb_, &maskPsCb_, &applyCb_}) {
         if (*b != gfx::BufferHandle::Invalid)
             gfx_->Destroy(*b);
         *b = gfx::BufferHandle::Invalid;
@@ -251,7 +244,6 @@ void RefractionService::Shutdown() {
     targetSceneFmt_ = gfx::Format::Unknown;
     redirected_ = false;
     targetW_ = targetH_ = 0;
-    vbCapacity_ = 0;
     shadersReady_ = false;
     gfx_ = nullptr;
 }
@@ -367,36 +359,8 @@ bool RefractionService::UploadVertices(const particle::MultiTexGeometry& geo) {
     if (geo.extraUV.size() != geo.vertices.size())
         return false;
 
-    if (vb_ == gfx::BufferHandle::Invalid || count > vbCapacity_) {
-        if (vb_ != gfx::BufferHandle::Invalid)
-            gfx_->Destroy(vb_);
-        constexpr i32 kFloor = 1024;
-        const i32 newSize = (count > kFloor) ? count : kFloor;
-        gfx::BufferDesc bd;
-        bd.size = static_cast<u64>(sizeof(MaskVertex)) * static_cast<u64>(newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        bd.ringSlotsHint = 4;
-        vb_ = gfx_->CreateBuffer(bd);
-        vbCapacity_ = newSize;
-    }
-    if (vb_ == gfx::BufferHandle::Invalid)
-        return false;
-
-    void* mapped = gfx_->MapBuffer(vb_);
-    if (!mapped)
-        return false;
-    auto* dst = static_cast<MaskVertex*>(mapped);
-    for (i32 i = 0; i < count; ++i) {
-        const Vertex& v = geo.vertices[static_cast<usize>(i)];
-        const Vector4f& extra = geo.extraUV[static_cast<usize>(i)];
-        dst[i].position = v.position;
-        dst[i].color = v.color;
-        dst[i].uv0 = v.uv;
-        dst[i].uv1 = {extra.x, extra.y};
-        dst[i].uv2 = {extra.z, extra.w};
-    }
-    gfx_->UnmapBuffer(vb_);
-    return true;
+    return vb_.Upload<MaskVertex>(
+        *gfx_, count, 1024, [&geo](MaskVertex* dst) { particle::InterleaveMultiTex(geo, dst); });
 }
 
 void RefractionService::Run(gfx::IGFXCommandList* cmd, const RefractionFrameInputs& frame,
@@ -444,8 +408,8 @@ void RefractionService::Run(gfx::IGFXCommandList* cmd, const RefractionFrameInpu
         if (void* p = gfx_->MapBuffer(maskVsCb_)) {
             auto* cb = static_cast<MaskVsCb*>(p);
             cb->world = Matrix44f::identity();
-            cb->view = Transposed(frame.view);
-            cb->projection = Transposed(frame.projection);
+            cb->view = frame.view.transpose();
+            cb->projection = frame.projection.transpose();
             gfx_->UnmapBuffer(maskVsCb_);
         }
         if (void* p = gfx_->MapBuffer(maskPsCb_)) {
@@ -486,7 +450,7 @@ void RefractionService::Run(gfx::IGFXCommandList* cmd, const RefractionFrameInpu
             // — hoisting the two CBs out of this loop leaves the vertex shader
             // reading an unbound matrix and the quads collapse to a point.
             cmd->BindPipeline(pso);
-            cmd->BindVertexBuffer(0, vb_, sizeof(MaskVertex));
+            cmd->BindVertexBuffer(0, vb_.Handle(), sizeof(MaskVertex));
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, maskVsCb_);
             // Slot 1, not 0: the mask shaders pin their two constant buffers to
             // b0 (vertex) and b1 (pixel), because slang assigns registers per

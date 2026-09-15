@@ -18,13 +18,13 @@
 #include "bls/scoped_cb.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
-#include "particle/child_model_emitter.h"
-#include "particle/d3_emitter.h"
-#include "particle/model_particle_emitter.h"
-#include "particle/particle2_emitter.h"
-#include "particle/rnd_seed.h"
 #include "render_service.h"
 #include "render_service_impl.h"
+#include "renderer/particle/base/child_model_emitter.h"
+#include "renderer/particle/base/model_particle_emitter.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/base/rnd_seed.h"
+#include "renderer/particle/d3/d3_emitter.h"
 
 #include <algorithm>
 #include <vector>

@@ -1,7 +1,9 @@
 #include "io/d3/d3_particle_adapter.h"
 
+#include "io/d3/d3_sno_cache.h"
 #include "io/d3/d3_types.h"
 
+#include "whiteout/sno/d3/native/character.h"
 #include "whiteout/sno/d3/native/types.h"
 
 #include <bit>
@@ -160,7 +162,8 @@ void BuildMaterial(const d3n::Particle& prt, pd3::MaterialDesc& out) {
 
 } // namespace
 
-std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i32 snoId) {
+std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i32 snoId,
+                                                     D3SnoCache* cache) {
     auto d = std::make_shared<pd3::EmitterDesc>();
 
     d->snoId = (snoId != -1) ? snoId : prt.dwSnoId;
@@ -184,6 +187,16 @@ std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i
     d->swayBaseAmount = prt.flSwayBaseAmount;
 
     d->snoActor = prt.snoActor.valid() ? prt.snoActor.id : -1;
+    if (cache && d->SpawnsChildActors()) {
+        if (const auto actor = cache->Actor(d->snoActor)) {
+            // Both tags are floats; the few stored as ints hold zero.
+            constexpr u32 kTagActorScale = 65543, kTagActorScaleRandom = 65544;
+            if (const auto v = d3n::tagMapValue(actor->arTagMap, kTagActorScale))
+                d->actorScale = std::bit_cast<f32>(*v);
+            if (const auto v = d3n::tagMapValue(actor->arTagMap, kTagActorScaleRandom))
+                d->actorScaleRandom = std::bit_cast<f32>(*v);
+        }
+    }
 
     // ---- emitter shape ----
     d->shape = static_cast<pd3::Shape>(prt.tEmitter.eEmitterShape);

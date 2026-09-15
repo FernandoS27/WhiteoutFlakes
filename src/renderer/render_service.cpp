@@ -451,7 +451,7 @@ DebugRenderer& RenderService::Debug() {
 particle::ParticleService& RenderService::Particles() {
     return impl_->activeServices_->particles;
 }
-particle::SplatService& RenderService::Splats() {
+effects::SplatService& RenderService::Splats() {
     return impl_->activeServices_->splats;
 }
 ribbon::RibbonService& RenderService::Ribbons() {
@@ -506,10 +506,10 @@ const distortion::DistortionService* RenderService::GetDistortionService() const
     return impl_->distortionService_.get();
 }
 #if WDX_ENABLE_M3
-sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() {
+renderer::sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() {
     return impl_->m3DeferredLightService_.get();
 }
-const sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() const {
+const renderer::sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() const {
     return impl_->m3DeferredLightService_.get();
 }
 #endif
@@ -739,10 +739,10 @@ gtao::GtaoService& RenderService::EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::G
 }
 
 #if WDX_ENABLE_M3
-sc2::M3DeferredLightService& RenderService::EnsureM3DeferredLightService(gfx::IGFXDevice& gfx,
+renderer::sc2::M3DeferredLightService& RenderService::EnsureM3DeferredLightService(gfx::IGFXDevice& gfx,
                                                                          gfx::GfxApi api) {
     if (!impl_->m3DeferredLightService_) {
-        impl_->m3DeferredLightService_ = std::make_unique<sc2::M3DeferredLightService>();
+        impl_->m3DeferredLightService_ = std::make_unique<renderer::sc2::M3DeferredLightService>();
         impl_->m3DeferredLightService_->Init(gfx, api);
     }
     return *impl_->m3DeferredLightService_;

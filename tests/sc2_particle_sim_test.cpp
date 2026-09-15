@@ -17,12 +17,12 @@
 
 #include "io/m3/m3_model_adapter.h"
 #include "m3_anim_builders.h"
-#include "renderer/particle/particle2_emitter.h"
+#include "renderer/particle/base/particle2_emitter.h"
+#include "renderer/particle/output/particle_geometry.h"
 #include "renderer/particle/particle_adapters.h"
-#include "renderer/particle/particle_geometry.h"
 #include "renderer/particle/particle_service.h"
-#include "renderer/particle/sc2_model_particle_emitter.h"
-#include "renderer/particle/sc2_tick.h"
+#include "renderer/particle/sc2/sc2_model_particle_emitter.h"
+#include "renderer/particle/sc2/sc2_tick.h"
 #include "renderer/profiles/sc2_heroes/m3_surface_table.h"
 
 #include <algorithm>
@@ -722,7 +722,7 @@ namespace {
 /// A frame state for one SC2 emitter of the test model. Value-initialised:
 /// the WC3 half of the struct is plain PODs, and a zero `transform` would put
 /// every particle through a collapsed matrix.
-renderer::model::FrameState::ParticleFrameState Sc2State(i32 id, f32 rate) {
+renderer::model::FrameState::ParticleFrameState StateSc2(i32 id, f32 rate) {
     renderer::model::FrameState::ParticleFrameState st{};
     st.emitterId = id;
     st.transform = Matrix44f::identity();
@@ -793,8 +793,8 @@ TEST_CASE("a collision spawn reaches its child through the service",
 
     const auto run = [&](int frames, f32 parentRate) {
         for (int k = 0; k < frames; ++k) {
-            parent->ApplyState(Sc2State(0, parentRate));
-            child->ApplyState(Sc2State(1, 0.0f));
+            parent->ApplyState(StateSc2(0, parentRate));
+            child->ApplyState(StateSc2(1, 0.0f));
             service.Simulate(1.0f / 60.0f);
         }
     };
@@ -860,8 +860,8 @@ TEST_CASE("a collision spawn reaches a model-particle child in the ChildModel id
     std::vector<particle::ChildModelEvent> events;
     i32 births = 0;
     for (int k = 0; k < 140; ++k) {
-        parent->ApplyState(Sc2State(0, 30.0f));
-        child->ApplyState(Sc2State(1, 0.0f));
+        parent->ApplyState(StateSc2(0, 30.0f));
+        child->ApplyState(StateSc2(1, 0.0f));
         service.Simulate(1.0f / 60.0f);
         service.DrainChildModelEvents(events);
         for (const auto& ev : events)
@@ -887,11 +887,11 @@ TEST_CASE("a burst queued before an emitter's first tick is not dropped",
     particle::Emitter2 em;
     em.SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
     em.QueueBurst(0, 5);
-    em.ApplyState(Sc2State(0, 0.0f));
+    em.ApplyState(StateSc2(0, 0.0f));
     em.Update(1.0f / 60.0f, 1.0f);
     CHECK(em.TotalAlive() == 5);
     // And spent with the frame: nothing more without a new burst.
-    em.ApplyState(Sc2State(0, 0.0f));
+    em.ApplyState(StateSc2(0, 0.0f));
     em.Update(1.0f / 60.0f, 1.0f);
     CHECK(em.TotalAlive() == 5);
 }
@@ -909,7 +909,7 @@ TEST_CASE("two SC2 emitters seeded apart do not emit one cloud", "[sc2_particle]
         particle::Emitter2 em;
         em.SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
         em.SetSeed(seed);
-        auto st = Sc2State(0, 30.0f);
+        auto st = StateSc2(0, 30.0f);
         st.sc2.size3 = {0.2f, 0.2f, 0.2f};
         st.sc2.sizeRandom3 = {1.0f, 1.0f, 1.0f};
         for (int frame = 0; frame < 30; ++frame) {
@@ -951,8 +951,8 @@ TEST_CASE("a rewound SimulateInit emitter pre-rolls again", "[sc2_particle][serv
     particle::Emitter2 em;
     em.SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
     const auto frame = [&] {
-        em.SetSc2ActiveSequence(0);
-        em.ApplyState(Sc2State(0, 60.0f));
+        em.SetActiveSequenceSc2(0);
+        em.ApplyState(StateSc2(0, 60.0f));
         em.Update(1.0f / 60.0f, 1.0f);
         return em.TotalAlive();
     };
@@ -975,7 +975,7 @@ TEST_CASE("an SC2 burst spawns its count whatever the actor's world scale",
     cfg.squirt.emplace_back();
     particle::Emitter2 em;
     em.SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
-    auto st = Sc2State(0, 0.0f);
+    auto st = StateSc2(0, 0.0f);
     st.unitScale = 100.0f;
     em.QueueBurst(0, 3);
     em.ApplyState(st);
@@ -1010,7 +1010,7 @@ TEST_CASE("an SC2 emitter at world scale 100 builds 100x its scale-1 geometry",
         // origin — both in the host's units.
         Matrix44f view = Matrix44f::identity();
         view.data[3][2] = -30.0f * unit;
-        auto st = Sc2State(0, 40.0f);
+        auto st = StateSc2(0, 40.0f);
         st.unitScale = unit;
         for (usize k = 0; k < 3; ++k)
             st.transform.data[k][k] = unit;
@@ -1033,7 +1033,7 @@ TEST_CASE("an SC2 emitter at world scale 100 builds 100x its scale-1 geometry",
         }
         for (int frame = 0; frame < 60; ++frame) {
             em.ApplyState(st);
-            em.SetSc2Scene(view, unit);
+            em.SetSceneSc2(view, unit);
             em.Update(1.0f / 60.0f, 1.0f);
         }
         std::vector<renderer::Vertex> verts;
@@ -1172,7 +1172,7 @@ TEST_CASE("SC2 model particles balance Birth against Death, each with a row of i
     i32 births = 0, deaths = 0, transforms = 0;
     std::vector<particle::ChildModelEvent> events;
     for (int frame = 0; frame < 240; ++frame) {
-        auto st = Sc2State(0, 30.0f);
+        auto st = StateSc2(0, 30.0f);
         st.sc2.lifetime = 0.5f;
         st.sc2.lifetimeRandom = 0.5f;
         raw->ApplyState(st);
@@ -1293,7 +1293,7 @@ TEST_CASE("an SC2 model particle that dies before the walk gets no model and lea
     for (int lifeMs = 70; lifeMs <= 200; lifeMs += 10) {
         ModelRig rig(4);
         for (int frame = 0; frame < 60; ++frame) {
-            auto st = Sc2State(0, 30.0f);
+            auto st = StateSc2(0, 30.0f);
             st.sc2.lifetime = static_cast<f32>(lifeMs) * 0.001f;
             st.sc2.lifetimeRandom = st.sc2.lifetime;
             rig.Step(st, 0.21f);
@@ -1312,7 +1312,7 @@ TEST_CASE("an SC2 model particle's transform follows its particle",
     // `SimulateParticles` re-poses a model at every sub-step. A pose written
     // only at birth would leave every child where its particle was born.
     ModelRig rig(64);
-    auto st = Sc2State(0, 30.0f);
+    auto st = StateSc2(0, 30.0f);
     st.sc2.speed = 60.0f; // straight up at rest
     u32 first = 0;
     f32 bornZ = 0.0f;
@@ -1364,7 +1364,7 @@ TEST_CASE("an SC2 Bezier size channel poses its model through the authored mid k
         for (int frame = 0; frame < 120 && scale == 0.0f; ++frame) {
             // A few particles up front and none after, so the first one ages
             // undisturbed through its one-second life.
-            auto st = Sc2State(0, frame < 3 ? 60.0f : 0.0f);
+            auto st = StateSc2(0, frame < 3 ? 60.0f : 0.0f);
             st.sc2.size3 = {1.0f, 4.0f, 1.0f};
             st.sc2.lifetime = 1.0f;
             st.sc2.lifetimeRandom = 1.0f;
@@ -1396,7 +1396,7 @@ TEST_CASE("an SC2 Bezier size channel poses its model through the authored mid k
 
 TEST_CASE("an SC2 camera-facing model particle is born on the scene camera's rows",
           "[sc2_particle][service][model]") {
-    // What `SetSc2Scene` hands the pose: right, view direction and up, in that
+    // What `SetSceneSc2` hands the pose: right, view direction and up, in that
     // order. The compose case pins the kernel's answer for given rows; this
     // pins which rows the emitter gives it.
     ModelRig rig(64, 0);
@@ -1406,12 +1406,12 @@ TEST_CASE("an SC2 camera-facing model particle is born on the scene camera's row
     view.data[0] = {c, s, 0.0f, 0.0f};
     view.data[1] = {-s * cp, c * cp, -sp, 0.0f};
     view.data[2] = {-s * sp, c * sp, cp, 0.0f};
-    rig.emitter->SetSc2Scene(view, 1.0f);
-    const particle::Sc2QuadCamera cam = particle::Sc2CameraFromView(view);
+    rig.emitter->SetSceneSc2(view, 1.0f);
+    const particle::sc2::QuadCamera cam = particle::sc2::CameraFromView(view);
 
     bool checked = false;
     for (int frame = 0; frame < 30 && !checked; ++frame) {
-        rig.Step(Sc2State(0, 30.0f));
+        rig.Step(StateSc2(0, 30.0f));
         for (const auto& ev : rig.last) {
             if (ev.kind != particle::ChildModelEvent::Kind::Birth)
                 continue;
@@ -1455,7 +1455,7 @@ TEST_CASE("an SC2 Mesh emitter is born only on the regions it names",
     particle::Emitter2* raw = em.get();
     service.AddEmitter(1, 0, std::move(em));
     for (int frame = 0; frame < 30; ++frame) {
-        raw->ApplyState(Sc2State(0, 120.0f));
+        raw->ApplyState(StateSc2(0, 120.0f));
         service.Simulate(1.0f / 60.0f);
     }
     REQUIRE(raw->TotalAlive() > 0);
@@ -1475,19 +1475,19 @@ TEST_CASE("a pending model particle that dies first is unregistered by swap-remo
     // RE §16.16: retail overwrites the dead entry with the LAST one. A stable
     // erase would keep the survivors' order and hand every element after the
     // death a different model from the one retail gives it.
-    particle::Sc2Runtime a;
-    particle::Sc2Runtime b;
-    particle::Sc2PendingModels list{{&a, 0}, {&a, 1}, {&b, 0}, {&a, 2}};
-    particle::Sc2SwapRemovePending(list, &a, 0);
+    particle::sc2::Runtime a;
+    particle::sc2::Runtime b;
+    particle::sc2::PendingModels list{{&a, 0}, {&a, 1}, {&b, 0}, {&a, 2}};
+    particle::sc2::SwapRemovePending(list, &a, 0);
     REQUIRE(list.size() == 3u);
     CHECK((list[0].runtime == &a && list[0].node == 2));
     CHECK((list[1].runtime == &a && list[1].node == 1));
     CHECK((list[2].runtime == &b && list[2].node == 0));
     // The node alone does not identify an entry: another emitter's node 1 is
     // not this one's.
-    particle::Sc2SwapRemovePending(list, &b, 1);
+    particle::sc2::SwapRemovePending(list, &b, 1);
     CHECK(list.size() == 3u);
-    particle::Sc2SwapRemovePending(list, &b, 0);
+    particle::sc2::SwapRemovePending(list, &b, 0);
     REQUIRE(list.size() == 2u);
     CHECK((list[0].runtime == &a && list[0].node == 2));
     CHECK((list[1].runtime == &a && list[1].node == 1));

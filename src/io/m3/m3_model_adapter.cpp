@@ -3,7 +3,7 @@
 #include "io/m3/m3_billboard.h"
 #include "io/m3/m3_pose_solvers.h"
 #if WDX_HAS_PHYSICS
-#include "renderer/particle/particle_stages_sc2.h"
+#include "renderer/particle/sc2/particle_stages_sc2.h"
 #include "renderer/profiles/sc2_heroes/sc2_cloth.h"
 #include "renderer/profiles/sc2_heroes/sc2_physics.h"
 #endif
@@ -2245,7 +2245,7 @@ void M3ModelAdapter::EvaluateParticles(std::span<const M3Layer> layers,
         for (std::size_t r = 0; r < 4; ++r)
             for (std::size_t c = 0; c < 4; ++c)
                 rows[r * 4 + c] = m.data[r][c];
-        const Vector3f lengths = renderer::particle::Sc2ChildScale(rows);
+        const Vector3f lengths = renderer::particle::sc2::ChildScale(rows);
         const auto onto = [&](i32 child) {
             if (child >= 0 && static_cast<std::size_t>(child) < emitterCount) {
                 pushedScale[static_cast<std::size_t>(child)] = lengths;
@@ -2279,7 +2279,7 @@ void M3ModelAdapter::EvaluateParticles(std::span<const M3Layer> layers,
                                  local.data[r][2] * local.data[r][2]);
             };
             const Vector3f localScale{rowLength(0), rowLength(1), rowLength(2)};
-            st.transform = renderer::particle::Sc2PushChildScale(modelBone(bone), localScale,
+            st.transform = renderer::particle::sc2::PushChildScale(modelBone(bone), localScale,
                                                                   pushedScale[i]) *
                            world;
         }
@@ -2402,7 +2402,7 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
         // Carried as the u16 the runtime's track table holds (OP7b's `values`
         // are u16). `ComputeEmitCount` then reads each crossed key back SIGNED
         // and floors a negative one at zero (RE §16.31), so a key with the high
-        // bit set owes no burst — `Sc2SquirtBurst` applies that at the sum.
+        // bit set owes no burst — `sc2::SquirtBurst` applies that at the sum.
         const auto take = [&keys](u16 stc, const auto& blk) {
             const std::size_t n = (std::min)(blk.timestamps.size(), blk.keys.size());
             for (std::size_t k = 0; k < n; ++k) {
@@ -2426,7 +2426,7 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
     // The pre-roll's peaks, one per container. `EmitBurst` reads the lifetime
     // track in the column the ACTIVE SEQUENCE's number names (RE §16.33), which
     // only the frame knows, so the desc holds every column's answer — each
-    // through the gated `Sc2PreRollPeak`: the curve seeded at zero, or the raw
+    // through the gated `sc2::PreRollPeak`: the curve seeded at zero, or the raw
     // init value where the container has no track. An unbound track has no
     // columns and budgets from its init value alone.
     const auto preRollPeaks = [this](const ::whiteout::m3::AnimRef<f32>& ref) {
@@ -2441,7 +2441,7 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
             if (!coll || !h.Valid())
                 continue;
             if (const auto* blk = BlockOf(*coll, h, static_cast<const f32*>(nullptr)))
-                peaks[stc] = renderer::particle::Sc2PreRollPeak(blk->keys, true, ref.initValue);
+                peaks[stc] = renderer::particle::sc2::PreRollPeak(blk->keys, true, ref.initValue);
         }
         return peaks;
     };

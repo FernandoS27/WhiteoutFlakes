@@ -17,7 +17,7 @@
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_template.h"
-#include "renderer/particle/splat_service.h"
+#include "renderer/effects/splat_service.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"

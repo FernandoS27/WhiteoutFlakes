@@ -76,10 +76,10 @@ class BlsShaderCache;
 } // namespace bls
 namespace effects {
 class SpnSpawner;
+class SplatService;
 }
 namespace particle {
 class ParticleService;
-class SplatService;
 } // namespace particle
 namespace ribbon {
 class RibbonService;
@@ -298,7 +298,7 @@ public:
 
     // ---- Per-actor effect services (of the ACTIVE scene) ----
     particle::ParticleService& Particles();
-    particle::SplatService& Splats();
+    effects::SplatService& Splats();
     ribbon::RibbonService& Ribbons();
     corn_effects::CornEffectsService& CornEffects();
     effects::SpnSpawner& Spn();
