@@ -14,6 +14,7 @@
 #include "renderer/particle/particle_motion.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/particle/particle_trace.h"
+#include "renderer/particle/splat_service.h"
 
 #include <algorithm>
 #include <cmath>
@@ -262,7 +263,7 @@ TEST_CASE("Geometry is one quad per alive particle per enabled end") {
 
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> draws;
-    svc.BuildGeometry(TraceView(), verts, draws);
+    svc.BuildGeometry(TraceView(), {verts, draws});
 
     REQUIRE(draws.size() == 1u);
     REQUIRE(draws[0].model == 1u);
@@ -285,7 +286,7 @@ TEST_CASE("A tailed emitter builds a second quad per particle") {
 
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> draws;
-    svc.BuildGeometry(TraceView(), verts, draws);
+    svc.BuildGeometry(TraceView(), {verts, draws});
     REQUIRE(draws[0].vertexCount == 12 * alive);
 }
 
@@ -300,7 +301,7 @@ TEST_CASE("An emitter with neither head nor tail builds nothing") {
 
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> draws;
-    svc.BuildGeometry(TraceView(), verts, draws);
+    svc.BuildGeometry(TraceView(), {verts, draws});
     REQUIRE(verts.empty());
     REQUIRE(draws.empty()); // a zero-vertex emitter contributes no draw call
 }
@@ -452,7 +453,7 @@ TEST_CASE("Child-model emitters contribute nothing to the vertex stream") {
 
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> draws;
-    svc.BuildGeometry(TraceView(), verts, draws);
+    svc.BuildGeometry(TraceView(), {verts, draws});
     REQUIRE(verts.empty());
     REQUIRE(draws.empty());
 }
@@ -582,7 +583,7 @@ TEST_CASE("Model particles contribute nothing to the vertex stream") {
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> draws;
     const Matrix44f view = TraceView();
-    svc.BuildGeometry(view, verts, draws);
+    svc.BuildGeometry(view, {verts, draws});
     REQUIRE(verts.empty());
     REQUIRE(draws.empty());
 }
@@ -895,4 +896,25 @@ TEST_CASE("a starved emitter does not bank the emission it could not spawn") {
         }
     }
     CHECK(e.Pool().AliveCount() > 0);
+}
+
+TEST_CASE("an SPL splat sweeps its sprite cells the way CSplatKey does", "[particle][splat]") {
+    // `CSplatKey::Interpolate` @0x141FE5BE0 over the key @0x141FE73F0 builds.
+    // The time is already nudged into [0.005, 0.995].
+    const auto sweep = [](i32 start, i32 end, i32 repeat) {
+        std::vector<i32> cells;
+        for (f32 t : {0.005f, 0.255f, 0.505f, 0.755f, 0.995f})
+            cells.push_back(detail::SplatCell(start, end, repeat, t));
+        return cells;
+    };
+    // Ascending: every cell of [0, 3], first to last.
+    CHECK(sweep(0, 3, 1) == std::vector<i32>{0, 1, 2, 3, 3});
+    // Reversed: the key starts one past `start`, so the sweep opens on cell 3
+    // and closes on 0. Starting at `start` itself opened on 2.
+    CHECK(sweep(3, 0, 1) == std::vector<i32>{3, 2, 1, 0, 0});
+    // Two repeats run the range twice.
+    CHECK(sweep(0, 1, 2) == std::vector<i32>{0, 1, 0, 1, 1});
+    // Clamped to a byte, not to the range.
+    CHECK(detail::SplatCell(250, 300, 1, 0.995f) == 255);
+    CHECK(detail::SplatCell(-5, -1, 1, 0.005f) == 0);
 }

@@ -36,9 +36,10 @@ std::unique_ptr<Emitter2> Create(std::shared_ptr<const EmitterDesc> desc,
 }
 
 std::unique_ptr<d3::Emitter> CreateD3(std::shared_ptr<const d3::EmitterDesc> desc, i32 bone,
-                                      const Matrix44f& offset, ChildModelOwner child) {
+                                      const Matrix44f& offset, u32 seed, ChildModelOwner child) {
     auto em = std::make_unique<d3::Emitter>();
     em->SetD3Desc(std::move(desc));
+    em->SetSystemSeed(seed);
     em->SetAttachBone(bone);
     em->SetAttachOffset(offset);
     if (child.allocHandle)

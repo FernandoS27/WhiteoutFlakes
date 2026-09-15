@@ -55,7 +55,12 @@ inline Vector3f Normalize(const Vector3f& v, const Vector3f& fallback = {0, 0, 1
     return {v.x * inv, v.y * inv, v.z * inv};
 }
 
-void CellToUV(const SpriteSheet& sheet, i32 cell, f32& u, f32& v) {
+/// One sprite-sheet cell's texture rectangle.
+struct CellRect {
+    f32 u0, v0, u1, v1;
+};
+
+CellRect CellRectFor(const SpriteSheet& sheet, i32 cell) {
     u32 cols = sheet.cols;
     if (cols == 0)
         cols = 1;
@@ -69,46 +74,54 @@ void CellToUV(const SpriteSheet& sheet, i32 cell, f32& u, f32& v) {
         col = static_cast<u32>(cell) % cols;
         row = static_cast<u32>(cell) / cols;
     }
-    u = col * sheet.ooWidth;
-    v = row * sheet.ooHeight;
+    const f32 u = col * sheet.ooWidth;
+    const f32 v = row * sheet.ooHeight;
+    return {u, v, u + sheet.ooWidth, v + sheet.ooHeight};
 }
 
-ImVector CombineColors(ImVector a, ImVector b) {
-    return {
-        static_cast<u8>((a.a * b.a) / 255),
-        static_cast<u8>((a.r * b.r) / 255),
-        static_cast<u8>((a.g * b.g) / 255),
-        static_cast<u8>((a.b * b.b) / 255),
-    };
-}
-
-struct SortRecord {
+/// One live particle in draw order, with where it is in the world — resolved
+/// once, for the sort key and the quad alike.
+struct DrawRecord {
     u32 aliveIndex;
     f32 viewZ;
+    Vector3f worldPos;
+    Vector3f worldVel;
 };
 
-// Corner order, shared by both dialects: -A+B, -A-B, +A+B, +A-B with UVs
-// (0,0), (0,1), (1,0), (1,1). WC3 spells it out as the `vc` table above; the
-// WoW builder writes the same four combinations inline, which is how the two
-// clients' quads end up interchangeable at this level.
-void EmitQuad(std::vector<Vertex>& out, const Vector3f& centre, const Vector3f& a,
-              const Vector3f& b, const Vector4f& color, const Vector3f& normal, f32 u0, f32 v0,
-              f32 u1, f32 v1) {
-    const Vector3f c0{centre.x - a.x + b.x, centre.y - a.y + b.y, centre.z - a.z + b.z};
-    const Vector3f c1{centre.x - a.x - b.x, centre.y - a.y - b.y, centre.z - a.z - b.z};
-    const Vector3f c2{centre.x + a.x + b.x, centre.y + a.y + b.y, centre.z + a.z + b.z};
-    const Vector3f c3{centre.x + a.x - b.x, centre.y + a.y - b.y, centre.z + a.z - b.z};
-    const Vector2f uv0{u0, v0}, uv1{u0, v1}, uv2{u1, v0}, uv3{u1, v1};
-    out.push_back({c0, normal, color, uv0});
-    out.push_back({c1, normal, color, uv1});
-    out.push_back({c2, normal, color, uv2});
-    out.push_back({c3, normal, color, uv3});
-    out.push_back({c2, normal, color, uv2});
-    out.push_back({c1, normal, color, uv1});
+/// The emitter's particles in the order its builder draws them: alive order,
+/// or back to front with an index tie-break under @p sortZ.
+///
+/// @p resolve places one particle in the world. Filled into a per-thread
+/// buffer, cleared and never freed, so a steady frame allocates nothing; the
+/// reference is good until the next call on this thread.
+template <class Resolve>
+std::vector<DrawRecord>& DrawOrder(const ParticlePool& pool, bool sortZ, const CameraBasis& cam,
+                                   Resolve&& resolve) {
+    thread_local std::vector<DrawRecord> order;
+    order.clear();
+    order.reserve(pool.AliveCount());
+    for (usize i = 0; i < pool.AliveCount(); ++i) {
+        DrawRecord rec{static_cast<u32>(i), 0.0f, {}, {}};
+        resolve(pool[pool.AliveAt(i)], rec.worldPos, rec.worldVel);
+        if (sortZ)
+            rec.viewZ = Dot(rec.worldPos, cam.fwd);
+        order.push_back(rec);
+    }
+    if (sortZ) {
+        // Index tie-break: a burst spawned at one point gives every particle
+        // the same viewZ, and equal elements resolve unspecified otherwise.
+        std::sort(order.begin(), order.end(), [](const DrawRecord& a, const DrawRecord& b) {
+            if (a.viewZ != b.viewZ)
+                return a.viewZ > b.viewZ;
+            return a.aliveIndex < b.aliveIndex;
+        });
+    }
+    return order;
 }
 
-// Four corners given explicitly, for the velocity-stretched tail whose head and
-// end sit at different points.
+// The one winding every quad this file writes takes: corners c0..c3 as the
+// two triangles (c0, c1, c2) and (c3, c2, c1), with the UVs (u0,v0), (u0,v1),
+// (u1,v0), (u1,v1) on c0..c3.
 void EmitStrip(std::vector<Vertex>& out, const Vector3f& c0, const Vector3f& c1,
                const Vector3f& c2, const Vector3f& c3, const Vector4f& color,
                const Vector3f& normal, f32 u0, f32 v0, f32 u1, f32 v1) {
@@ -119,6 +132,20 @@ void EmitStrip(std::vector<Vertex>& out, const Vector3f& c0, const Vector3f& c1,
     out.push_back({c3, normal, color, uv3});
     out.push_back({c2, normal, color, uv2});
     out.push_back({c1, normal, color, uv1});
+}
+
+// Corner order, shared by both dialects: -A+B, -A-B, +A+B, +A-B with UVs
+// (0,0), (0,1), (1,0), (1,1). WC3 spells it out as the `vc` table above; the
+// WoW builder writes the same four combinations here, which is how the two
+// clients' quads end up interchangeable at this level.
+void EmitQuad(std::vector<Vertex>& out, const Vector3f& centre, const Vector3f& a,
+              const Vector3f& b, const Vector4f& color, const Vector3f& normal, f32 u0, f32 v0,
+              f32 u1, f32 v1) {
+    const Vector3f c0{centre.x - a.x + b.x, centre.y - a.y + b.y, centre.z - a.z + b.z};
+    const Vector3f c1{centre.x - a.x - b.x, centre.y - a.y - b.y, centre.z - a.z - b.z};
+    const Vector3f c2{centre.x + a.x + b.x, centre.y + a.y + b.y, centre.z + a.z + b.z};
+    const Vector3f c3{centre.x + a.x - b.x, centre.y + a.y - b.y, centre.z + a.z - b.z};
+    EmitStrip(out, c0, c1, c2, c3, color, normal, u0, v0, u1, v1);
 }
 
 // The client's own guards. A velocity shorter than `kVelocityEpsilon` cannot
@@ -142,7 +169,6 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
     const f32 angVel = emitter.Desc().angularVelocity;
     const bool useAngVel = std::abs(angVel) > kEpsilon;
     const f32 tailLength = emitter.Desc().tailLength;
-    const ParticleMaterialDesc& mat = emitter.Desc().material;
     const SpriteSheet& sheet = emitter.Desc().sheet;
     const LifetimeCurves& curves = emitter.Desc().curves;
     const f32 lifeSpan = emitter.Desc().lifeSpan;
@@ -168,36 +194,17 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
         outVel = vel;
     };
 
-    std::vector<SortRecord> order;
-    order.reserve(pool.AliveCount());
-    for (usize i = 0; i < pool.AliveCount(); ++i) {
-        u32 idx = pool.AliveAt(i);
-        const Particle2& p = pool[idx];
-        SortRecord rec{static_cast<u32>(i), 0.0f};
-        if (emitter.Desc().sortZ) {
-            Vector3f wp, wv;
-            resolveWorld(p, wp, wv);
-            rec.viewZ = Dot(wp, cam.fwd);
-        }
-        order.push_back(rec);
-    }
-    if (emitter.Desc().sortZ) {
-
-        // Index tie-break: a burst spawned at one point gives every particle
-        // the same viewZ, and equal elements resolve unspecified otherwise.
-        std::sort(order.begin(), order.end(), [](const SortRecord& a, const SortRecord& b) {
-            if (a.viewZ != b.viewZ)
-                return a.viewZ > b.viewZ;
-            return a.aliveIndex < b.aliveIndex;
-        });
-    }
+    const std::vector<DrawRecord>& order =
+        DrawOrder(pool, emitter.Desc().sortZ, cam, resolveWorld);
 
     const usize startSize = out.size();
     const Vector3f normal = {0.0f, 0.0f, 1.0f};
 
-    for (const SortRecord& rec : order) {
+    for (const DrawRecord& rec : order) {
         u32 idx = pool.AliveAt(rec.aliveIndex);
         const Particle2& p = pool[idx];
+        const Vector3f& worldPos = rec.worldPos;
+        const Vector3f& worldVel = rec.worldVel;
 
         // Normalised age drives every lifetime curve; the aux word rides along
         // as a segment hint so the lookup does not have to search.
@@ -210,36 +217,14 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
         const i32 headCell = curves.headCells.Evaluate(u, hint);
         const i32 tailCell = curves.tailCells.Evaluate(u, hint);
 
-        const ImVector baseColor = ImVector::FromUnitFloat(rgb.x, rgb.y, rgb.z, alpha);
-
-        ImVector color = baseColor;
-        if (in.fogEnabled && !mat.unfogged && in.fogSampler) {
-            Vector3f wp, _wv;
-            resolveWorld(p, wp, _wv);
-            ImVector fog = in.fogSampler(wp);
-            color = CombineColors(baseColor, fog);
-            color.a = baseColor.a;
-        }
-
-        Vector4f vcol = color.ToVec4();
+        Vector4f vcol = ImVector::FromUnitFloat(rgb.x, rgb.y, rgb.z, alpha).ToVec4();
 
         // WC3 quads are square; the curve carries 2D size for M2/M3, so the
         // head uses x and the tail half-width uses y.
         const f32 corner = size.x;
 
-        Vector3f worldPos, worldVel;
-        resolveWorld(p, worldPos, worldVel);
-
         if (hasHead) {
-            f32 u0, vq0, u1, vq1;
-            {
-                f32 cellU, cellV;
-                CellToUV(sheet, headCell, cellU, cellV);
-                u0 = cellU;
-                vq0 = cellV;
-                u1 = cellU + sheet.ooWidth;
-                vq1 = cellV + sheet.ooHeight;
-            }
+            const CellRect cell = CellRectFor(sheet, headCell);
 
             Vector3f right = cam.right;
             Vector3f up = cam.up;
@@ -286,26 +271,12 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
                               worldPos.y + right.y * sx + up.y * sy,
                               worldPos.z + right.z * sx + up.z * sy};
             }
-
-            const Vector2f uv[4] = {{u0, vq0}, {u0, vq1}, {u1, vq0}, {u1, vq1}};
-            out.push_back({corners[0], normal, vcol, uv[0]});
-            out.push_back({corners[1], normal, vcol, uv[1]});
-            out.push_back({corners[2], normal, vcol, uv[2]});
-            out.push_back({corners[3], normal, vcol, uv[3]});
-            out.push_back({corners[2], normal, vcol, uv[2]});
-            out.push_back({corners[1], normal, vcol, uv[1]});
+            EmitStrip(out, corners[0], corners[1], corners[2], corners[3], vcol, normal, cell.u0,
+                      cell.v0, cell.u1, cell.v1);
         }
 
         if (hasTail) {
-            f32 u0, vq0, u1, vq1;
-            {
-                f32 cellU, cellV;
-                CellToUV(sheet, tailCell, cellU, cellV);
-                u0 = cellU;
-                vq0 = cellV;
-                u1 = cellU + sheet.ooWidth;
-                vq1 = cellV + sheet.ooHeight;
-            }
+            const CellRect cell = CellRectFor(sheet, tailCell);
 
             Vector3f negVel = {-worldVel.x * tailLength, -worldVel.y * tailLength,
                                -worldVel.z * tailLength};
@@ -332,17 +303,7 @@ i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
             Vector3f tl = {tailEnd.x - w.x, tailEnd.y - w.y, tailEnd.z - w.z};
             Vector3f tr = {tailEnd.x + w.x, tailEnd.y + w.y, tailEnd.z + w.z};
 
-            const Vector2f uvHL{u0, vq0};
-            const Vector2f uvHR{u0, vq1};
-            const Vector2f uvTL{u1, vq0};
-            const Vector2f uvTR{u1, vq1};
-
-            out.push_back({hl, normal, vcol, uvHL});
-            out.push_back({hr, normal, vcol, uvHR});
-            out.push_back({tl, normal, vcol, uvTL});
-            out.push_back({tr, normal, vcol, uvTR});
-            out.push_back({tl, normal, vcol, uvTL});
-            out.push_back({hr, normal, vcol, uvHR});
+            EmitStrip(out, hl, hr, tl, tr, vcol, normal, cell.u0, cell.v0, cell.u1, cell.v1);
         }
     }
 
@@ -394,33 +355,16 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         outVel = vel;
     };
 
-    std::vector<SortRecord> order;
-    order.reserve(pool.AliveCount());
-    for (usize i = 0; i < pool.AliveCount(); ++i) {
-        SortRecord rec{static_cast<u32>(i), 0.0f};
-        if (d.sortZ) {
-            Vector3f wp, wv;
-            resolveWorld(pool[pool.AliveAt(i)], wp, wv);
-            rec.viewZ = Dot(wp, cam.fwd);
-        }
-        order.push_back(rec);
-    }
-    if (d.sortZ) {
-        std::sort(order.begin(), order.end(), [](const SortRecord& a, const SortRecord& b) {
-            if (a.viewZ != b.viewZ)
-                return a.viewZ > b.viewZ;
-            return a.aliveIndex < b.aliveIndex;
-        });
-        if (emitter.Behavior().sortedBuilderDefect && order.size() > 1) {
-            // The shipped defect. All six sorted `IBuildVertices` clones read
-            // `&s_pq.top()` AFTER calling pop(), so the record they draw is the
-            // one the heap just sifted into that slot: for N particles the
-            // emitted order is ranks 2,3,...,N,N — the farthest is dropped and
-            // the nearest drawn twice. Reproduce, do not repair; fixing it would
-            // diverge from every depth-sorted emitter in the client.
-            for (usize i = 0; i + 1 < order.size(); ++i)
-                order[i] = order[i + 1];
-        }
+    std::vector<DrawRecord>& order = DrawOrder(pool, d.sortZ, cam, resolveWorld);
+    if (d.sortZ && emitter.Behavior().sortedBuilderDefect && order.size() > 1) {
+        // The shipped defect. All six sorted `IBuildVertices` clones read
+        // `&s_pq.top()` AFTER calling pop(), so the record they draw is the
+        // one the heap just sifted into that slot: for N particles the
+        // emitted order is ranks 2,3,...,N,N — the farthest is dropped and
+        // the nearest drawn twice. Reproduce, do not repair; fixing it would
+        // diverge from every depth-sorted emitter in the client.
+        for (usize i = 0; i + 1 < order.size(); ++i)
+            order[i] = order[i + 1];
     }
 
     // Renderer units per model unit, and — separately — the emitter bone's own
@@ -476,7 +420,7 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
     const usize startSize = out.size();
     const Vector3f normal{0.0f, 0.0f, 1.0f};
 
-    for (const SortRecord& rec : order) {
+    for (const DrawRecord& rec : order) {
         particleIndex = pool.AliveAt(rec.aliveIndex);
         const Particle2& p = pool[particleIndex];
         const u16 seed = p.RenderSeed();
@@ -558,18 +502,19 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             if (d.spinSpeedVariation != 0.0f)
                 spinSpeed += CRandom::reals_(ss) * d.spinSpeedVariation;
         }
+        // The spun angle, which both the flat and the facing quad take, and
+        // which a random-sign emitter negates for half its particles.
+        const auto spinAngle = [&] {
+            f32 angle = p.age * spinSpeed + baseSpin;
+            if (d.negateSpinRandom && (seed & 1u) != 0u)
+                angle = -angle;
+            return angle;
+        };
 
-        Vector3f worldPos, worldVel;
-        resolveWorld(p, worldPos, worldVel);
+        const Vector3f& worldPos = rec.worldPos;
+        const Vector3f& worldVel = rec.worldVel;
 
-        ImVector color = ImVector::FromUnitFloat(rgb.x, rgb.y, rgb.z, alpha);
-        if (in.fogEnabled && !d.material.unfogged && in.fogSampler) {
-            const ImVector fog = in.fogSampler(worldPos);
-            const u8 a = color.a;
-            color = CombineColors(color, fog);
-            color.a = a;
-        }
-        const Vector4f vcol = color.ToVec4();
+        const Vector4f vcol = ImVector::FromUnitFloat(rgb.x, rgb.y, rgb.z, alpha).ToVec4();
 
         // The plain screen-aligned pair, kept because the degenerate tail falls
         // back to it whatever the head is doing.
@@ -614,18 +559,14 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             axisA = {size.x, 0.0f, 0.0f};
             axisB = {0.0f, size.y, 0.0f};
             if (spins) {
-                f32 angle = p.age * spinSpeed + baseSpin;
-                if (d.negateSpinRandom && (seed & 1u) != 0u)
-                    angle = -angle;
+                const f32 angle = spinAngle();
                 const f32 c = std::cos(angle);
                 const f32 s = std::sin(angle);
                 axisA = {size.x * c, size.x * s, 0.0f};
                 axisB = {-size.y * s, size.y * c, 0.0f};
             }
         } else if (spins) {
-            f32 angle = p.age * spinSpeed + baseSpin;
-            if (d.negateSpinRandom && (seed & 1u) != 0u)
-                angle = -angle;
+            const f32 angle = spinAngle();
             const f32 c = std::cos(angle);
             const f32 s = std::sin(angle);
             axisA = {(cam.right.x * c + cam.up.x * s) * size.x,
@@ -643,19 +584,14 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         }
 
         if (hasHead) {
-            f32 cu, cv;
-            CellToUV(d.sheet, headCell, cu, cv);
+            const CellRect cell = CellRectFor(d.sheet, headCell);
             const usize from = out.size();
-            EmitQuad(out, centre, axisA, axisB, vcol, normal, cu, cv, cu + d.sheet.ooWidth,
-                     cv + d.sheet.ooHeight);
-            appendExtraUV(from, cu, cv);
+            EmitQuad(out, centre, axisA, axisB, vcol, normal, cell.u0, cell.v0, cell.u1, cell.v1);
+            appendExtraUV(from, cell.u0, cell.v0);
         }
 
         if (hasTail) {
-            f32 cu, cv;
-            CellToUV(d.sheet, tailCell, cu, cv);
-            const f32 cu1 = cu + d.sheet.ooWidth;
-            const f32 cv1 = cv + d.sheet.ooHeight;
+            const CellRect cell = CellRectFor(d.sheet, tailCell);
 
             f32 len = d.tailLength;
             if (d.clampTailToAge && len > p.age)
@@ -681,15 +617,16 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
                 EmitStrip(out, {centre.x + w.x, centre.y + w.y, centre.z + w.z},
                           {centre.x - w.x, centre.y - w.y, centre.z - w.z},
                           {end.x + w.x, end.y + w.y, end.z + w.z},
-                          {end.x - w.x, end.y - w.y, end.z - w.z}, vcol, normal, cu, cv, cu1,
-                          cv1);
+                          {end.x - w.x, end.y - w.y, end.z - w.z}, vcol, normal, cell.u0,
+                          cell.v0, cell.u1, cell.v1);
             } else {
                 // Too short to point anywhere on screen. The client draws a
                 // plain screen-aligned quad rather than dropping the tail, which
                 // is where WC3 skips the particle instead.
-                EmitQuad(out, centre, screenA, screenB, vcol, normal, cu, cv, cu1, cv1);
+                EmitQuad(out, centre, screenA, screenB, vcol, normal, cell.u0, cell.v0, cell.u1,
+                         cell.v1);
             }
-            appendExtraUV(tailFrom, cu, cv);
+            appendExtraUV(tailFrom, cell.u0, cell.v0);
         }
     }
 

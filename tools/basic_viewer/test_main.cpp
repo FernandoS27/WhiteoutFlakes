@@ -1025,7 +1025,7 @@ static int RunDrawTrace(
             std::cout << (d.sc2.motion.analytic ? " analytic" : " euler")
                       << (out == ParticleOutput::ChildModel ? " child" : " quad")
                       << " slots=" << d.sc2.emit.slotBones.size() << " squirt=" << squirtKeys
-                      << " surf=" << d.sc2.look.m3Surface << " prio=" << d.priorityPlane
+                      << " surf=" << d.material.m3Surface << " prio=" << d.priorityPlane
                       << " preRoll=" << d.sc2.emit.preRollInit;
             // The peak per container, where the lifetime track is bound; the
             // pre-roll reads the column the active sequence's number names.

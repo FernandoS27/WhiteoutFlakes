@@ -82,50 +82,37 @@ public:
 
     // Builds every emitter's geometry for this frame.
     //
-    // A refraction emitter goes to @p refraction instead of the ordinary lists;
+    // A refraction emitter goes to `out.refraction` instead of the ordinary lists;
     // pass null and it is skipped outright, which is the correct answer for a
     // frame with no refraction pass — drawing it into the scene would paint a
     // distortion mask as if it were colour.
     //
-    // A multi-texture emitter puts its VERTICES in @p multiTex but its draw in
-    // @p outDrawLists, so it still sorts with everything else in the
+    // A multi-texture emitter puts its VERTICES in `out.multiTex` but its draw in
+    // `out.draws`, so it still sorts with everything else in the
     // transparent pass; pass null and it falls back to single-texture shading
     // off the ordinary stream.
-    // A Diablo III emitter additionally fills @p d3Uv with its four baked
-    // texcoords per vertex, kept index-parallel with @p outVertices; pass null
-    // and it falls back to sampling every layer at the raw quad uv.
-    void BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
-                       std::vector<EmitterDrawList>& outDrawLists,
-                       MultiTexGeometry* refraction = nullptr,
-                       MultiTexGeometry* multiTex = nullptr,
-                       D3VertexStream* d3Uv = nullptr) const;
+    // A Diablo III emitter additionally fills the D3 stream with its four baked
+    // texcoords and its second colour per vertex, kept index-parallel with the
+    // vertices; pass null and it falls back to sampling every layer at the raw
+    // quad uv.
+    void BuildGeometry(const Matrix44f& worldToView, const ParticleStreams& out) const;
 
     // Whether any registered emitter (or trail) draws refraction. Cheap enough
-    // to ask per frame, and what lets the pipeline skip the pass entirely.
+    // to ask per frame, so the pipeline could skip the pass entirely; it does
+    // not ask yet.
     bool HasRefractionEmitters() const;
 
     // Emission-rate multiplier for every emitter in THIS service. Per-scene:
     // it used to be a process global, which meant scaling one viewport's
     // particles silently scaled every other scene's too.
     void SetEmissionScaler(f32 s);
-    f32 EmissionScaler() const;
-
-    void SetFogEnabled(bool on) {
-        fogEnabled_ = on;
-    }
-    bool FogEnabled() const {
-        return fogEnabled_;
-    }
-
-    void SetFogSampler(FogSampler sampler);
 
     /// @brief Install the surface every emitter's particles collide against.
     ///
     /// Set once by the host and re-installed on every emitter registered
     /// afterwards, so the MOVE stage never rebuilds a `std::function` per
-    /// particle per sub-step. Beside SetFogSampler because it is the same kind
-    /// of thing: one scene-wide callback the service owns and pushes down,
-    /// rather than something each emitter goes looking for.
+    /// particle per sub-step: one scene-wide callback the service owns and
+    /// pushes down, rather than something each emitter goes looking for.
     void SetGroundQuery(GroundQuery query);
 
 private:
@@ -146,8 +133,6 @@ private:
     std::vector<ChildModelEvent> childEvents_;
 
     f32 emissionScaler_ = 1.0f;
-    bool fogEnabled_ = false;
-    FogSampler fogSampler_;
     GroundQuery groundQuery_;
 };
 

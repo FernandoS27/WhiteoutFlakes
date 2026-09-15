@@ -14,7 +14,6 @@ namespace whiteout::flakes::renderer::particle {
 
 namespace {
 
-namespace bits = whiteout::flakes::renderer::sc2;
 using detail::kFreezeSpeedSq;
 
 } // namespace
@@ -157,13 +156,6 @@ u32 Sc2RetireExpired(Sc2ElementList& list, std::span<Sc2SpawnedElement> elements
         Sc2SpawnedElement& e = elements[static_cast<usize>(node)];
         if (e.deathTime <= emitterTime) {
             if (recycle.enabled && e.vbSlot != -1) {
-                // Grows by a fixed increment, not by doubling. Modelled
-                // because the capacity is observable through the gate and
-                // because a system whose increment is zero never grows at all.
-                if (recycle.slots.size() + 1 > recycle.capacity &&
-                    recycle.capacity + recycle.growth != 0) {
-                    recycle.capacity += recycle.growth;
-                }
                 recycle.slots.push_back(e.vbSlot);
                 e.vbSlot = -1;
             }
@@ -180,13 +172,11 @@ namespace {
 /// The gravity multiply `SimulateParticles` gates on. WhiteoutLib names the bit
 /// `MultiplyGravityByMass`; the runtime multiplies by the SCENE's scale.
 constexpr ParticleFlag kSceneGravity = ParticleFlag::MultiplyGravityByMass;
-/// The bounds pass's bit. DISAGREES — F5: WhiteoutLib names bit 31
-/// `ForceProceduralPosition`.
-constexpr ParticleFlag kParBounds = ParticleFlag::ForceProceduralPosition;
+/// The bounds pass's bit.
+constexpr ParticleFlag kParBounds = Sc2ParBit::CpuBounds;
 
 /// The swept sphere's radius, which is also the terrain push-out.
-/// DISAGREES — F5 with the ribbon's `sc2::kCollideRadius`.
-constexpr f32 kCollideRadius = sc2::kParticleCollidePushOut;
+constexpr f32 kCollideRadius = sc2::kParticleCollideRadius;
 /// At or below this determinant the emitter matrix counts as singular and a
 /// contact comes back through identity — which a MIRRORED emitter, whose
 /// determinant is negative, reaches as well.
@@ -196,27 +186,11 @@ using sc2::kFrictionSpeedSq;
 /// A landed particle rests below `|v|² < 3·dt`.
 using sc2::kRestPerDt;
 
-/// `r·(−0.5)·((v·r)·r − 3)` — the Newton step every normalise in the CPU step
-/// takes after its reciprocal root, in the binary's grouping at all three
-/// sites.
-f32 NewtonRsqrt(f32 v, f32 seed) {
-    return (seed * -0.5f) * ((v * seed) * seed + -3.0f);
-}
+/// Every normalise in the CPU step takes this step after its reciprocal root,
+/// and `Update` refines its row lengths through the LENGTH spelling.
+using sc2::NewtonLength;
+using sc2::NewtonRsqrt;
 
-/// The same step spelled as a LENGTH, the way `Update` refines its row
-/// lengths: `((v·r)·r − 3)·(−0.5·v·r)`.
-f32 NewtonLength(f32 v, f32 seed) {
-    const f32 vr = v * seed;
-    return ((vr * seed) + -3.0f) * (-0.5f * vr);
-}
-
-/// `RandomNextU32` reinterpreted as a float in `[1, 2)` and biased by −1: the
-/// collision-spawn and splat chances, drawn inline rather than through
-/// `Rand_RangeF` (RE §16.10).
-f32 UnitDraw(sc2::Rng& rng) {
-    const u32 bits = (rng.NextU32() & 0x7FFFFFu) | 0x3F800000u;
-    return std::bit_cast<f32>(bits) + -1.0f;
-}
 
 using Mat16 = std::array<f32, 16>;
 
@@ -349,18 +323,6 @@ Vector3f NormalToLocal(const LocalFrame& f, const Vector3f& n) {
     return {x * r, y * r, r * z};
 }
 
-Vector3f PointToWorld(const Mat16& m, const Vector3f& p) {
-    return {(m[8] * p.z + (m[4] * p.y + m[0] * p.x)) + m[12],
-            (m[9] * p.z + (m[5] * p.y + m[1] * p.x)) + m[13],
-            (p.z * m[10] + (p.y * m[6] + p.x * m[2])) + m[14]};
-}
-
-/// Out again for a request, and NOT renormalised: a scaled emitter hands its
-/// child a scaled normal (OP9 `cspawn`).
-Vector3f NormalToWorld(const Mat16& m, const Vector3f& n) {
-    return {m[8] * n.z + (m[4] * n.y + m[0] * n.x), m[9] * n.z + (m[5] * n.y + m[1] * n.x),
-            n.z * m[10] + (n.y * m[6] + n.x * m[2])};
-}
 
 /// Below `|v|² < 3·dt` a landed particle stops spinning AT THE ANGLE IT
 /// LANDED ON: all three rotation keys are overwritten with the curve's value
@@ -379,11 +341,15 @@ void RekeyRotationAtRest(Sc2SpawnedElement& e, const Sc2SimulateInputs& in) {
     e.rotation = {q, q, q};
 }
 
-} // namespace
-
+/// One element's integration and the type-6 freeze.
+///
+/// Gravity (unless resting), drag in two branches — linear below `k·dt < 1`,
+/// and above it the velocity simply becomes `gravity·dt` — then `v += a·dt` and
+/// `p += (v + wind)·dt`. Wind reaches the POSITION only, so it never
+/// accumulates into the particle's own momentum.
 void Sc2StepEuler(Sc2SpawnedElement& e, const Sc2SimulateInputs& in) {
     Vector3f a{0.0f, 0.0f, 0.0f};
-    if ((e.flags & bits::kElemAtRest) == 0) {
+    if ((e.flags & sc2::kElemAtRest) == 0) {
         a = in.gravity;
         if (Sc2Has(in.parFlags, kSceneGravity))
             a = {a.x * in.gravityScale, a.y * in.gravityScale, a.z * in.gravityScale};
@@ -413,7 +379,7 @@ void Sc2StepEuler(Sc2SpawnedElement& e, const Sc2SimulateInputs& in) {
     // stepped FROM (RE §6). No OP9 vector separates the two — every freeze row
     // runs without gravity or drag — so this follows the disassembly.
     if (in.instanceType == static_cast<u32>(Sc2InstanceType::TerrainDirOriented) &&
-        (e.flags & bits::kElemOrientationFrozen) == 0) {
+        (e.flags & sc2::kElemOrientationFrozen) == 0) {
         const Vector3f& v = e.velocity;
         if ((v.z * v.z + v.x * v.x) + v.y * v.y < kFreezeSpeedSq) {
             const f32 lsq = (before.z * before.z + before.x * before.x) + before.y * before.y;
@@ -425,10 +391,12 @@ void Sc2StepEuler(Sc2SpawnedElement& e, const Sc2SimulateInputs& in) {
                 e.orientVec = {before.x * r, before.y * r, before.z * r};
             else
                 e.orientVec = {1.0f, 0.0f, 0.0f};
-            e.flags = static_cast<u16>(e.flags | bits::kElemOrientationFrozen);
+            e.flags = static_cast<u16>(e.flags | sc2::kElemOrientationFrozen);
         }
     }
 }
+
+} // namespace
 
 namespace {
 
@@ -438,12 +406,13 @@ namespace {
 void CollideElement(Sc2SpawnedElement& e, const Vector3f& from, const Sc2SimulateInputs& in,
                     const Sc2Collider& collider, const LocalFrame& local, const Vector3f& wind,
                     sc2::Rng& rng, Sc2ChildRequests& children) {
-    const Vector3f a = in.worldSpace ? from : PointToWorld(in.worldMatrix, from);
-    const Vector3f b = in.worldSpace ? e.position : PointToWorld(in.worldMatrix, e.position);
+    const Vector3f a = in.worldSpace ? from : sc2::vs::MulPointMat4(from, in.worldMatrix);
+    const Vector3f b =
+        in.worldSpace ? e.position : sc2::vs::MulPointMat4(e.position, in.worldMatrix);
 
     Sc2Contact c;
     bool terrainHit = false;
-    if ((e.flags & bits::kElemCollideTerrain) != 0 && collider.terrain) {
+    if ((e.flags & sc2::kElemCollideTerrain) != 0 && collider.terrain) {
         Sc2Contact t;
         if (collider.terrain(collider.ctx, a, b, t) && t.hit) {
             // Pushed out in WORLD space, and the time overwritten with 1 — so
@@ -457,7 +426,7 @@ void CollideElement(Sc2SpawnedElement& e, const Vector3f& from, const Sc2Simulat
         }
     }
     bool objectHit = false;
-    if ((e.flags & bits::kElemCollideObjects) != 0 && collider.objects) {
+    if ((e.flags & sc2::kElemCollideObjects) != 0 && collider.objects) {
         Sc2Contact o;
         if (collider.objects(collider.ctx, a, b, o) && o.hit) {
             c = o;
@@ -501,7 +470,7 @@ void CollideElement(Sc2SpawnedElement& e, const Vector3f& from, const Sc2Simulat
     const Vector3f& v = e.velocity;
     if ((v.z * v.z + v.x * v.x) + v.y * v.y < kRestPerDt * in.dt) {
         e.velocity = {0.0f, 0.0f, 0.0f};
-        e.flags = static_cast<u16>(e.flags | bits::kElemAtRest);
+        e.flags = static_cast<u16>(e.flags | sc2::kElemAtRest);
         if (in.instanceType != static_cast<u32>(Sc2InstanceType::TerrainDirOriented))
             RekeyRotationAtRest(e, in);
     }
@@ -517,22 +486,28 @@ void CollideElement(Sc2SpawnedElement& e, const Vector3f& from, const Sc2Simulat
 
     // Element flag 2 skips the chance roll, so the two arms leave the stream
     // at different words and the count drawn next differs (OP9 `cdraw`).
-    const bool forced = (e.flags & bits::kElemForced) != 0;
-    if (in.collisionChild && (forced || UnitDraw(rng) <= in.collisionSpawnChance)) {
+    const bool forced = (e.flags & sc2::kElemForced) != 0;
+    // Retail draws both chances inline off `RandomNextU32` rather than through
+    // `Rand_RangeF` (RE §16.10); `RangeF(0, 1)` is the same bits, its span
+    // exactly 1 and its base exactly 0.
+    if (in.collisionChild && (forced || rng.RangeF(0.0f, 1.0f) <= in.collisionSpawnChance)) {
         SpawnRequest req;
         req.position = p;
         req.velocityScale = {in.collisionSpawnEnergy, in.collisionSpawnEnergy,
                              in.collisionSpawnEnergy};
         req.orientVec = n;
         if (!in.worldSpace) {
-            req.position = PointToWorld(in.worldMatrix, p);
-            req.orientVec = NormalToWorld(in.worldMatrix, n);
+            // Out through the matrix, and the normal NOT renormalised: a scaled
+            // emitter hands its child a scaled normal (OP9 `cspawn`). The
+            // binary's sums commute to vs's grouping bit for bit.
+            req.position = sc2::vs::MulPointMat4(p, in.worldMatrix);
+            req.orientVec = sc2::vs::MulVecMat4As3(n, in.worldMatrix);
         }
         for (u32 k = rng.RangeInt(in.collisionSpawnMin, in.collisionSpawnMax); k != 0; --k)
             children.collision.push_back(req);
         e.deathTime = 0.0f;
     }
-    if (in.splat && (forced || UnitDraw(rng) <= in.splatChance))
+    if (in.splat && (forced || rng.RangeF(0.0f, 1.0f) <= in.splatChance))
         e.deathTime = 0.0f;
 }
 
@@ -584,13 +559,13 @@ Sc2SimulateResult Sc2SimulateParticles(Sc2ElementList& list,
         // Only a particle still alive is collided, so one that dies this
         // sub-step neither bounces nor asks its child for a spawn.
         if (e.deathTime > in.emitterTime &&
-            (e.flags & (bits::kElemCollideTerrain | bits::kElemCollideObjects)) != 0 &&
+            (e.flags & (sc2::kElemCollideTerrain | sc2::kElemCollideObjects)) != 0 &&
             in.collisionEnabled) {
             CollideElement(e, from, in, collider, local, wind, rng, children);
         }
 
         // After the collision, so a particle a hit killed lays no trail.
-        if (e.deathTime > in.emitterTime && (e.flags & bits::kElemTrail) != 0 && in.trailChild)
+        if (e.deathTime > in.emitterTime && (e.flags & sc2::kElemTrail) != 0 && in.trailChild)
             QueueTrails(e, in, rng, children);
 
         if (bounds) {
@@ -623,6 +598,9 @@ Sc2SimulateResult Sc2SimulateParticles(Sc2ElementList& list,
     return out;
 }
 
+/// Retail's cap on one emitter's pending requests (`CParticleSystem+0x358`).
+constexpr usize kSc2MaxSpawnRequests = 128;
+
 void Sc2QueueSpawnRequest(std::vector<SpawnRequest>& queue, const SpawnRequest& req) {
     if (queue.size() < kSc2MaxSpawnRequests)
         queue.push_back(req);
@@ -632,7 +610,7 @@ Vector3f Sc2ChildScale(const std::array<f32, 16>& w) {
     const f32 sq0 = w[2] * w[2] + (w[1] * w[1] + w[0] * w[0]);
     const f32 sq1 = w[6] * w[6] + (w[5] * w[5] + w[4] * w[4]);
     const f32 sq2 = w[10] * w[10] + (w[9] * w[9] + w[8] * w[8]);
-#if WDX_SC2_HAS_RCPSS
+#if WDX_SC2_HAS_SSE
     // Rows 0 and 1 in one packed `rsqrtps`, whose seed is the hardware's
     // approximation - which is why the gate holds these two lanes to the rsqrt
     // bound and not to the bit.

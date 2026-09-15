@@ -545,7 +545,8 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
         args.counts = counts;
 
         std::vector<particle::Sc2EmitEvent> events;
-        const auto out = particle::Sc2SpawnSchedule(args, carry, targets, events);
+        std::vector<u32> booked(slots);
+        const auto out = particle::Sc2SpawnSchedule(args, carry, targets, booked, events);
         INFO("case " << i << " tag=" << c["tag"].S());
 
         // The trampolines recorded WHICH call happened and in what order; a
@@ -1029,7 +1030,8 @@ TEST_CASE("op8b: a spawn call takes its requests first and flushes where retail 
         args.plain = in["count"].U();
         args.elementCount = in["elementCountIn"].U();
         args.maxParticles = in["maxParticles"].U();
-        const particle::Sc2SpawnBatchPlan plan = particle::Sc2PlanSpawnBatch(args);
+        particle::Sc2SpawnBatchPlan plan;
+        particle::Sc2PlanSpawnBatch(args, plan);
 
         REQUIRE(plan.created == want["created"].U());
         CHECK(want["elementCount"].U() == args.elementCount + plan.created);
@@ -1165,10 +1167,10 @@ TEST_CASE("op5: the velocity types replay the overlay order and the speed branch
         args.speedRandom = in["speedRandom"].F();
         args.speedIsEndpoint = in["speedIsEndpoint"].B();
         args.flattenXY = in["flattenXY"].B();
-        args.position = {in["position"][0].F(), in["position"][1].F(), in["position"][2].F()};
-        args.normal = {in["normal"][0].F(), in["normal"][1].F(), in["normal"][2].F()};
-        args.variationTime = in["variationTime"].F();
-        args.variationPhase = in["variationPhase"].F();
+        const Vector3f position{in["position"][0].F(), in["position"][1].F(),
+                                in["position"][2].F()};
+        const Vector3f normal{in["normal"][0].F(), in["normal"][1].F(), in["normal"][2].F()};
+        args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         // `overlays` names the wave type per armed group; the amplitude and
         // frequency live in the 18-float param block at [2g] and [2g+1].
@@ -1189,7 +1191,7 @@ TEST_CASE("op5: the velocity types replay the overlay order and the speed branch
         args.verticalOverlay = group("8", 8);
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const Vector3f got = particle::Sc2SampleSpawnVelocity(rng, args);
+        const Vector3f got = particle::Sc2SampleSpawnVelocity(rng, args, position, normal);
 
         INFO("case " << i << " tag=" << c["tag"].S() << " vt=" << in["velocityType"].U()
                      << " endpoint=" << in["speedIsEndpoint"].B()
@@ -1251,8 +1253,7 @@ TEST_CASE("op6: SampleParticleColor replays the integer lerp and the alpha clamp
         args.colorMidTime = in["colorMidTime"].F();
         args.alphaMidTime = in["alphaMidTime"].F();
         args.alphaOverlay = OverlayFrom(in, "alphaOverlayType", 4);
-        args.variationTime = in["variationTime"].F();
-        args.variationPhase = in["variationPhase"].F();
+        args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
         const auto got = particle::Sc2SampleColor(rng, args);
@@ -1290,14 +1291,12 @@ TEST_CASE("op6: SampleParticleSize returns half extents, unquantised",
         }
         args.randomEnable = in["sizeRandomEnable"].I() != 0;
         args.sizeOverlay = OverlayFrom(in, "sizeOverlayType", 3);
-        args.blend = in["blend"].F();
         args.instanceType = in["instanceType"].U();
         args.instanceDistance = in["instanceDistance"].F();
-        args.variationTime = in["variationTime"].F();
-        args.variationPhase = in["variationPhase"].F();
+        args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        const auto got = particle::Sc2SampleSize(rng, args);
+        const auto got = particle::Sc2SampleSize(rng, args, in["blend"].F());
 
         INFO("case " << i << " random=" << in["sizeRandomEnable"].I()
                      << " wave=" << in["sizeOverlayType"].U()
@@ -1335,8 +1334,7 @@ TEST_CASE("op6: SampleParticleRotation collapses its mid key only when randomise
         args.relative = (in["rotationFlags"].U() & 2u) != 0;
         args.rotationMidTime = in["rotationMidTime"].F();
         args.rotationOverlay = OverlayFrom(in, "rotationOverlayType", 6);
-        args.variationTime = in["variationTime"].F();
-        args.variationPhase = in["variationPhase"].F();
+        args.variation = {in["variationTime"].F(), in["variationPhase"].F()};
 
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
         const auto got = particle::Sc2SampleRotation(rng, args);
@@ -1492,7 +1490,6 @@ TEST_CASE("op8: InitSpawnedParticles replays the element and the space arms",
             q.orientVec = Vec3From((*r)[2]);
             reqs.push_back(q);
         }
-        args.requests = reqs;
 
         particle::Sc2InitState st;
         st.emitterTime = sys["emitterTime"].F();
@@ -1501,7 +1498,7 @@ TEST_CASE("op8: InitSpawnedParticles replays the element and the space arms",
         const std::size_t count = static_cast<std::size_t>(in["count"].U());
         std::vector<particle::Sc2SpawnedElement> elems(count);
         sc2::Rng rng(in["rngIn"][0].U(), in["rngIn"][1].U());
-        particle::Sc2InitSpawned(rng, args, st, elems);
+        particle::Sc2InitSpawned(rng, args, reqs, st, elems);
 
         if ((args.additionalFlags & 8) != 0 && reqs.empty()) {
             ++worldArm;
@@ -1882,10 +1879,14 @@ TEST_CASE("op11b: the analytic vertex body is the element, uploaded once",
             if (want.IsNull())
                 continue;
             REQUIRE(want.Size() == 4);
-            const auto quad = particle::Sc2VertexBody(vin, elems[k]);
+            const particle::Sc2GpuVertex body = particle::Sc2VertexBody(vin, elems[k]);
             for (std::size_t j = 0; j < 4; ++j) {
+                // Retail's four copies differ only in `vOffset`.
+                particle::Sc2GpuVertex corner = body;
+                corner.corner[0] = particle::kSc2Corners[j][0];
+                corner.corner[1] = particle::kSc2Corners[j][1];
                 std::array<u32, 29> words{};
-                std::memcpy(words.data(), &quad[j], sizeof(quad[j]));
+                std::memcpy(words.data(), &corner, sizeof(corner));
                 for (std::size_t w = 0; w < words.size(); ++w) {
                     INFO("element " << k << " vertex " << j << " dword " << w);
                     if (w == kHoleWord) {
@@ -2625,15 +2626,22 @@ struct Sc2Rig {
     /// What an emitter hands the tick as its surface.
     particle::EmitSurface surface;
 
+    /// The GPU-motion selector, and the state bit derived from it the way
+    /// `Sc2Runtime::Arm` derives it — so the rig cannot hold one without the
+    /// other. A rig that set the flag and left `stateFlags & 0x10` clear would
+    /// quietly run a closed-form case on the CPU step.
+    void SetAnalytic(bool on) {
+        d.motion.analytic = on;
+        const u32 bit = particle::Sc2InitRuntimeWords(d).stateFlags & sc2::kStateGpuMotion;
+        rt.clock.stateFlags = (rt.clock.stateFlags & ~sc2::kStateGpuMotion) | bit;
+    }
+
     Sc2Rig(u32 maxParticles, f32 rate, f32 lifetime) {
         d.emit.maxParticles = maxParticles;
         rt.store.Init(maxParticles);
-        // Analytic by default, and with the selector bit `SetDesc` sets for
-        // it: these cases were written for the closed-form path, and a rig
-        // that left `stateFlags & 0x10` clear would quietly run them on the
-        // CPU step instead. The Euler cases opt out explicitly.
-        d.motion.analytic = true;
-        rt.clock.stateFlags |= 0x10u;
+        // Analytic by default: these cases were written for the closed-form
+        // path. The Euler cases opt out explicitly.
+        SetAnalytic(true);
         rt.frame.active = true;
         rt.frame.emissionRate = rate;
         rt.frame.lifetime = lifetime;
@@ -3543,8 +3551,7 @@ TEST_CASE("compose: an Euler emitter moves, lands and draws where it is",
     // gate stayed green while it did.
     constexpr f32 kGround = -2.0f;
     const auto euler = [](Sc2Rig& rig) {
-        rig.d.motion.analytic = false;
-        rig.rt.clock.stateFlags &= ~0x10u;
+        rig.SetAnalytic(false);
         rig.d.motion.gravity3 = {0.0f, 0.0f, -9.8f};
         rig.d.flags = particle::ParticleFlag::CollideTerrain;
     };

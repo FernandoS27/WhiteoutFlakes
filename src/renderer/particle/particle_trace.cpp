@@ -5,21 +5,18 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <sstream>
-#include <unordered_map>
 
 namespace whiteout::flakes::renderer::particle {
 
 namespace {
 
-constexpr const char* kMagic = "wpt2";
+constexpr const char* kMagic = "wpt3";
+/// The format before the side-stream columns; still read.
+constexpr const char* kMagicV2 = "wpt2";
 /// The format before the output column; still read.
 constexpr const char* kMagicV1 = "wpt1";
-
-inline u64 EmitterIndexKey(ModelId model, u8 output, i32 id) {
-    return (static_cast<u64>(model) << 40) | (static_cast<u64>(output) << 32) |
-           static_cast<u32>(id);
-}
 
 // FNV-1a over the exact bit patterns, so the hash is an equality test rather
 // than a similarity test. Tolerance comparisons switch it off instead of
@@ -41,6 +38,59 @@ std::string F(f32 v) {
     return buf;
 }
 
+constexpr u64 kFnvBasis = 0xCBF29CE484222325ull;
+
+void HashVertex(u64& h, const Vertex& vt) {
+    for (i32 c = 0; c < 3; ++c)
+        HashF32(h, vt.position.data[c]);
+    for (i32 c = 0; c < 4; ++c)
+        HashF32(h, vt.color.data[c]);
+    HashF32(h, vt.uv.x);
+    HashF32(h, vt.uv.y);
+}
+
+void HashVec4(u64& h, const Vector4f& v) {
+    for (i32 c = 0; c < 4; ++c)
+        HashF32(h, v.data[c]);
+}
+
+/// The L2 summary of one draw's slice of @p verts: count, hash, bounds, mean
+/// colour and plane.
+void SummariseSlice(TraceEmitter& te, const EmitterDrawList& dl, const std::vector<Vertex>& verts) {
+    te.vertexCount = dl.vertexCount;
+    te.priorityPlane = dl.priorityPlane;
+
+    u64 h = kFnvBasis;
+    Vector3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+    f64 sum[4] = {0, 0, 0, 0};
+    const i32 begin = dl.vertexOffset;
+    const i32 end = dl.vertexOffset + dl.vertexCount;
+    for (i32 v = begin; v < end && v < (i32)verts.size(); ++v) {
+        const Vertex& vt = verts[v];
+        HashVertex(h, vt);
+        for (i32 c = 0; c < 3; ++c) {
+            lo.data[c] = (std::min)(lo.data[c], vt.position.data[c]);
+            hi.data[c] = (std::max)(hi.data[c], vt.position.data[c]);
+        }
+        for (i32 c = 0; c < 4; ++c)
+            sum[c] += vt.color.data[c];
+    }
+    te.vertexHash = h;
+    if (dl.vertexCount > 0) {
+        te.boundsMin = lo;
+        te.boundsMax = hi;
+        for (i32 c = 0; c < 4; ++c)
+            te.meanColor.data[c] = static_cast<f32>(sum[c] / dl.vertexCount);
+    }
+}
+
+/// Folds entries `[offset, offset + count)` of @p v into @p h.
+template <class T, class Fn>
+void HashRange(u64& h, const std::vector<T>& v, i32 offset, i32 count, Fn&& fn) {
+    for (i32 i = offset; i < offset + count && i < (i32)v.size(); ++i)
+        fn(h, v[i]);
+}
+
 } // namespace
 
 void CaptureFrame(const ParticleService& svc, const Matrix44f& worldToView, i32 frame, Trace& out) {
@@ -48,7 +98,9 @@ void CaptureFrame(const ParticleService& svc, const Matrix44f& worldToView, i32 
     tf.frame = frame;
 
     // L1 — pool state, straight off each emitter.
-    std::unordered_map<u64, usize> index;
+    // By the emitter's whole key: a packed 64-bit one kept only 24 bits of the
+    // model id, so two models 2^24 apart traced as one.
+    std::map<EmitterKey, usize> index;
     svc.ForEachEmitter([&](const EmitterKey& k, const ParticleEmitter& e) {
         TraceEmitter te;
         te.output = static_cast<u8>(k.output);
@@ -63,53 +115,58 @@ void CaptureFrame(const ParticleService& svc, const Matrix44f& worldToView, i32 
             te.particles.push_back({p.position, p.velocity, p.age, p.aux});
         }
 
-        index[EmitterIndexKey(k.model, static_cast<u8>(k.output), k.id)] = tf.emitters.size();
+        index[k] = tf.emitters.size();
         tf.emitters.push_back(std::move(te));
     });
 
-    // L2 — the emitter's slice of the frame's vertex stream. Goes through the
-    // service's own BuildGeometry so the trace sees the real fog configuration
-    // and draw-list splitting rather than a reconstruction of them.
+    // L2 — the emitter's slice of the frame's vertex streams. Goes through the
+    // service's own BuildGeometry, with every side stream a frame can have, so
+    // the trace sees the real draw-list splitting and routing rather than a
+    // reconstruction of them.
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> draws;
-    svc.BuildGeometry(worldToView, verts, draws);
+    MultiTexGeometry refraction;
+    MultiTexGeometry multiTex;
+    D3VertexStream d3;
+    svc.BuildGeometry(worldToView, {verts, draws, &refraction, &multiTex, &d3});
 
+    // Draw lists only ever come from billboard emitters.
+    const auto emitterOf = [&](const EmitterDrawList& dl) -> TraceEmitter* {
+        auto it = index.find(EmitterKey{dl.model, ParticleOutput::Billboard, dl.emitterId});
+        return it == index.end() ? nullptr : &tf.emitters[it->second];
+    };
     for (const auto& dl : draws) {
-        // Draw lists only ever come from billboard emitters.
-        auto it = index.find(EmitterIndexKey(
-            dl.model, static_cast<u8>(ParticleOutput::Billboard), dl.emitterId));
-        if (it == index.end())
+        TraceEmitter* te = emitterOf(dl);
+        if (!te)
             continue;
-        TraceEmitter& te = tf.emitters[it->second];
-        te.vertexCount = dl.vertexCount;
-        te.priorityPlane = dl.priorityPlane;
-
-        u64 h = 0xCBF29CE484222325ull;
-        Vector3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
-        f64 sum[4] = {0, 0, 0, 0};
-        const i32 begin = dl.vertexOffset;
-        const i32 end = dl.vertexOffset + dl.vertexCount;
-        for (i32 v = begin; v < end && v < (i32)verts.size(); ++v) {
-            const Vertex& vt = verts[v];
-            for (i32 c = 0; c < 3; ++c) {
-                HashF32(h, vt.position.data[c]);
-                lo.data[c] = (std::min)(lo.data[c], vt.position.data[c]);
-                hi.data[c] = (std::max)(hi.data[c], vt.position.data[c]);
+        u64 side = kFnvBasis;
+        if (dl.material.Shading() == ParticleShading::MultiTexture) {
+            // The same vertices the shared stream would have held, in the
+            // stream the draw's offsets index, plus the two layers.
+            SummariseSlice(*te, dl, multiTex.vertices);
+            HashRange(side, multiTex.extraUV, dl.vertexOffset, dl.vertexCount, HashVec4);
+        } else {
+            SummariseSlice(*te, dl, verts);
+            if (dl.material.Shading() == ParticleShading::D3) {
+                HashRange(side, d3.uv01, dl.vertexOffset, dl.vertexCount, HashVec4);
+                HashRange(side, d3.uv23, dl.vertexOffset, dl.vertexCount, HashVec4);
+                HashRange(side, d3.color1, dl.vertexOffset, dl.vertexCount, HashF32);
             }
-            for (i32 c = 0; c < 4; ++c) {
-                HashF32(h, vt.color.data[c]);
-                sum[c] += vt.color.data[c];
-            }
-            HashF32(h, vt.uv.x);
-            HashF32(h, vt.uv.y);
         }
-        te.vertexHash = h;
-        if (dl.vertexCount > 0) {
-            te.boundsMin = lo;
-            te.boundsMax = hi;
-            for (i32 c = 0; c < 4; ++c)
-                te.meanColor.data[c] = static_cast<f32>(sum[c] / dl.vertexCount);
-        }
+        te->sideHash = side;
+    }
+    // A refraction emitter's draw leaves the scene pass, and its vertices never
+    // reach the shared stream: all of it is side stream.
+    for (const auto& dl : refraction.draws) {
+        TraceEmitter* te = emitterOf(dl);
+        if (!te)
+            continue;
+        te->priorityPlane = dl.priorityPlane;
+        te->sideCount = dl.vertexCount;
+        u64 side = kFnvBasis;
+        HashRange(side, refraction.vertices, dl.vertexOffset, dl.vertexCount, HashVertex);
+        HashRange(side, refraction.extraUV, dl.vertexOffset, dl.vertexCount, HashVec4);
+        te->sideHash = side;
     }
 
     // Stable order so the file is diffable and comparison is positional.
@@ -139,7 +196,7 @@ bool WriteTrace(const Trace& t, const std::string& path, std::string& err) {
               << F(e.boundsMin.x) << " " << F(e.boundsMin.y) << " " << F(e.boundsMin.z) << " "
               << F(e.boundsMax.x) << " " << F(e.boundsMax.y) << " " << F(e.boundsMax.z) << " "
               << F(e.meanColor.x) << " " << F(e.meanColor.y) << " " << F(e.meanColor.z) << " "
-              << F(e.meanColor.w) << "\n";
+              << F(e.meanColor.w) << " " << e.sideCount << " " << e.sideHash << "\n";
             for (const auto& p : e.particles) {
                 f << "p " << F(p.position.x) << " " << F(p.position.y) << " " << F(p.position.z)
                   << " " << F(p.velocity.x) << " " << F(p.velocity.y) << " " << F(p.velocity.z)
@@ -156,16 +213,19 @@ bool ReadTrace(Trace& t, const std::string& path, std::string& err) {
         err = "cannot open for read: " + path;
         return false;
     }
-    // v1 had no output-kind column. Reading it is still useful: a baseline
-    // recorded before the output axis existed is exactly what the step that
-    // introduced it needs to be checked against.
+    // v1 had no output-kind column and v2 no side-stream columns. Reading them
+    // is still useful: a baseline recorded before a column existed is exactly
+    // what the step that introduced it needs to be checked against.
     std::string magic;
     std::getline(f, magic);
-    const bool hasOutputColumn = (magic.rfind(kMagic, 0) == 0);
-    if (!hasOutputColumn && magic.rfind(kMagicV1, 0) != 0) {
+    const bool v3 = magic.rfind(kMagic, 0) == 0;
+    const bool v2 = magic.rfind(kMagicV2, 0) == 0;
+    if (!v3 && !v2 && magic.rfind(kMagicV1, 0) != 0) {
         err = "bad magic in " + path;
         return false;
     }
+    const bool hasOutputColumn = v3 || v2;
+    t.hasSideStreams = v3;
     std::string line;
     while (std::getline(f, line)) {
         if (line.empty())
@@ -193,6 +253,8 @@ bool ReadTrace(Trace& t, const std::string& path, std::string& err) {
                 e.priorityPlane >> e.boundsMin.x >> e.boundsMin.y >> e.boundsMin.z >>
                 e.boundsMax.x >> e.boundsMax.y >> e.boundsMax.z >> e.meanColor.x >>
                 e.meanColor.y >> e.meanColor.z >> e.meanColor.w;
+            if (v3)
+                is >> e.sideCount >> e.sideHash;
             e.output = static_cast<u8>(outKind);
             e.particles.reserve(np);
             t.frames.back().emitters.push_back(std::move(e));
@@ -234,12 +296,16 @@ std::string Where(i32 frame, const TraceEmitter& e) {
 bool CompareTraces(const Trace& baseline, const Trace& actual, const CompareTolerance& tol,
                    std::string& report) {
     std::ostringstream os;
+    // Every mismatch writes its line into `os` and leaves through here.
+    const auto fail = [&] {
+        report = os.str();
+        return false;
+    };
 
     if (baseline.frames.size() != actual.frames.size()) {
         os << "frame count differs: baseline " << baseline.frames.size() << " vs actual "
            << actual.frames.size();
-        report = os.str();
-        return false;
+        return fail();
     }
 
     for (usize fi = 0; fi < baseline.frames.size(); ++fi) {
@@ -248,8 +314,7 @@ bool CompareTraces(const Trace& baseline, const Trace& actual, const CompareTole
         if (b.emitters.size() != a.emitters.size()) {
             os << "frame " << b.frame << ": emitter count differs, baseline " << b.emitters.size()
                << " vs actual " << a.emitters.size();
-            report = os.str();
-            return false;
+            return fail();
         }
         for (usize ei = 0; ei < b.emitters.size(); ++ei) {
             const TraceEmitter& be = b.emitters[ei];
@@ -257,14 +322,12 @@ bool CompareTraces(const Trace& baseline, const Trace& actual, const CompareTole
             if (be.model != ae.model || be.output != ae.output || be.emitterId != ae.emitterId) {
                 os << Where(b.frame, be) << ": identity differs, actual (" << ae.model << ","
                    << ae.emitterId << ")";
-                report = os.str();
-                return false;
+                return fail();
             }
             if (be.particles.size() != ae.particles.size()) {
                 os << Where(b.frame, be) << ": alive count differs, baseline "
                    << be.particles.size() << " vs actual " << ae.particles.size();
-                report = os.str();
-                return false;
+                return fail();
             }
             for (usize pi = 0; pi < be.particles.size(); ++pi) {
                 const TraceParticle& bp = be.particles[pi];
@@ -291,37 +354,49 @@ bool CompareTraces(const Trace& baseline, const Trace& actual, const CompareTole
                        << ap.position.y << "," << ap.position.z << ") vel=(" << ap.velocity.x
                        << "," << ap.velocity.y << "," << ap.velocity.z << ") age=" << ap.age
                        << " aux=" << ap.aux;
-                    report = os.str();
-                    return false;
+                    return fail();
                 }
             }
 
             if (be.vertexCount != ae.vertexCount) {
                 os << Where(b.frame, be) << ": vertex count differs, baseline " << be.vertexCount
                    << " vs actual " << ae.vertexCount;
-                report = os.str();
-                return false;
+                return fail();
             }
             if (tol.requireVertexHash && be.vertexHash != ae.vertexHash) {
                 os << Where(b.frame, be) << ": vertex stream differs (hash " << be.vertexHash
                    << " vs " << ae.vertexHash << ")";
-                report = os.str();
-                return false;
+                return fail();
+            }
+            if (be.priorityPlane != ae.priorityPlane) {
+                os << Where(b.frame, be) << ": priority plane differs, baseline "
+                   << be.priorityPlane << " vs actual " << ae.priorityPlane;
+                return fail();
+            }
+            if (baseline.hasSideStreams && actual.hasSideStreams) {
+                if (be.sideCount != ae.sideCount) {
+                    os << Where(b.frame, be) << ": side stream vertex count differs, baseline "
+                       << be.sideCount << " vs actual " << ae.sideCount;
+                    return fail();
+                }
+                if (tol.requireVertexHash && be.sideHash != ae.sideHash) {
+                    os << Where(b.frame, be) << ": side stream differs (hash " << be.sideHash
+                       << " vs " << ae.sideHash << ")";
+                    return fail();
+                }
             }
             for (i32 c = 0; c < 4; ++c) {
                 if (!Near(be.meanColor.data[c], ae.meanColor.data[c], tol.color)) {
                     os << Where(b.frame, be) << ": mean colour channel " << c << " differs, "
                        << be.meanColor.data[c] << " vs " << ae.meanColor.data[c];
-                    report = os.str();
-                    return false;
+                    return fail();
                 }
             }
             for (i32 c = 0; c < 3; ++c) {
                 if (!Near(be.boundsMin.data[c], ae.boundsMin.data[c], tol.bounds) ||
                     !Near(be.boundsMax.data[c], ae.boundsMax.data[c], tol.bounds)) {
                     os << Where(b.frame, be) << ": bounds axis " << c << " differs";
-                    report = os.str();
-                    return false;
+                    return fail();
                 }
             }
         }

@@ -1333,10 +1333,17 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/child_model_emitter.cpp
     src/renderer/particle/model_particle_emitter.cpp
     src/renderer/particle/sc2_model_particle_emitter.cpp
-    src/renderer/particle/particle_adapters.cpp
+    src/renderer/particle/particle_adapters_wc3_m2.cpp
+    src/renderer/particle/particle_adapters_sc2.cpp
     src/renderer/particle/particle_curve.cpp
     src/renderer/particle/d3_path.cpp
     src/renderer/particle/d3_emitter.cpp
+    src/renderer/particle/d3_emitter_desc.cpp
+    src/renderer/particle/d3_emit_shape.cpp
+    src/renderer/particle/d3_birth.cpp
+    src/renderer/particle/d3_uv_state.cpp
+    src/renderer/particle/d3_motion.cpp
+    src/renderer/particle/d3_quad_build.cpp
     src/renderer/particle/particle_pool.cpp
     src/renderer/particle/particle2_emitter.cpp
     src/renderer/particle/particle2_emitter_sc2.cpp

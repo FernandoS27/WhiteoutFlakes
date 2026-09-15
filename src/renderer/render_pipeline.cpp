@@ -321,7 +321,7 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
             impl_->m3Shading_->DrawWorldVertices(
                 *owner, dl.material.m3Surface, impl_->particleServiceVB_, dl.vertexOffset,
                 dl.vertexCount, frame, profiles::sc2_heroes::M3WorldVertexKind::Particle,
-                dl.emitterId);
+                dl.emitterId, dl.material.unshaded);
             return;
         }
         // No owner means no surface table to look the material up in; fall
@@ -3456,7 +3456,7 @@ void RenderPipeline::RenderTransparentScene() {
             d3UvOut = &impl_->d3UvGeo_;
         }
 #endif
-        rs_.Particles().BuildGeometry(viewMat, verts, partDraws, refractOut, multiTexOut, d3UvOut);
+        rs_.Particles().BuildGeometry(viewMat, {verts, partDraws, refractOut, multiTexOut, d3UvOut});
 #if WDX_ENABLE_D3
         // Only when a draw actually wants it. The parallel arrays cost memory
         // whatever the dialect, but creating and mapping a vertex buffer is a

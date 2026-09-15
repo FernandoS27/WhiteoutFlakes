@@ -4,16 +4,7 @@
 
 namespace whiteout::flakes::renderer::particle {
 
-namespace {
-
-ImVector DefaultFog(const Vector3f&) {
-
-    return {255, 255, 255, 255};
-}
-
-} // namespace
-
-ParticleService::ParticleService() : fogSampler_(&DefaultFog) {}
+ParticleService::ParticleService() = default;
 
 ParticleService::~ParticleService() = default;
 
@@ -34,12 +25,10 @@ void ParticleService::AddEmitter(ModelId model, i32 emitterId,
 
 void ParticleService::RemoveModel(ModelId model) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = emitters_.begin(); it != emitters_.end();) {
-        if (it->first.model == model)
-            it = emitters_.erase(it);
-        else
-            ++it;
-    }
+    // The model's range, in key order — the order the whole-map walk erased in.
+    auto it = emitters_.lower_bound(FirstKeyOf(model));
+    while (it != emitters_.end() && it->first.model == model)
+        it = emitters_.erase(it);
 }
 
 void ParticleService::Clear() {
@@ -91,11 +80,8 @@ i32 ParticleService::TotalParticleCount() const {
 
 bool ParticleService::HasEmittersForModel(ModelId model) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [k, e] : emitters_) {
-        if (k.model == model)
-            return true;
-    }
-    return false;
+    const auto it = emitters_.lower_bound(FirstKeyOf(model));
+    return it != emitters_.end() && it->first.model == model;
 }
 
 void ParticleService::ForEachEmitter(
@@ -189,40 +175,37 @@ bool ParticleService::HasRefractionEmitters() const {
     return false;
 }
 
-void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
-                                    std::vector<EmitterDrawList>& outDrawLists,
-                                    MultiTexGeometry* refraction,
-                                    MultiTexGeometry* multiTex, D3VertexStream* d3Uv) const {
+namespace {
+
+/// The draw for @p count vertices from @p offset of the emitter @p h describes.
+EmitterDrawList MakeDraw(const EmitterDrawHeader& h, ModelId model, i32 id, i32 offset, i32 count,
+                         const Vector3f& origin) {
+    return {model, id, offset, count, h.priorityPlane, *h.material, origin};
+}
+
+} // namespace
+
+void ParticleService::BuildGeometry(const Matrix44f& worldToView, const ParticleStreams& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     BuildGeometryInput in{};
     in.worldToView = &worldToView;
-    in.fogEnabled = fogEnabled_;
-    in.fogSampler = fogSampler_;
-    if (d3Uv) {
-        in.d3Uv01 = &d3Uv->uv01;
-        in.d3Uv23 = &d3Uv->uv23;
-        in.d3Color1 = &d3Uv->color1;
-    }
+    in.d3 = out.d3;
 
     // The two side streams put their VERTICES somewhere other than
-    // `outVertices`, so they must not also append to arrays kept parallel with
+    // `out.vertices`, so they must not also append to arrays kept parallel with
     // it. No shipped emitter is both Diablo III and multi-texture — the flags
     // are M2's and the D3 adapter never sets them — but the invariant is worth
     // holding structurally rather than by that argument.
     BuildGeometryInput refractIn = in;
-    refractIn.d3Uv01 = nullptr;
-    refractIn.d3Uv23 = nullptr;
-    refractIn.d3Color1 = nullptr;
-    if (refraction)
-        refractIn.extraUV = &refraction->extraUV;
+    refractIn.d3 = nullptr;
+    if (out.refraction)
+        refractIn.extraUV = &out.refraction->extraUV;
 
     BuildGeometryInput multiTexIn = in;
-    multiTexIn.d3Uv01 = nullptr;
-    multiTexIn.d3Uv23 = nullptr;
-    multiTexIn.d3Color1 = nullptr;
-    if (multiTex)
-        multiTexIn.extraUV = &multiTex->extraUV;
+    multiTexIn.d3 = nullptr;
+    if (out.multiTex)
+        multiTexIn.extraUV = &out.multiTex->extraUV;
 
     // One emitter's own particles, then its trails'. A trail is an ordinary
     // billboard emitter with its own texture, blend mode and sheet, so it needs
@@ -242,41 +225,35 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     auto build = [&](const ParticleEmitter& e, const EmitterDrawHeader& h, ModelId model, i32 id,
                      const Vector3f& origin) {
         if (h.refraction) {
-            if (!refraction)
+            if (!out.refraction)
                 return;
-            const i32 offset = (i32)refraction->vertices.size();
-            const i32 vcount = e.BuildGeometry(refractIn, refraction->vertices);
+            const i32 offset = (i32)out.refraction->vertices.size();
+            const i32 vcount = e.BuildGeometry(refractIn, out.refraction->vertices);
             if (vcount > 0)
-                refraction->draws.push_back({model, id, offset, vcount, h.priorityPlane,
-                                             *h.material, origin, h.materialTimeSec});
+                out.refraction->draws.push_back(MakeDraw(h, model, id, offset, vcount, origin));
             return;
         }
-        if (h.multiTexture && multiTex) {
-            const i32 offset = (i32)multiTex->vertices.size();
-            const i32 vcount = e.BuildGeometry(multiTexIn, multiTex->vertices);
+        if (h.multiTexture && out.multiTex) {
+            const i32 offset = (i32)out.multiTex->vertices.size();
+            const i32 vcount = e.BuildGeometry(multiTexIn, out.multiTex->vertices);
             if (vcount > 0)
-                outDrawLists.push_back({model, id, offset, vcount, h.priorityPlane, *h.material,
-                                        origin, h.materialTimeSec});
+                out.draws.push_back(MakeDraw(h, model, id, offset, vcount, origin));
             return;
         }
         // Levelled BEFORE the build, not after: a D3 emitter appends its
-        // texcoords as it appends its vertices, so the two arrays have to
-        // already be the same length or its first quad's coordinates land under
-        // whatever an earlier emitter's quads occupy.
-        if (in.d3Uv01) {
-            in.d3Uv01->resize(outVertices.size());
-            in.d3Uv23->resize(outVertices.size());
-            in.d3Color1->resize(outVertices.size(), 1.0f);
-        }
-        const i32 offset = (i32)outVertices.size();
-        const i32 vcount = e.BuildGeometry(in, outVertices);
+        // texcoords as it appends its vertices, so the arrays have to already be
+        // the same length or its first quad's coordinates land under whatever an
+        // earlier emitter's quads occupy.
+        if (out.d3)
+            out.d3->LevelTo(out.vertices.size());
+        const i32 offset = (i32)out.vertices.size();
+        const i32 vcount = e.BuildGeometry(in, out.vertices);
         if (vcount > 0) {
-            EmitterDrawList dl{model,        id,     offset,           vcount, h.priorityPlane,
-                               *h.material, origin, h.materialTimeSec};
+            EmitterDrawList dl = MakeDraw(h, model, id, offset, vcount, origin);
             // Nothing downstream can shade three layers off this stream, so the
             // draw must not claim it carries them.
             dl.material.multiTexture = false;
-            outDrawLists.push_back(dl);
+            out.draws.push_back(dl);
         }
     };
 
@@ -297,25 +274,13 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
             build(*t, t->DrawHeader(), k.model, TrailEmitterId(k.id, childIdx++), origin);
     }
     // The last emitter may have been one that writes no texcoords.
-    if (d3Uv) {
-        d3Uv->uv01.resize(outVertices.size());
-        d3Uv->uv23.resize(outVertices.size());
-    }
+    if (out.d3)
+        out.d3->LevelTo(out.vertices.size());
 }
 
 void ParticleService::SetEmissionScaler(f32 s) {
     std::lock_guard<std::mutex> lock(mutex_);
     emissionScaler_ = s;
-}
-
-f32 ParticleService::EmissionScaler() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return emissionScaler_;
-}
-
-void ParticleService::SetFogSampler(FogSampler sampler) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    fogSampler_ = sampler ? std::move(sampler) : FogSampler(&DefaultFog);
 }
 
 void ParticleService::SetGroundQuery(GroundQuery query) {

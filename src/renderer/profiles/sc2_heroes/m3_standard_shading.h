@@ -85,9 +85,14 @@ public:
     /// Interleaved in the transparent pass by RenderPipeline, not by the
     /// draw-item loop, so it writes its own pass CB rather than leaning on
     /// BeginPass. `emitterId` is the trace's, −1 for a ribbon.
+    ///
+    /// `forceUnshaded` draws the surface unlit whatever its material says: an
+    /// SC2 particle without `LitParts` clears `b_useLighting` (SC2_PARTICLE_RE
+    /// §8.3). A ribbon takes the material alone.
     void DrawWorldVertices(model::Actor& actor, i32 surfaceIndex, gfx::BufferHandle vb,
                            i32 vertexOffset, i32 vertexCount, const bls::FrameInputs& frame,
-                           M3WorldVertexKind kind, i32 emitterId = -1);
+                           M3WorldVertexKind kind, i32 emitterId = -1,
+                           bool forceUnshaded = false);
 
     core::SurfaceClass Classify(const render_detail::RenderableView& view,
                                 const model::GPUGeoset& geo) const override;

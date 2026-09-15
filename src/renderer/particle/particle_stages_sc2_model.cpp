@@ -13,6 +13,7 @@
 #include "sc2_emitter_desc.h"
 
 #include "renderer/sc2/sc2_element_math.h"
+#include "renderer/sc2/sc2_newton.h"
 
 #include <cmath>
 
@@ -30,21 +31,18 @@ constexpr f32 kInv256 = sc2::kInvSizeQuant;
 constexpr f32 kInv32 = sc2::kInvRotationQuant;
 constexpr f32 kPackStep = 1.0f / sc2::kPackHalf;
 constexpr f32 kPackBack = -sc2::kPackHalf;
-/// The pole test's cosine. DISAGREES — F4 with the spawn spline's spelling of
-/// the same dword.
-constexpr f32 kPole = sc2::kModelPoleCos;
+/// The pole test's cosine, the spawn spline's too.
+constexpr f32 kPole = sc2::kVerticalCos;
 /// A world-space type-7/8 `orientVec` read as one plain direction rather than a
-/// packed pair. DISAGREES — F5: `sc2::SystemStateFlag` names this bit
-/// `kStateEmissionDisabled`, and the RE §3 table agrees with that name.
-constexpr u32 kStatePlainOrient = 0x80u;
+/// packed pair.
+constexpr u32 kStatePlainOrient = sc2::kStatePlainOrient;
 
 /// `1/sqrt` and one Newton step, `(r·−0.5)·((s·r)·r − 3)` — the grouping every
 /// normalise in these three routines takes. `rsqtss` seeds 12 bits on real
 /// hardware and is correctly rounded under the oracle's emulator, which is why
 /// the replays hold these lanes to a relative bound.
 f32 RsqNewton(f32 s) {
-    const f32 r = 1.0f / std::sqrt(s);
-    return (r * -0.5f) * (((s * r) * r) + -3.0f);
+    return sc2::NewtonRsqrt(s, 1.0f / std::sqrt(s));
 }
 
 /// The same refinement spelled as a LENGTH, `((s·r)·r − 3)·(−0.5·s·r)`, and
@@ -52,9 +50,7 @@ f32 RsqNewton(f32 s) {
 f32 NewtonLength(f32 s) {
     if (s == 0.0f)
         return 0.0f;
-    const f32 r = 1.0f / std::sqrt(s);
-    const f32 sr = s * r;
-    return ((sr * r) + -3.0f) * (-0.5f * sr);
+    return sc2::NewtonLength(s, 1.0f / std::sqrt(s));
 }
 
 /// `FpClassify(v) <= 0`: zero, subnormal or normal. The fallback rows below
@@ -360,6 +356,313 @@ std::array<Vector3f, 3> Sc2QuatRows(const std::array<f32, 4>& q) {
             Vector3f{2.0f * (xz + wy), 2.0f * (yz - wx), 1.0f - 2.0f * (xx + yy)}};
 }
 
+namespace {
+
+/// What one instance type's arm of the orientation tier builds: the basis,
+/// and whether — and about which axis — the rotation curve's angle spins it.
+struct PoseBasis {
+    Quat q{0.0f, 0.0f, 0.0f, 1.0f};
+    bool spin = false;
+    Vector3f axis{0, 0, 0};
+};
+
+/// Type 0: the camera's own rows, spun about the view direction.
+PoseBasis BillboardPose(const Sc2ModelPoseInputs& in) {
+    const Vector3f fwd = NormalisedOr(in.camera[1], {0.0f, -1.0f, 0.0f});
+    const Vector3f right = NormalisedOr(in.camera[0], {1.0f, 0.0f, 0.0f});
+    const Vector3f up = NormalisedOr(in.camera[2], {0.0f, 0.0f, 1.0f});
+    return {QuatFromRows(right, fwd, up), true, Neg(fwd)};
+}
+
+/// Types 1 and 10: the velocity-and-camera basis, stretched along z by the
+/// tail, and a Trail slid back along its velocity by that same length.
+Quat TailPose(const Sc2ModelPoseInputs& in, Sc2InstanceType type, Vector3f& pos,
+              Sc2ModelPose& out) {
+    const Vector3f& vel = in.velocity;
+    const Quat q = VelocityCameraBasis(vel, in.camera[1]);
+    const f32 speed = NewtonLength((vel.z * vel.z) + ((vel.y * vel.y) + (vel.x * vel.x)));
+    f32 stretch = in.tailLength * speed;
+    if (!Sc2Has(in.parFlags, ParticleFlag::FixTailLengthOnCreation))
+        stretch = std::fmax(stretch, in.tailLength);
+    const f32 z = stretch * out.scale.z;
+    out.scale.z = z;
+    if (type == Sc2InstanceType::Trail) {
+        Vector3f dir = vel;
+        if (speed > 0.0f) {
+            const f32 inv = 1.0f / speed;
+            dir = {dir.x * inv, dir.y * inv, dir.z * inv};
+        }
+        pos = {pos.x - (dir.x * z), pos.y - (dir.y * z), pos.z - (dir.z * z)};
+    }
+    return q;
+}
+
+/// Types 2 and 3: the facing basis over the velocity or `instanceAngle`.
+PoseBasis FacingPose(const Sc2ModelPoseInputs& in, Sc2InstanceType type) {
+    const DirectionBasis basis =
+        FacingBasis(type == Sc2InstanceType::FaceTravelDir ? in.velocity : in.instanceAngle);
+    // Under `Sc2RotationBit::RandomDirection` a type 3 spins about the
+    // element's own random direction instead of its forward.
+    const bool randomAxis = type == Sc2InstanceType::FaceWorldDir &&
+                            Sc2Has(in.rotationFlags, Sc2RotationBit::RandomDirection);
+    return {basis.q, true, randomAxis ? in.randomDirection : basis.back};
+}
+
+/// Type 4: three rows crossed off the camera and the negated instance angle,
+/// each normalise falling back to a fixed axis when it comes out non-finite.
+PoseBasis SingleAxisPose(const Sc2ModelPoseInputs& in) {
+    const Vector3f& cam = in.camera[1];
+    const Vector3f& ia = in.instanceAngle;
+    const f32 ex = -ia.x;
+    const f32 ey = -ia.y;
+    const f32 ez = -ia.z;
+    const f32 ax = (cam.z * ey) - (cam.y * ez);
+    const f32 ay = (cam.x * ez) - (ex * cam.z);
+    const f32 az = (cam.y * ex) - (ey * cam.x);
+    const f32 s = ((ay * ay) + (ax * ax)) + (az * az);
+    const f32 r = RsqNewton(s);
+    const Vector3f a = Finite(r) ? Vector3f{ax * r, ay * r, az * r} : Vector3f{1, 0, 0};
+    const f32 bx = (a.y * ez) - (ey * a.z);
+    const f32 by = (a.z * ex) - (ez * a.x);
+    const f32 bz = (a.x * ey) - (ex * a.y);
+    const f32 s2 = ((bz * bz) + (bx * bx)) + (by * by);
+    const f32 r2 = RsqNewton(s2);
+    const Vector3f b = Finite(r2) ? Vector3f{bx * r2, by * r2, bz * r2} : Vector3f{0, 0, -1};
+    const f32 cx = (b.z * a.y) - (a.z * b.y);
+    const f32 cy = (a.z * b.x) - (b.z * a.x);
+    const f32 cz = (a.x * b.y) - (b.x * a.y);
+    const f32 s3 = ((cz * cz) + (cx * cx)) + (cy * cy);
+    const f32 r3 = RsqNewton(s3);
+    const Vector3f c = Finite(r3) ? Vector3f{cx * r3, cy * r3, cz * r3} : Vector3f{0, 1, 0};
+    return {QuatFromRows(a, b, c), true, Neg(b)};
+}
+
+/// Type 5: the instance angle projected onto the terrain plane.
+Quat TerrainPose(const Sc2ModelPoseInputs& in, f32 angle) {
+    const Vector3f& ia = in.instanceAngle;
+    // No guard on this normalise: a zero `instanceAngle` is a NaN pose.
+    const f32 s = ((ia.z * ia.z) + (ia.x * ia.x)) + (ia.y * ia.y);
+    const f32 r = RsqNewton(s);
+    const Vector3f u{r * ia.x, r * ia.y, r * ia.z};
+    const Vector3f n = in.haveTerrain ? in.terrainNormal : Vector3f{0, 0, 1};
+    const f32 dp = ((n.z * u.z) + (n.x * u.x)) + (u.y * n.y);
+    const f32 px = u.x - (dp * n.x);
+    const f32 py = u.y - (dp * n.y);
+    const f32 pz = u.z - (dp * n.z);
+    const f32 s2 = ((pz * pz) + (px * px)) + (py * py);
+    Vector3f p{1, 0, 0};
+    if (s2 >= sc2::kTerrainProjectMinSq) {
+        const f32 r2 = RsqNewton(s2);
+        p = {px * r2, py * r2, r2 * pz};
+    }
+    const f32 sx = (p.y * n.z) - (p.z * n.y);
+    const f32 sy = (p.z * n.x) - (p.x * n.z);
+    const f32 sz = (p.x * n.y) - (p.y * n.x);
+    // The spin is applied to the ROWS, about the negated normal, rather
+    // than as a trailing product.
+    const Quat qa = AxisAngle(Neg(n), angle);
+    const f32 x = qa[0], y = qa[1], z = qa[2], w = qa[3];
+    const f32 v217 = w * (x + x);
+    const f32 v218 = (z + z) * w;
+    const f32 v219 = w * (y + y);
+    const f32 v220 = (y + y) * x;
+    const f32 v221 = x * (z + z);
+    const f32 v222 = (y + y) * y;
+    const f32 v223 = y * (z + z);
+    const f32 v224 = (z + z) * z;
+    const f32 v225 = v218 + v220;
+    const f32 v226 = v220 - v218;
+    const f32 oneXX = 1.0f - ((x + x) * x);
+    const f32 v227 = (1.0f - v222) - v224;
+    const f32 v228 = oneXX - v224;
+    const f32 v229 = v221 - v219;
+    const f32 v230 = v221 + v219;
+    const f32 v231 = v223 + v217;
+    const f32 v232 = v223 - v217;
+    const f32 v215 = oneXX - v222;
+    const Vector3f rp{(p.z * v230) + ((v226 * p.y) + (v227 * p.x)),
+                      (p.z * v232) + ((v228 * p.y) + (v225 * p.x)),
+                      (p.z * v215) + ((p.y * v231) + (p.x * v229))};
+    const Vector3f rs{(v230 * sz) + ((v226 * sy) + (v227 * sx)),
+                      (v232 * sz) + ((v228 * sy) + (v225 * sx)),
+                      (v215 * sz) + ((v231 * sy) + (v229 * sx))};
+    return QuatFromRows(rs, Neg(u), rp);
+}
+
+/// Type 6: the velocity crossed with the terrain normal.
+Quat TerrainDirPose(const Sc2ModelPoseInputs& in, f32 angle) {
+    const Vector3f& vel = in.velocity;
+    const Vector3f& ia = in.instanceAngle;
+    const f32 s = ((ia.z * ia.z) + (ia.x * ia.x)) + (ia.y * ia.y);
+    const f32 r0 = 1.0f / std::sqrt(s);
+    const f32 rI = sc2::NewtonRsqrt(s, r0);
+    const Vector3f n = in.haveTerrain ? in.terrainNormal : Vector3f{0, 0, 1};
+    const f32 ax = (vel.y * n.z) - (vel.z * n.y);
+    const f32 ay = (vel.z * n.x) - (vel.x * n.z);
+    const f32 az = (vel.x * n.y) - (vel.y * n.x);
+    const f32 s2 = ((az * az) + (ax * ax)) + (ay * ay);
+    const f32 r2 = RsqNewton(s2);
+    const Vector3f a = Finite(r2) ? Vector3f{ax * r2, ay * r2, az * r2} : Vector3f{1, 0, 0};
+    // Rotated about the negated normal by an angle type 6 never evaluates,
+    // so this is the identity — kept in the image's groupings anyway.
+    const Quat qa = AxisAngle(Neg(n), angle);
+    const f32 x = qa[0], y = qa[1], z = qa[2], w = qa[3];
+    const f32 x2 = x + x, y2 = y + y, z2 = z + z;
+    const f32 l0 = ((a.z * ((1.0f - (x2 * x)) - (y2 * y))) + (a.y * ((y * z2) + (x2 * w)))) +
+                   (a.x * ((z2 * x) - (y2 * w)));
+    const f32 l1 = ((a.z * ((z2 * x) + (y2 * w))) + (a.y * ((x * y2) - (z2 * w)))) +
+                   (a.x * ((1.0f - (y2 * y)) - (z2 * z)));
+    const f32 rz = (((y * z2) - (x2 * w)) * a.z) +
+                   ((((1.0f - (x2 * x)) - (z2 * z)) * a.y) + (((z2 * w) + (x * y2)) * a.x));
+    const Vector3f row0{l1, rz, l0};
+    const f32 bx = (n.y * row0.z) - (row0.y * n.z);
+    const f32 by = (n.z * row0.x) - (row0.z * n.x);
+    const f32 bz = (row0.y * n.x) - (n.y * row0.x);
+    const f32 s3 = ((bz * bz) + (bx * bx)) + (by * by);
+    const f32 r3 = RsqNewton(s3);
+    const Vector3f b = Finite(r3) ? Vector3f{bx * r3, by * r3, bz * r3} : Vector3f{0, 1, 0};
+    return QuatFromRows(row0, Vector3f{-(ia.x * rI), -(ia.y * rI), -(ia.z * rI)}, b);
+}
+
+/// The three rows a type 7/8 basis is built from.
+struct OrientRows {
+    Vector3f a{0, 0, 0};
+    Vector3f b{0, 0, 0};
+    Vector3f c{0, 0, 0};
+};
+
+/// World space, the packed `orientVec` spawn wrote.
+OrientRows PackedOrientRows(const Vector3f& ov) {
+    OrientRows rows;
+    // Two directions packed as six byte codes in three floats,
+    // `lo + 65536·hi`, interleaved (x.lo, x.hi, y.hi) and
+    // (y.lo, z.hi, z.lo). The hi half truncates toward zero.
+    const auto split = [](f32 v, f32& hi, f32& lo) {
+        const f32 h = kPackStep * v;
+        hi = h >= 0.0f ? std::floor(h) : -std::floor(-h);
+        lo = v + (kPackBack * hi);
+    };
+    f32 hx, lx, hy, ly, hz, lz;
+    split(ov.x, hx, lx);
+    split(ov.y, hy, ly);
+    split(ov.z, hz, lz);
+    const Vector3f av{(lx * kCodeScale) + -1.0f, (hx * kCodeScale) + -1.0f,
+                      (hy * kCodeScale) + -1.0f};
+    const f32 s = ((av.z * av.z) + (av.y * av.y)) + (av.x * av.x);
+    const f32 r = RsqNewton(s);
+    rows.a = {av.x * r, av.y * r, r * av.z};
+    const f32 bz0 = (hz * kCodeScale) + -1.0f;
+    const f32 bz1 = (lz * kCodeScale) + -1.0f;
+    const f32 bx0 = (ly * kCodeScale) + -1.0f;
+    const f32 s2 = (bz1 * bz1) + ((bz0 * bz0) + (bx0 * bx0));
+    const f32 r2 = RsqNewton(s2);
+    rows.b = {bx0 * r2, bz0 * r2, r2 * bz1};
+    const f32 v318 = rows.a.x * (r2 * bz1);
+    const f32 cx = ((r2 * bz1) * rows.a.y) - ((bz0 * r2) * rows.a.z);
+    const f32 cy = (rows.a.z * rows.b.x) - v318;
+    const f32 cz = (rows.a.x * rows.b.y) - (rows.b.x * rows.a.y);
+    const f32 s3 = (cz * cz) + ((cy * cy) + (cx * cx));
+    const f32 r3 = RsqNewton(s3);
+    rows.c = {cx * r3, cy * r3, r3 * cz};
+    return rows;
+}
+
+/// World space under the plain-orient bit: false, and @p rows unused, when
+/// the direction is too short to frame.
+bool PlainOrientRows(const Vector3f& ov, OrientRows& rows) {
+    // One plain direction, with a reference that swaps to a fixed
+    // (±1, 0) near either pole. Anything too short to build a
+    // frame from leaves the basis at identity and does not spin.
+    const f32 s = (ov.z * ov.z) + ((ov.y * ov.y) + (ov.x * ov.x));
+    if (s >= sc2::kPlainOrientMinSq) {
+        const f32 r = RsqNewton(s);
+        const Vector3f d{ov.x * r, ov.y * r, r * ov.z};
+        f32 refX;
+        f32 refY;
+        if (d.z >= kPole) {
+            refX = 1.0f;
+            refY = 0.0f;
+        } else if (d.z > -kPole) {
+            refX = d.y;
+            refY = -d.x;
+        } else {
+            refX = -1.0f;
+            refY = 0.0f;
+        }
+        const f32 s2 = (refY * refY) + (refX * refX);
+        if (s2 >= sc2::kPlainOrientMinSq) {
+            const f32 r2 = RsqNewton(s2);
+            rows.a = {refX * r2, r2 * refY, 0.0f};
+            const f32 v345 = (r2 * refY) * d.z;
+            const f32 v346 = (refX * r2) * d.z;
+            const f32 v347 = (rows.a.y * d.x) - ((refX * r2) * d.y);
+            const f32 s3 = (v347 * v347) + ((v346 * v346) + (v345 * v345));
+            if (s3 >= sc2::kPlainOrientMinSq) {
+                const f32 r3 = RsqNewton(s3);
+                rows.b = {(-(rows.a.y * d.z)) * r3, v346 * r3, r3 * v347};
+                rows.c = d;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Local space: rows 0 and 1 of the emitter's own world matrix, and
+/// `orientVec` is dead.
+OrientRows LocalOrientRows(const std::array<f32, 16>& m, f32 rowLen0, f32 rowLen1) {
+    OrientRows rows;
+    const f32 r0 = RsqNewton(rowLen0);
+    const f32 r1 = RsqNewton(rowLen1);
+    rows.a = {m[0] * r0, m[1] * r0, r0 * m[2]};
+    rows.b = {m[4] * r1, m[5] * r1, r1 * m[6]};
+    const f32 v70 = (m[0] * r0) * (r1 * m[6]);
+    const f32 v71 = (m[0] * r0) * (m[5] * r1);
+    const f32 cx = ((r1 * m[6]) * (m[1] * r0)) - ((m[5] * r1) * (r0 * m[2]));
+    const f32 cy = ((r0 * m[2]) * rows.b.x) - v70;
+    const f32 cz = v71 - (rows.b.x * rows.a.y);
+    const f32 s3 = (cz * cz) + ((cy * cy) + (cx * cx));
+    const f32 r3 = RsqNewton(s3);
+    rows.c = {cx * r3, cy * r3, r3 * cz};
+    return rows;
+}
+
+/// Types 7 and 8.
+PoseBasis EmitterOrientedPose(const Sc2ModelPoseInputs& in, bool worldSpace, f32 rowLen0,
+                              f32 rowLen1) {
+    OrientRows rows;
+    if (!worldSpace)
+        rows = LocalOrientRows(in.world, rowLen0, rowLen1);
+    else if ((in.stateFlags & kStatePlainOrient) == 0)
+        rows = PackedOrientRows(in.orientVec);
+    else if (!PlainOrientRows(in.orientVec, rows))
+        return {};
+    return {QuatFromRows(rows.a, Neg(rows.c), rows.b), true, Neg(rows.c)};
+}
+
+/// Type 9: the velocity-and-camera basis, lengthened along z by how far the
+/// particle has drifted from where it spawned.
+Quat PinnedPose(const Sc2ModelPoseInputs& in, bool worldSpace, const Vector3f& pos,
+                Sc2ModelPose& out) {
+    const std::array<f32, 16>& m = in.world;
+    Vector3f o = in.spawnOrigin;
+    if (!worldSpace) {
+        const Vector3f& p = in.spawnOrigin;
+        o = {((m[8] * p.z) + (m[4] * p.y)) + ((m[0] * p.x) + m[12]),
+             ((m[9] * p.z) + (m[5] * p.y)) + ((m[1] * p.x) + m[13]),
+             ((m[10] * p.z) + (m[6] * p.y)) + ((m[2] * p.x) + m[14])};
+    }
+    const Quat q = VelocityCameraBasis(in.velocity, in.camera[1]);
+    // The drift ADDS to z, in world units the size curve never sees.
+    const f32 dz = pos.z - o.z;
+    const f32 dy = pos.y - o.y;
+    const f32 dx = pos.x - o.x;
+    out.scale.z = NewtonLength((dz * dz) + ((dy * dy) + (dx * dx))) + out.scale.z;
+    return q;
+}
+
+} // namespace
+
 Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
     namespace mid = sc2::MidChannel;
     Sc2ModelPose out;
@@ -436,287 +739,42 @@ Sc2ModelPose Sc2ModelParticlePose(const Sc2ModelPoseInputs& in) {
     }
 
     // ---- the orientation tier ----
-    Quat q{0.0f, 0.0f, 0.0f, 1.0f};
-    bool spin = false;
-    Vector3f axis{0, 0, 0};
-    const Vector3f& cam = in.camera[1];
-    const Vector3f& vel = in.velocity;
-    const Vector3f& ia = in.instanceAngle;
-
+    PoseBasis basis;
     switch (type) {
-    case Sc2InstanceType::Billboard: {
-        const Vector3f fwd = NormalisedOr(in.camera[1], {0.0f, -1.0f, 0.0f});
-        const Vector3f right = NormalisedOr(in.camera[0], {1.0f, 0.0f, 0.0f});
-        const Vector3f up = NormalisedOr(in.camera[2], {0.0f, 0.0f, 1.0f});
-        q = QuatFromRows(right, fwd, up);
-        spin = true;
-        axis = Neg(fwd);
+    case Sc2InstanceType::Billboard:
+        basis = BillboardPose(in);
         break;
-    }
     case Sc2InstanceType::Tail:
-    case Sc2InstanceType::Trail: {
-        q = VelocityCameraBasis(vel, cam);
-        const f32 speed = NewtonLength((vel.z * vel.z) + ((vel.y * vel.y) + (vel.x * vel.x)));
-        f32 stretch = in.tailLength * speed;
-        if (!Sc2Has(in.parFlags, ParticleFlag::FixTailLengthOnCreation))
-            stretch = std::fmax(stretch, in.tailLength);
-        const f32 z = stretch * out.scale.z;
-        out.scale.z = z;
-        if (type == Sc2InstanceType::Trail) {
-            Vector3f dir = vel;
-            if (speed > 0.0f) {
-                const f32 inv = 1.0f / speed;
-                dir = {dir.x * inv, dir.y * inv, dir.z * inv};
-            }
-            pos = {pos.x - (dir.x * z), pos.y - (dir.y * z), pos.z - (dir.z * z)};
-        }
+    case Sc2InstanceType::Trail:
+        basis.q = TailPose(in, type, pos, out);
         break;
-    }
     case Sc2InstanceType::FaceTravelDir:
-    case Sc2InstanceType::FaceWorldDir: {
-        const DirectionBasis basis =
-            FacingBasis(type == Sc2InstanceType::FaceTravelDir ? vel : ia);
-        q = basis.q;
-        spin = true;
-        // Under `Sc2RotationBit::RandomDirection` a type 3 spins about the
-        // element's own random direction instead of its forward.
-        axis = (type == Sc2InstanceType::FaceWorldDir &&
-                Sc2Has(in.rotationFlags, Sc2RotationBit::RandomDirection))
-                   ? in.randomDirection
-                   : basis.back;
+    case Sc2InstanceType::FaceWorldDir:
+        basis = FacingPose(in, type);
         break;
-    }
-    case Sc2InstanceType::SingleAxis: {
-        const f32 ex = -ia.x;
-        const f32 ey = -ia.y;
-        const f32 ez = -ia.z;
-        const f32 ax = (cam.z * ey) - (cam.y * ez);
-        const f32 ay = (cam.x * ez) - (ex * cam.z);
-        const f32 az = (cam.y * ex) - (ey * cam.x);
-        const f32 s = ((ay * ay) + (ax * ax)) + (az * az);
-        const f32 r = RsqNewton(s);
-        const Vector3f a = Finite(r) ? Vector3f{ax * r, ay * r, az * r} : Vector3f{1, 0, 0};
-        const f32 bx = (a.y * ez) - (ey * a.z);
-        const f32 by = (a.z * ex) - (ez * a.x);
-        const f32 bz = (a.x * ey) - (ex * a.y);
-        const f32 s2 = ((bz * bz) + (bx * bx)) + (by * by);
-        const f32 r2 = RsqNewton(s2);
-        const Vector3f b = Finite(r2) ? Vector3f{bx * r2, by * r2, bz * r2} : Vector3f{0, 0, -1};
-        const f32 cx = (b.z * a.y) - (a.z * b.y);
-        const f32 cy = (a.z * b.x) - (b.z * a.x);
-        const f32 cz = (a.x * b.y) - (b.x * a.y);
-        const f32 s3 = ((cz * cz) + (cx * cx)) + (cy * cy);
-        const f32 r3 = RsqNewton(s3);
-        const Vector3f c = Finite(r3) ? Vector3f{cx * r3, cy * r3, cz * r3} : Vector3f{0, 1, 0};
-        q = QuatFromRows(a, b, c);
-        spin = true;
-        axis = Neg(b);
+    case Sc2InstanceType::SingleAxis:
+        basis = SingleAxisPose(in);
         break;
-    }
-    case Sc2InstanceType::TerrainOriented: {
-        // No guard on this normalise: a zero `instanceAngle` is a NaN pose.
-        const f32 s = ((ia.z * ia.z) + (ia.x * ia.x)) + (ia.y * ia.y);
-        const f32 r = RsqNewton(s);
-        const Vector3f u{r * ia.x, r * ia.y, r * ia.z};
-        const Vector3f n = in.haveTerrain ? in.terrainNormal : Vector3f{0, 0, 1};
-        const f32 dp = ((n.z * u.z) + (n.x * u.x)) + (u.y * n.y);
-        const f32 px = u.x - (dp * n.x);
-        const f32 py = u.y - (dp * n.y);
-        const f32 pz = u.z - (dp * n.z);
-        const f32 s2 = ((pz * pz) + (px * px)) + (py * py);
-        Vector3f p{1, 0, 0};
-        if (s2 >= sc2::kTerrainProjectMinSq) {
-            const f32 r2 = RsqNewton(s2);
-            p = {px * r2, py * r2, r2 * pz};
-        }
-        const f32 sx = (p.y * n.z) - (p.z * n.y);
-        const f32 sy = (p.z * n.x) - (p.x * n.z);
-        const f32 sz = (p.x * n.y) - (p.y * n.x);
-        // The spin is applied to the ROWS, about the negated normal, rather
-        // than as a trailing product.
-        const Quat qa = AxisAngle(Neg(n), angle);
-        const f32 x = qa[0], y = qa[1], z = qa[2], w = qa[3];
-        const f32 v217 = w * (x + x);
-        const f32 v218 = (z + z) * w;
-        const f32 v219 = w * (y + y);
-        const f32 v220 = (y + y) * x;
-        const f32 v221 = x * (z + z);
-        const f32 v222 = (y + y) * y;
-        const f32 v223 = y * (z + z);
-        const f32 v224 = (z + z) * z;
-        const f32 v225 = v218 + v220;
-        const f32 v226 = v220 - v218;
-        const f32 oneXX = 1.0f - ((x + x) * x);
-        const f32 v227 = (1.0f - v222) - v224;
-        const f32 v228 = oneXX - v224;
-        const f32 v229 = v221 - v219;
-        const f32 v230 = v221 + v219;
-        const f32 v231 = v223 + v217;
-        const f32 v232 = v223 - v217;
-        const f32 v215 = oneXX - v222;
-        const Vector3f rp{(p.z * v230) + ((v226 * p.y) + (v227 * p.x)),
-                          (p.z * v232) + ((v228 * p.y) + (v225 * p.x)),
-                          (p.z * v215) + ((p.y * v231) + (p.x * v229))};
-        const Vector3f rs{(v230 * sz) + ((v226 * sy) + (v227 * sx)),
-                          (v232 * sz) + ((v228 * sy) + (v225 * sx)),
-                          (v215 * sz) + ((v231 * sy) + (v229 * sx))};
-        q = QuatFromRows(rs, Neg(u), rp);
+    case Sc2InstanceType::TerrainOriented:
+        basis.q = TerrainPose(in, angle);
         break;
-    }
-    case Sc2InstanceType::TerrainDirOriented: {
-        const f32 s = ((ia.z * ia.z) + (ia.x * ia.x)) + (ia.y * ia.y);
-        const f32 r0 = 1.0f / std::sqrt(s);
-        const f32 rI = (r0 * -0.5f) * (((s * r0) * r0) + -3.0f);
-        const Vector3f n = in.haveTerrain ? in.terrainNormal : Vector3f{0, 0, 1};
-        const f32 ax = (vel.y * n.z) - (vel.z * n.y);
-        const f32 ay = (vel.z * n.x) - (vel.x * n.z);
-        const f32 az = (vel.x * n.y) - (vel.y * n.x);
-        const f32 s2 = ((az * az) + (ax * ax)) + (ay * ay);
-        const f32 r2 = RsqNewton(s2);
-        const Vector3f a = Finite(r2) ? Vector3f{ax * r2, ay * r2, az * r2} : Vector3f{1, 0, 0};
-        // Rotated about the negated normal by an angle type 6 never evaluates,
-        // so this is the identity — kept in the image's groupings anyway.
-        const Quat qa = AxisAngle(Neg(n), angle);
-        const f32 x = qa[0], y = qa[1], z = qa[2], w = qa[3];
-        const f32 x2 = x + x, y2 = y + y, z2 = z + z;
-        const f32 l0 = ((a.z * ((1.0f - (x2 * x)) - (y2 * y))) + (a.y * ((y * z2) + (x2 * w)))) +
-                       (a.x * ((z2 * x) - (y2 * w)));
-        const f32 l1 = ((a.z * ((z2 * x) + (y2 * w))) + (a.y * ((x * y2) - (z2 * w)))) +
-                       (a.x * ((1.0f - (y2 * y)) - (z2 * z)));
-        const f32 rz = (((y * z2) - (x2 * w)) * a.z) +
-                       ((((1.0f - (x2 * x)) - (z2 * z)) * a.y) + (((z2 * w) + (x * y2)) * a.x));
-        const Vector3f row0{l1, rz, l0};
-        const f32 bx = (n.y * row0.z) - (row0.y * n.z);
-        const f32 by = (n.z * row0.x) - (row0.z * n.x);
-        const f32 bz = (row0.y * n.x) - (n.y * row0.x);
-        const f32 s3 = ((bz * bz) + (bx * bx)) + (by * by);
-        const f32 r3 = RsqNewton(s3);
-        const Vector3f b = Finite(r3) ? Vector3f{bx * r3, by * r3, bz * r3} : Vector3f{0, 1, 0};
-        q = QuatFromRows(row0, Vector3f{-(ia.x * rI), -(ia.y * rI), -(ia.z * rI)}, b);
+    case Sc2InstanceType::TerrainDirOriented:
+        basis.q = TerrainDirPose(in, angle);
         break;
-    }
     case Sc2InstanceType::EmitterOriented:
-    case Sc2InstanceType::PhysicsOriented: {
-        Vector3f a{0, 0, 0};
-        Vector3f b{0, 0, 0};
-        Vector3f c{0, 0, 0};
-        bool built = true;
-        if (worldSpace) {
-            const Vector3f& ov = in.orientVec;
-            if ((in.stateFlags & kStatePlainOrient) == 0) {
-                // Two directions packed as six byte codes in three floats,
-                // `lo + 65536·hi`, interleaved (x.lo, x.hi, y.hi) and
-                // (y.lo, z.hi, z.lo). The hi half truncates toward zero.
-                const auto split = [](f32 v, f32& hi, f32& lo) {
-                    const f32 h = kPackStep * v;
-                    hi = h >= 0.0f ? std::floor(h) : -std::floor(-h);
-                    lo = v + (kPackBack * hi);
-                };
-                f32 hx, lx, hy, ly, hz, lz;
-                split(ov.x, hx, lx);
-                split(ov.y, hy, ly);
-                split(ov.z, hz, lz);
-                const Vector3f av{(lx * kCodeScale) + -1.0f, (hx * kCodeScale) + -1.0f,
-                                  (hy * kCodeScale) + -1.0f};
-                const f32 s = ((av.z * av.z) + (av.y * av.y)) + (av.x * av.x);
-                const f32 r = RsqNewton(s);
-                a = {av.x * r, av.y * r, r * av.z};
-                const f32 bz0 = (hz * kCodeScale) + -1.0f;
-                const f32 bz1 = (lz * kCodeScale) + -1.0f;
-                const f32 bx0 = (ly * kCodeScale) + -1.0f;
-                const f32 s2 = (bz1 * bz1) + ((bz0 * bz0) + (bx0 * bx0));
-                const f32 r2 = RsqNewton(s2);
-                b = {bx0 * r2, bz0 * r2, r2 * bz1};
-                const f32 v318 = a.x * (r2 * bz1);
-                const f32 cx = ((r2 * bz1) * a.y) - ((bz0 * r2) * a.z);
-                const f32 cy = (a.z * b.x) - v318;
-                const f32 cz = (a.x * b.y) - (b.x * a.y);
-                const f32 s3 = (cz * cz) + ((cy * cy) + (cx * cx));
-                const f32 r3 = RsqNewton(s3);
-                c = {cx * r3, cy * r3, r3 * cz};
-            } else {
-                // One plain direction, with a reference that swaps to a fixed
-                // (±1, 0) near either pole. Anything too short to build a
-                // frame from leaves the basis at identity and does not spin.
-                built = false;
-                const f32 s = (ov.z * ov.z) + ((ov.y * ov.y) + (ov.x * ov.x));
-                if (s >= sc2::kPlainOrientMinSq) {
-                    const f32 r = RsqNewton(s);
-                    const Vector3f d{ov.x * r, ov.y * r, r * ov.z};
-                    f32 refX;
-                    f32 refY;
-                    if (d.z >= kPole) {
-                        refX = 1.0f;
-                        refY = 0.0f;
-                    } else if (d.z > -kPole) {
-                        refX = d.y;
-                        refY = -d.x;
-                    } else {
-                        refX = -1.0f;
-                        refY = 0.0f;
-                    }
-                    const f32 s2 = (refY * refY) + (refX * refX);
-                    if (s2 >= sc2::kPlainOrientMinSq) {
-                        const f32 r2 = RsqNewton(s2);
-                        a = {refX * r2, r2 * refY, 0.0f};
-                        const f32 v345 = (r2 * refY) * d.z;
-                        const f32 v346 = (refX * r2) * d.z;
-                        const f32 v347 = (a.y * d.x) - ((refX * r2) * d.y);
-                        const f32 s3 = (v347 * v347) + ((v346 * v346) + (v345 * v345));
-                        if (s3 >= sc2::kPlainOrientMinSq) {
-                            const f32 r3 = RsqNewton(s3);
-                            b = {(-(a.y * d.z)) * r3, v346 * r3, r3 * v347};
-                            c = d;
-                            built = true;
-                        }
-                    }
-                }
-            }
-        } else {
-            // Local space: rows 0 and 1 of the emitter's own world matrix, and
-            // `orientVec` is dead.
-            const f32 r0 = RsqNewton(rowLen0);
-            const f32 r1 = RsqNewton(rowLen1);
-            a = {m[0] * r0, m[1] * r0, r0 * m[2]};
-            b = {m[4] * r1, m[5] * r1, r1 * m[6]};
-            const f32 v70 = (m[0] * r0) * (r1 * m[6]);
-            const f32 v71 = (m[0] * r0) * (m[5] * r1);
-            const f32 cx = ((r1 * m[6]) * (m[1] * r0)) - ((m[5] * r1) * (r0 * m[2]));
-            const f32 cy = ((r0 * m[2]) * b.x) - v70;
-            const f32 cz = v71 - (b.x * a.y);
-            const f32 s3 = (cz * cz) + ((cy * cy) + (cx * cx));
-            const f32 r3 = RsqNewton(s3);
-            c = {cx * r3, cy * r3, r3 * cz};
-        }
-        if (built) {
-            q = QuatFromRows(a, Neg(c), b);
-            spin = true;
-            axis = Neg(c);
-        }
+    case Sc2InstanceType::PhysicsOriented:
+        basis = EmitterOrientedPose(in, worldSpace, rowLen0, rowLen1);
         break;
-    }
-    case Sc2InstanceType::Pinned: {
-        Vector3f o = in.spawnOrigin;
-        if (!worldSpace) {
-            const Vector3f& p = in.spawnOrigin;
-            o = {((m[8] * p.z) + (m[4] * p.y)) + ((m[0] * p.x) + m[12]),
-                 ((m[9] * p.z) + (m[5] * p.y)) + ((m[1] * p.x) + m[13]),
-                 ((m[10] * p.z) + (m[6] * p.y)) + ((m[2] * p.x) + m[14])};
-        }
-        q = VelocityCameraBasis(vel, cam);
-        // The drift ADDS to z, in world units the size curve never sees.
-        const f32 dz = pos.z - o.z;
-        const f32 dy = pos.y - o.y;
-        const f32 dx = pos.x - o.x;
-        out.scale.z = NewtonLength((dz * dz) + ((dy * dy) + (dx * dx))) + out.scale.z;
+    case Sc2InstanceType::Pinned:
+        basis.q = PinnedPose(in, worldSpace, pos, out);
         break;
-    }
     default:
         break;
     }
 
-    if (spin)
-        q = MulBasisAxis(q, AxisAngle(axis, angle));
+    Quat q = basis.q;
+    if (basis.spin)
+        q = MulBasisAxis(q, AxisAngle(basis.axis, angle));
 
     // `SwapYZOnModelParticles`: a 90° yaw about Z, before the preset.
     if (Sc2Has(in.parFlags, ParticleFlag::SwapYZOnModelParticles)) {

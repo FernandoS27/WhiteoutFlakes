@@ -762,7 +762,7 @@ gfx::PipelineHandle M3StandardShading::GetOrBuildWorldVertexPso(const WorldVerte
 void M3StandardShading::DrawWorldVertices(model::Actor& actor, i32 surfaceIndex,
                                           gfx::BufferHandle vb, i32 vertexOffset, i32 vertexCount,
                                           const bls::FrameInputs& frame, M3WorldVertexKind kind,
-                                          i32 emitterId) {
+                                          i32 emitterId, bool forceUnshaded) {
     Init();
     if (vsWorld_ == gfx::ShaderHandle::Invalid || ps_ == gfx::ShaderHandle::Invalid ||
         vertexCount <= 0 || vb == gfx::BufferHandle::Invalid)
@@ -810,15 +810,17 @@ void M3StandardShading::DrawWorldVertices(model::Actor& actor, i32 surfaceIndex,
         gfxDev->UnmapBuffer(worldPassCb_);
     }
 
-    const bool unshaded = (surf->materialFlags & static_cast<u32>(MaterialFlag::Unshaded)) != 0;
+    const bool unshaded =
+        forceUnshaded || (surf->materialFlags & static_cast<u32>(MaterialFlag::Unshaded)) != 0;
     const bool dblLambert =
         (surf->materialFlags & static_cast<u32>(MaterialFlag::DoubleLambert)) != 0;
 
     if (auto* c = static_cast<M3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         *c = M3DrawCb{};
         c->world = Matrix44f::identity(); // the stream is world-space already
-        // The material decides shading, exactly as a geoset — Unshaded and the
-        // flag bits ride through so a lit ribbon lights and an emissive one glows.
+        // The material decides shading, exactly as a geoset, unless the caller
+        // forced it off — Unshaded and the flag bits ride through so a lit ribbon
+        // lights and an emissive one glows.
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
                       static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u) |
                                        (surf->dimPerPixel ? 4u : 0u) |

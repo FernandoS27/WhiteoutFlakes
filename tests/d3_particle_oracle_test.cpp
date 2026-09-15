@@ -620,34 +620,89 @@ TEST_CASE("oracle A4: no lifetime path means ONE FRAME, not one second",
     CHECK(checked);
 }
 
-TEST_CASE("oracle A4: the particle seed is the raw draw, nudged at two values",
-          "[d3][oracle][a4]") {
+TEST_CASE("oracle A4: the birth record, draw for draw", "[d3][oracle][a4]") {
     const auto doc = LoadGolden("a4_init_life_and_size");
     const auto& cases = (*doc)["cases"];
+    REQUIRE(cases.Size() >= 18);
+    std::size_t sawType1 = 0, sawFloor = 0;
     for (std::size_t i = 0; i < cases.Size(); ++i) {
         const auto& c = cases[i];
-        // dwPrtFlags bit 8 decides whether a second draw is taken for the
-        // birth-position lerp, so it decides the seed of every later particle.
-        const bool noLerp = (c["in"]["flags"].U() & 0x100u) != 0;
+        const auto& in = c["in"];
+        // The gate hands the function its words directly: `state` is the
+        // runtime capability word at sys+8 and `flags` is dwPrtFlags.
+        pd3::EmitterDesc d;
+        d.systemType = static_cast<pd3::SystemType>(in.Has("type") ? in["type"].I() : 0);
+        d.prtFlags = in["flags"].U();
+        d.caps = in["state"].U();
+        if (!in["life"].IsNull()) {
+            pd3::Path& life = d.channels[pd3::kChParticleLife];
+            for (std::size_t k = 0; k < in["life"].Size(); ++k) {
+                const auto& n = in["life"][k];
+                life.nodes.push_back({{static_cast<f32>(n[0].I()), 0, 0, 0},
+                                      {static_cast<f32>(n[1].I()), 0, 0, 0},
+                                      n[2].F()});
+            }
+        }
+        if (!in["size"].IsNull())
+            d.channels[pd3::kChBirthSize] = MakeScalarPath(in["size"], 0.0f, 1.0f);
+        if (!in["speedlife"].IsNull())
+            d.channels[pd3::kChSpeedLifeCut] = MakeScalarPath(in["speedlife"], 0.0f, 1.0f);
+        // The gate's context: raw time 0 over a period of 1.
+        pd3::EvalCtx ctx;
+        ctx.timeMode = pd3::TimeMode::Raw;
+        ctx.period = 1.0f;
+        const Vector3f pos{in["pos"][0].F(), in["pos"][1].F(), in["pos"][2].F()};
+        const Vector3f prev{in["prev_pos"][0].F(), in["prev_pos"][1].F(), in["prev_pos"][2].F()};
+        const f32 dt = in["dt"].F();
+
         pd3::MwcRng rng = pd3::MwcRng::Seed(0x1234567u);
         const auto& births = c["out"]["births"];
         for (std::size_t k = 0; k < births.Size(); ++k) {
-            const u32 raw = rng.Next();
-            const u32 want = (raw >= 0xFFFFFFFEu) ? (raw + 2u) : raw;
             INFO("case " << i << " birth " << k);
-            REQUIRE(births[k]["seed"].U() == want);
-            if (!noLerp)
-                rng.Next(); // the position lerp's draw
-            if (c["in"]["state"].U() & 0x10u) {
-                rng.Next(); // the birth sphere's two draws
-                rng.Next();
+            const auto& b = births[k];
+            // The seed and the position lerp's draw, then shape 1, which draws
+            // nothing and adds a zero offset.
+            const pd3::BirthDraw draw =
+                pd3::DrawSeedAndBase(rng, prev, pos, d.Has(pd3::PrtFlag::BirthAtEmitter));
+            REQUIRE(b["seed"].U() == draw.seed);
+            const Vector3f base = d.systemType == pd3::SystemType::WorldAnchored
+                                      ? Vector3f{0, 0, 0}
+                                      : draw.base;
+            CHECK(SameBits(base.x, b["pos"][0].F()));
+            CHECK(SameBits(base.y, b["pos"][1].F()));
+            CHECK(SameBits(base.z, b["pos"][2].F()));
+
+            pd3::ParticleState st;
+            st.seed = draw.seed;
+            pd3::InitLifeAndSize(rng, d, ctx, prev, pos, 1.0f, dt, st);
+            CHECK(SameBits(st.baseSize, b["base_size"].F()));
+            CHECK(SameBits(st.lifetime, b["life"].F()));
+            if (d.Cap(pd3::kCapSpin)) {
+                // sinf/cosf and the fast arcsine: the A1 sphere bound.
+                for (std::size_t a = 0; a < 3; ++a)
+                    CHECK(Ulps(st.spinAxis.data[a], b["sphere"][a].F()) <= kTrigUlp);
             }
-            if (c["in"]["state"].U() & 0x01u)
-                rng.Next(); // the orbit phase
-            if (c["in"]["flags"].U() & 0x1000u)
-                rng.Next(); // the random roll
+            if (d.Cap(pd3::kCapOrbit)) {
+                CHECK(Ulps(st.orbitDir.x, b["orbit"][0].F()) <= kTrigUlp);
+                CHECK(Ulps(st.orbitDir.y, b["orbit"][1].F()) <= kTrigUlp);
+            }
+            if (d.Has(pd3::PrtFlag::RandomRoll))
+                CHECK(SameBits(st.rollAngle, b["roll"].F()));
+            if (in["life"].IsNull() == false && in["life"][0][0].I() == 0 &&
+                st.lifetime > 0.0f)
+                ++sawFloor;
         }
+        if (d.systemType == pd3::SystemType::Ribbon)
+            ++sawType1;
+        // The generator state is the draw count: one draw too many or too few
+        // moves every later particle.
+        CHECK(rng.lo == c["out"]["state"][0].U());
+        CHECK(rng.hi == c["out"]["state"][1].U());
     }
+    // The child-actor branch runs this same function, and channel 30 lifts a
+    // zero lifetime to a frame rather than leaving it to be rejected.
+    CHECK(sawType1 > 0);
+    CHECK(sawFloor > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -681,29 +736,72 @@ TEST_CASE("oracle A7: the orientation frames, per render mode", "[d3][oracle][a7
                            c["in"]["refpos"][2].F()};
         const bool engineWrote = c["out"]["wrote"].B();
 
+        // What production is handed. The recorder's `axis` is the camera
+        // direction for the modes that read one (0, 6, 13) and `candidate` the
+        // frame displacement for the one that reads that (3).
+        pd3::FrameInput in;
+        in.camForward = axis;
+        in.axis = cand;
+        in.axisUnit = fall;
+        in.fromSystem = {pos.x - ref.x, pos.y - ref.y, pos.z - ref.z};
+        in.groundNormal = {c["in"]["cached"][0].F(), c["in"]["cached"][1].F(),
+                           c["in"]["cached"][2].F()};
+        in.emitterQuat = {c["in"]["quat_in"][0].F(), c["in"]["quat_in"][1].F(),
+                          c["in"]["quat_in"][2].F(), c["in"]["quat_in"][3].F()};
+        const auto rm = static_cast<pd3::PrtRenderMode>(mode);
+        const bool across = mode == 3 || mode == 4 || mode == 5 || mode == 6;
+
         Quaternion q{};
         bool ourWrote = false;
         bool covered = true;
-        if (mode == 1 || mode == 8) {
-            ourWrote = false;
-        } else if (mode == 0) {
-            // Mode 0 is a no-op unless the system's flag bit 13 is set. That is not
-            // a shortcut to skip: three of every five corpus appearances land on a
-            // mode that leaves the caller's quaternion standing.
-            ourWrote = gated && pd3::OrientBillboard(axis, q);
-        } else if (mode == 13) {
-            ourWrote = pd3::OrientFlattened(axis, gated, q);
-        } else if (!gated && (mode == 3 || mode == 4 || mode == 5 || mode == 6)) {
-            Vector3f pick{};
-            if (mode == 3)
-                pick = cand;
-            else if (mode == 6)
-                pick = {-axis.x, -axis.y, 0.0f};
-            else if (mode == 4)
-                pick = {pos.x - ref.x, pos.y - ref.y, 0.0f};
-            else
-                pick = {pos.x - ref.x, pos.y - ref.y, pos.z - ref.z};
-            ourWrote = pd3::OrientFromAxis(pick, fall, q);
+        if (gated && mode != 9 && mode != 10) {
+            // The gated arm is what a spawned child actor is born holding, and
+            // production builds it as a quaternion. Mode 0 is a no-op unless the
+            // gate is set — three of every five corpus appearances land on a mode
+            // that leaves the caller's quaternion standing. Modes 3–6 are
+            // `GatedFrameAcross` (F17), 7 the emitter's own quaternion, the rest
+            // the cyclic shift. The ground modes 9 and 10 stay unreplayed.
+            ourWrote = pd3::BuildChildOrientation(rm, in, q);
+        } else if (!gated && (mode == 0 || mode == 1 || mode == 8)) {
+            pd3::QuadFrame frame;
+            ourWrote = pd3::BuildQuadFrame(rm, in, frame);
+        } else if (!gated && across) {
+            // The ungated arm is a quad's right and up, and the quaternion the
+            // engine converts is `(right, up, normal)` with the selected axis as
+            // the normal — the pick `BuildQuadFrame` makes, taken the same way.
+            pd3::QuadFrame frame;
+            ourWrote = pd3::BuildQuadFrame(rm, in, frame);
+            if (ourWrote) {
+                const Vector3f pick =
+                    mode == 3   ? in.axis
+                    : mode == 6 ? Vector3f{-in.camForward.x, -in.camForward.y, 0.0f}
+                    : mode == 4 ? Vector3f{in.fromSystem.x, in.fromSystem.y, 0.0f}
+                                : in.fromSystem;
+                q = pd3::QuatFromBasis(frame.right, frame.up,
+                                       pd3::SelectFrameAxis(pick, in.axisUnit));
+            }
+        } else if (!gated && mode == 13) {
+            // Production's vertical quad is the same frame without the engine's
+            // second normalise, so it is the frame the engine's quaternion
+            // rotates onto, to the tolerance that normalise costs.
+            pd3::QuadFrame frame;
+            ourWrote = pd3::BuildQuadFrame(rm, in, frame);
+            INFO("mode 13 ungated case " << i);
+            REQUIRE(ourWrote == engineWrote);
+            if (ourWrote) {
+                const Quaternion gq{c["out"]["q"][0].F(), c["out"]["q"][1].F(),
+                                    c["out"]["q"][2].F(), c["out"]["q"][3].F()};
+                const Vector3f right = gq.rotate_vector({1.0f, 0.0f, 0.0f});
+                const Vector3f up = gq.rotate_vector({0.0f, 1.0f, 0.0f});
+                CHECK(std::fabs(right.x - frame.right.x) <= 1e-5f);
+                CHECK(std::fabs(right.y - frame.right.y) <= 1e-5f);
+                CHECK(std::fabs(right.z - frame.right.z) <= 1e-5f);
+                CHECK(std::fabs(up.x - frame.up.x) <= 1e-5f);
+                CHECK(std::fabs(up.y - frame.up.y) <= 1e-5f);
+                CHECK(std::fabs(up.z - frame.up.z) <= 1e-5f);
+            }
+            ++modelled;
+            continue;
         } else {
             covered = false;
         }
@@ -813,7 +911,7 @@ TEST_CASE("oracle A6: the wind spring, both arms", "[d3][oracle][a6]") {
         pd3::WindSpringRig rig{sno["freq"].F(), sno["damp"].F(), sno["maxoff"].F(),
                                sno["gust"].F(), sno["base"].F()};
         pd3::ParticleState st;
-        st.swayPhase = in["phase"].F();
+        st.birthEmitterQuat.w = in["phase"].F(); // pool+500, the gate's P_PHASE
         st.size = in["radius"].F();
         st.swayOffset = {in["offset"][0].F(), in["offset"][1].F()};
         st.swayVelocity = {in["vel"][0].F(), in["vel"][1].F()};
@@ -1171,36 +1269,20 @@ TEST_CASE("oracle A11: bit 8 carries the particles and bit 29 drops the rotation
         const Quaternion newQ{in["new_quat"][0].F(), in["new_quat"][1].F(),
                               in["new_quat"][2].F(), in["new_quat"][3].F()};
 
-        // The rule Emitter::CarryWithEmitter implements, stated once more here
-        // so the test fails if either drifts.
-        const bool eligible = type != 9 && type != 1 && (type & ~1) != 2 &&
-                              (flags & kCarry) != 0;
-        const Vector3f d{oldP.x - newP.x, oldP.y - newP.y, oldP.z - newP.z};
-        const bool moved = (d.x * d.x + d.y * d.y + d.z * d.z) != 0.0f;
-        const bool sameQ = SameBits(newQ.x, oldQ.x) && SameBits(newQ.y, oldQ.y) &&
-                           SameBits(newQ.z, oldQ.z) && SameBits(newQ.w, oldQ.w);
-        // The displacement guard is on the TRANSLATE arm only: a turn in place
-        // still sweeps the particles round. This case is what found that in the
-        // implementation.
-        const bool doesRotate = eligible && (flags & kNoRotate) == 0 && !sameQ;
-        const bool carries = eligible && (doesRotate || moved);
+        // The rule `Emitter::CarryWithEmitter` runs. The displacement guard is on
+        // the TRANSLATE arm only — a turn in place still sweeps the particles
+        // round — and this case is what found that in the implementation.
+        const pd3::CarryMove move =
+            pd3::PlanCarry(static_cast<pd3::SystemType>(type), (flags & kCarry) != 0,
+                           (flags & kNoRotate) != 0, oldP, oldQ, newP, newQ);
+        const bool doesRotate = move.rotates;
+        const bool carries = move.carries;
 
         const auto& parts = in["particles"];
         for (std::size_t k = 0; k < parts.Size(); ++k) {
             const Vector3f p0{parts[k]["pos"][0].F(), parts[k]["pos"][1].F(),
                               parts[k]["pos"][2].F()};
-            Vector3f want = p0;
-            if (carries) {
-                if (doesRotate) {
-                    const Quaternion dq = newQ * oldQ.conjugate();
-                    const Vector3f rel{p0.x - oldP.x, p0.y - oldP.y, p0.z - oldP.z};
-                    const Vector3f r = dq.rotate_vector(rel);
-                    want = {newP.x + r.x, newP.y + r.y, newP.z + r.z};
-                } else {
-                    want = {newP.x + (p0.x - oldP.x), newP.y + (p0.y - oldP.y),
-                            newP.z + (p0.z - oldP.z)};
-                }
-            }
+            const Vector3f want = carries ? pd3::CarryPoint(move, p0) : p0;
             const auto& got = c["out"]["pos"][k];
             INFO("case " << i << " particle " << k << " type " << type << " flags "
                          << flags);

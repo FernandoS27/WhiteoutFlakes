@@ -8,9 +8,10 @@
 //   L1  per-particle pool state (position / velocity / age / key cursor). This
 //       is what bisects a failure to an exact frame and particle.
 //   L2  a summary of each emitter's contribution to the vertex stream (count,
-//       checksum, bounds, mean colour). Catches UV cell selection, corner math,
-//       tail construction, sort order and fog combination — everything L1
-//       cannot see — without needing a GPU.
+//       checksum, bounds, mean colour, priority plane) and to the side streams
+//       a dialect writes beside it. Catches UV cell selection, corner math,
+//       tail construction and sort order — everything L1 cannot see — without
+//       needing a GPU.
 //
 // Neither level touches the device: BuildGeometry is a pure function of sim
 // state plus a view matrix, so a trace run needs no rendering.
@@ -50,6 +51,13 @@ struct TraceEmitter {
     Vector3f boundsMin{0, 0, 0};
     Vector3f boundsMax{0, 0, 0};
     Vector4f meanColor{0, 0, 0, 0};
+
+    // L2, the side streams: a refraction emitter's vertices (which never reach
+    // the shared stream), the two extra UV sets of a refraction or
+    // multi-texture emitter, and a Diablo III emitter's baked texcoords and
+    // second colour. `sideCount` is the refraction slice's vertex count.
+    i32 sideCount = 0;
+    u64 sideHash = 0;
 };
 
 struct TraceFrame {
@@ -59,6 +67,10 @@ struct TraceFrame {
 
 struct Trace {
     std::vector<TraceFrame> frames;
+    /// False for a baseline recorded before the side streams were captured
+    /// (`wpt1`/`wpt2`); the side fields are compared only when both traces
+    /// carry them, so an old baseline still checks everything it recorded.
+    bool hasSideStreams = true;
 };
 
 // Capture one frame's L1 + L2 state. `worldToView` drives the geometry build;

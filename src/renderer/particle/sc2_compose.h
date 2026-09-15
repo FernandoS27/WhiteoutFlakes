@@ -10,7 +10,8 @@
 // structs, rather than inside `Emitter2::InternalUpdate` where the only way to
 // test it would be to stand up a whole emitter.
 //
-// Three joins, in the order a frame runs them:
+// Three joins shape a frame, in the order it runs them; the rest of the file
+// is the load-time and per-frame adapters that feed them.
 //
 //   * @ref Sc2ParticleStore — the element pool. The kernels take
 //     `std::span<Sc2SpawnedElement>` and an `Sc2ElementList` over indices into

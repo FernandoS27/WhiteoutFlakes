@@ -13,11 +13,9 @@
 // the ribbon did: tolerable at twelve fields, and this one is heading for
 // fifty. Grouped by the stage that reads it, matching Sc2EmitterDesc.
 //
-// Phase P0 carries only what the six touch points need to be inert: the
-// clocks, the sweep endpoints, the ground query and the emit mesh. PREP's
-// resampled keys and parent-velocity ring, EMIT's slots and inbox/outbox, and
-// the per-element array arrive with the phase that first reads them — a field
-// nothing can fill is a field nothing can test.
+// Each field arrived with the phase that first read it — a field nothing can
+// fill is a field nothing can test. The few that are read and never written
+// say so where they are declared.
 // ============================================================================
 
 #include "emit_mesh.h"
@@ -41,32 +39,19 @@ class Emitter2;
 // `Sc2PendingModel`, `Sc2PendingModels` and `RoutedSpawnRequest` live in
 // `sc2_kernel_types.h`, where the emitter's interface can name them.
 
-/// What the eight SC2 shapes read, reached through `SpawnParams::sc2`.
-///
-/// A pointer rather than an inline block, because `SpawnParams` is read on
-/// every WC3 and WoW spawn too and this way it grows by one pointer instead of
-/// a dozen fields no WC3 shape will ever look at. Owned by @ref Sc2Runtime and
-/// re-pointed per spawn, exactly like `SpawnParams::boneTable`.
-struct Sc2SpawnInputs {
-    Vector3f shapeOuter{0, 0, 0};
-    Vector3f shapeInner{0, 0, 0};
-    f32 outerRadius = 0.0f;
-    f32 innerRadius = 0.0f;
-    /// `flags & EmitShapeCutout` — the box shape's slab on one random face
-    /// pair, and the hollow of the round shapes.
-    bool cutout = false;
-    Vector3f elemScale{1, 1, 1};
-
-    std::span<const Vector3f> splinePoints;
-    f32 splineLower = 0.0f;
-    f32 splineUpper = 0.0f;
-
-    /// Mesh shape only. The pose skins @ref mesh into world space; `regions`
-    /// picks which `.m3` regions are eligible.
-    const EmitMesh* mesh = nullptr;
-    std::span<const Matrix44f> pose;
-    std::span<const Matrix44f> invBind;
-    std::span<const i32> regions;
+/// The per-frame working buffers `Sc2TickEmitter` fills and empties. Kept on
+/// the runtime and cleared, never freed, so a steady-state frame allocates
+/// nothing; no stage reads one across frames.
+struct Sc2TickScratch {
+    std::vector<f32> counts;
+    std::vector<f32> carry;
+    std::vector<u32> targets;
+    std::vector<u32> emitted;
+    std::vector<Sc2EmitEvent> events;
+    std::vector<i32> killed;
+    std::vector<Sc2SpawnedElement> batch;
+    Sc2SpawnBatchPlan batchPlan;
+    Sc2ChildRequests asked;
 };
 
 struct Sc2Runtime {
@@ -87,6 +72,8 @@ struct Sc2Runtime {
     /// `CParticleSystem+0x17C` and `+0x180`. The sub-step rate is only ever
     /// tested against zero (RE §5.1) — a zero forces the full-step path — and
     /// the offset shifts the emitter clock. Neither is a `PAR_` field.
+    /// `subStepRate` has no writer: retail's is 15 and the port's 1 read the
+    /// same through that test, so it is a constant the oracle rig varies.
     f32 subStepRate = 1.0f;
     f32 timeOffset = 0.0f;
 
@@ -112,7 +99,8 @@ struct Sc2Runtime {
 
     /// `elementState != 0` — the actor layer's freeze. The rate stops being
     /// sampled at all and the stored carry is the whole want, so a frozen
-    /// emitter drains its fraction to zero and stops.
+    /// emitter drains its fraction to zero and stops. No host writes it: the
+    /// viewer has no actor freeze, so it stays false outside the gates.
     bool emissionFrozen = false;
 
     /// `CParticleSystem::emitFlagsWord`, the runtime word `Sc2InitSpawned`
@@ -208,6 +196,8 @@ struct Sc2Runtime {
     std::array<Vector3f, 3> camera{Vector3f{1, 0, 0}, Vector3f{0, -1, 0}, Vector3f{0, 0, 1}};
     f32 actorWorldScale = 1.0f;
 
+    Sc2TickScratch scratch;
+
     // ---- arming ----
     /// The half of `CParticleSystem::Init` a describe and a rewind both run:
     /// the store sized from the desc's cap — `min(authored,
@@ -230,13 +220,18 @@ struct Sc2Runtime {
     /// derives the words again on the fresh clock. The slots keep their count
     /// and lose their carry.
     ///
-    /// Exactly the field set a rewind has always reset. `activeSequence`,
-    /// `timeOffset`, `accumTime` and `rng` survive it — PARTICLE_REFACTOR_PLAN
-    /// F3 is the decision to widen this.
+    /// The active sequence goes back to −1 with the clock, so the next frame's
+    /// note is a change again and a `SimulateInit` emitter pre-rolls as it did
+    /// when it was created; the pre-roll offset and the carried sub-step time
+    /// belong to the clock and go with it. Only the draw stream carries on, as
+    /// every dialect's does across a rewind.
     void Rearm(const Sc2EmitterDesc& d) {
         clock = Sc2EmitClock{};
         initState = Sc2InitState{};
         preRollPending = false;
+        activeSequence = -1;
+        timeOffset = 0.0f;
+        accumTime = 0.0f;
         curPos = {0, 0, 0};
         Arm(d);
         inbox.clear();

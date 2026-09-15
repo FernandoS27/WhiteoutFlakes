@@ -121,12 +121,20 @@ struct Sc2SpawnPosInputs {
 Vector3f Sc2SampleSpawnPosition(sc2::Rng& rng, const Sc2SpawnPosInputs& in,
                                 Vector3f* normal = nullptr);
 
-/// One overlay group: `M3_SampleAnimValue(type, freq·variationTime +
-/// variationPhase, amplitude)`. `type == 0` is "unarmed" and draws nothing.
+/// One overlay group: `M3_SampleAnimValue(type, freq·variation.time +
+/// variation.phase, amplitude)`. `type == 0` is "unarmed" and draws nothing.
 struct Sc2Overlay {
     u32 type = 0;
     f32 amplitude = 0.0f;
     f32 frequency = 0.0f;
+};
+
+/// The clock every overlay group's wave is sampled on: the emitter's variation
+/// time, offset by the frame's overlay phase. The same pair for every sampler
+/// a spawn calls.
+struct Sc2Variation {
+    f32 time = 0.0f;
+    f32 phase = 0.0f;
 };
 
 struct Sc2SpawnVelInputs {
@@ -144,10 +152,7 @@ struct Sc2SpawnVelInputs {
     /// `Sc2RotationBit::FlattenVelocityXY`: drop z, rescale xy to the original
     /// magnitude.
     bool flattenXY = false;
-    Vector3f position{0.0f, 0.0f, 0.0f}; ///< the spawn position (radial/axis)
-    Vector3f normal{0.0f, 0.0f, 1.0f};   ///< the mesh face normal (type 4)
-    f32 variationTime = 0.0f;
-    f32 variationPhase = 0.0f;
+    Sc2Variation variation{};
     /// Groups 0, 1, 2, 7, 8 of `pOverlayParams`. Group 0 modulates **yaw** and
     /// group 1 **pitch** — the swap RE §11.5 records, kept because the file
     /// field names are the ones that are wrong.
@@ -159,7 +164,12 @@ struct Sc2SpawnVelInputs {
 };
 
 /// `CParticleSystem::SampleSpawnVelocity` — emitter space, speed folded in.
-Vector3f Sc2SampleSpawnVelocity(sc2::Rng& rng, const Sc2SpawnVelInputs& in);
+///
+/// @p position is the spawn position the radial and axis types aim along, and
+/// @p normal the Mesh shape's face normal type 4 reads — both what
+/// `Sc2SampleSpawnPosition` just produced for this element.
+Vector3f Sc2SampleSpawnVelocity(sc2::Rng& rng, const Sc2SpawnVelInputs& in,
+                                const Vector3f& position, const Vector3f& normal);
 
 
 // ---------------------------------------------------------------------------
@@ -181,8 +191,7 @@ struct Sc2ColorInputs {
     f32 colorMidTime = 0.0f;
     f32 alphaMidTime = 0.0f;
     Sc2Overlay alphaOverlay{};
-    f32 variationTime = 0.0f;
-    f32 variationPhase = 0.0f;
+    Sc2Variation variation{};
 };
 
 /// `CParticleSystem::SampleParticleColor` — three packed BGRA nodes.
@@ -193,18 +202,18 @@ struct Sc2SizeInputs {
     std::array<f32, 3> randomKeys{};
     bool randomEnable = false;
     Sc2Overlay sizeOverlay{};
-    /// The caller's scale ratio (`blend`), applied after the halving.
-    f32 blend = 1.0f;
     u32 instanceType = 0;
     f32 instanceDistance = 0.0f;
-    f32 variationTime = 0.0f;
-    f32 variationPhase = 0.0f;
+    Sc2Variation variation{};
 };
 
 /// `CParticleSystem::SampleParticleSize` — HALF extents, as floats. The ×256
 /// quantisation to the element's u16 belongs to `InitSpawnedParticles` (OP8),
 /// not here. `.w` is `instanceDistance` only for instance type 9.
-std::array<f32, 4> Sc2SampleSize(sc2::Rng& rng, const Sc2SizeInputs& in);
+///
+/// @p blend is the caller's scale ratio, applied after the halving: 1 for the
+/// `PAR_` itself, the bone's row length over the emitter's for a `PARC` copy.
+std::array<f32, 4> Sc2SampleSize(sc2::Rng& rng, const Sc2SizeInputs& in, f32 blend);
 
 struct Sc2RotationInputs {
     std::array<f32, 3> keys{};        ///< start/mid/end, RADIANS
@@ -215,8 +224,7 @@ struct Sc2RotationInputs {
     bool relative = false;
     f32 rotationMidTime = 0.0f;
     Sc2Overlay rotationOverlay{};
-    f32 variationTime = 0.0f;
-    f32 variationPhase = 0.0f;
+    Sc2Variation variation{};
 };
 
 /// `CParticleSystem::SampleParticleRotation` — radians.
@@ -228,12 +236,8 @@ std::array<f32, 3> Sc2SampleRotation(sc2::Rng& rng, const Sc2RotationInputs& in)
 //
 // The five samplers above in one function, plus the space transform. OP4/5/6
 // pin each sampler's own draw order; this pins the order they are CALLED in,
-// which no per-kernel gate can see.
-//
-// Note the overlap with `Sc2SpawnInputs` in `sc2_runtime.h`: that one is the
-// emitter's per-spawn block (and carries the X6 mesh fields), this one is what
-// the gate drives. The emitter loop fills one from the other in a single
-// place; they are deliberately not merged while the mesh half is unwritten.
+// which no per-kernel gate can see. The tick fills the inputs directly; the
+// mesh shape's half is `Sc2SpawnPosInputs::mesh`.
 // ---------------------------------------------------------------------------
 
 /// What the emitter carries across a batch and this function advances.
@@ -241,7 +245,8 @@ struct Sc2InitState {
     f32 emitterTime = 0.0f;
     Vector3f curPos{0, 0, 0};
     /// A running MAXIMUM in milliseconds over every element the emitter ever
-    /// spawns, so it never retreats while the emitter lives.
+    /// spawns, so it never retreats while the emitter lives. Gate-only:
+    /// nothing here reads it.
     u32 expireFrameMs = 0;
 };
 
@@ -284,14 +289,16 @@ struct Sc2InitInputs {
     Vector3f smoothedPos{0, 0, 0};
     f32 inheritVelocityScale = 0.0f;
     u32 nowMs = 0;
-
-    /// One per element, or empty. A request also forces the LOCAL space path
-    /// even on an emitter that would otherwise use the world basis.
-    std::span<const SpawnRequest> requests{};
 };
 
 /// `CParticleSystem::InitSpawnedParticles` over a batch of pending elements.
-void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
+///
+/// @p requests is one per element from the front of @p out, or empty — the
+/// one input that differs between a frame's flushes. A request also forces the
+/// LOCAL space path even on an emitter that would otherwise use the world
+/// basis.
+void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in,
+                    std::span<const SpawnRequest> requests, Sc2InitState& state,
                     std::span<Sc2SpawnedElement> out);
 
 // ---------------------------------------------------------------------------
@@ -326,7 +333,8 @@ struct Sc2SpawnBatchPlan {
 /// Requests first, then plain particles, each ONE element guarded by
 /// `elementCount < maxParticles` in turn; the pending list flushes at 128 from
 /// the request loop only, and once more at the end. The flushes are what make
-/// the swept clock and the request pointers line up with retail's.
-Sc2SpawnBatchPlan Sc2PlanSpawnBatch(const Sc2SpawnBatchInputs& in);
+/// the swept clock and the request pointers line up with retail's. @p plan is
+/// overwritten, its flush storage reused.
+void Sc2PlanSpawnBatch(const Sc2SpawnBatchInputs& in, Sc2SpawnBatchPlan& plan);
 
 } // namespace whiteout::flakes::renderer::particle

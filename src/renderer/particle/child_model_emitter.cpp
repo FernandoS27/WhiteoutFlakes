@@ -4,8 +4,9 @@
 
 namespace whiteout::flakes::renderer::particle {
 
-ChildModelEmitter::ChildModelEmitter(ModelId owner, i32 emitterId, HandleAllocator allocHandle)
-    : owner_(owner), emitterId_(emitterId), allocHandle_(std::move(allocHandle)) {}
+ChildModelEmitter::ChildModelEmitter(ModelId owner, i32 emitterId, HandleAllocator allocHandle) {
+    children_.Bind(owner, emitterId, std::move(allocHandle));
+}
 
 void ChildModelEmitter::ApplyPE1State(const model::FrameState::PE1FrameState& st) {
     SetEmissionRate(st.emissionRate);
@@ -28,75 +29,36 @@ Matrix44f ChildModelEmitter::TransformFor(u32 poolIndex) const {
 }
 
 void ChildModelEmitter::OnPoolResized(usize capacity) {
-    childHandles_.resize(capacity, 0);
+    children_.Resize(capacity);
 }
 
 void ChildModelEmitter::OnParticleBorn(u32 poolIndex) {
-    // At least one past the index: an SC2 emitter's pool is empty and its
+    // The channel grows to the slot: an SC2 emitter's pool is empty and its
     // indices are store nodes, so the pool's capacity alone would leave the
-    // slot this writes out of range.
-    if (poolIndex >= childHandles_.size())
-        childHandles_.resize((std::max)(Pool().Capacity(), static_cast<usize>(poolIndex) + 1), 0);
-
-    const u32 handle = allocHandle_ ? allocHandle_() : 0;
-    childHandles_[poolIndex] = handle;
-    if (handle == 0)
-        return;
-
-    ChildModelEvent ev;
-    ev.kind = ChildModelEvent::Kind::Birth;
-    ev.owner = owner_;
-    ev.emitterId = emitterId_;
-    ev.childHandle = handle;
-    ev.pathIndex = PathIndexFor(poolIndex);
-    ev.route = BirthRoute();
-    const std::vector<std::string>& paths = Desc().childModelPaths;
-    if (ev.pathIndex < paths.size())
-        ev.path = paths[ev.pathIndex];
-    ev.transform = TransformFor(poolIndex);
-    pending_.push_back(ev);
+    // slot out of range.
+    children_.Birth(poolIndex, [&](ChildModelEvent& ev) {
+        ev.pathIndex = PathIndexFor(poolIndex);
+        ev.route = BirthRoute();
+        const std::vector<std::string>& paths = Desc().childModelPaths;
+        if (ev.pathIndex < paths.size())
+            ev.path = paths[ev.pathIndex];
+        ev.transform = TransformFor(poolIndex);
+    });
 }
 
 void ChildModelEmitter::OnParticleDied(u32 poolIndex) {
-    if (poolIndex >= childHandles_.size())
-        return;
-    const u32 handle = childHandles_[poolIndex];
-    childHandles_[poolIndex] = 0;
-    if (handle == 0)
-        return;
-
-    ChildModelEvent ev;
-    ev.kind = ChildModelEvent::Kind::Death;
-    ev.owner = owner_;
-    ev.emitterId = emitterId_;
-    ev.childHandle = handle;
-    pending_.push_back(ev);
+    children_.Death(poolIndex);
 }
 
 void ChildModelEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& out) {
     // Births and deaths accumulated during the sim, then one Transform per
     // still-alive particle so the drain can drive the child actors.
-    for (auto& ev : pending_)
-        out.push_back(ev);
-    pending_.clear();
-
+    children_.Drain(out);
     const ParticlePool& pool = Pool();
     for (usize i = 0; i < pool.AliveCount(); ++i) {
         const u32 idx = pool.AliveAt(i);
-        if (idx >= childHandles_.size())
-            continue;
-        const u32 handle = childHandles_[idx];
-        if (handle == 0)
-            continue;
-
-        ChildModelEvent ev;
-        ev.kind = ChildModelEvent::Kind::Transform;
-        ev.owner = owner_;
-        ev.emitterId = emitterId_;
-        ev.childHandle = handle;
-        ev.transform = TransformFor(idx);
-        ev.visibility = VisibilityFor(idx);
-        out.push_back(ev);
+        if (children_.Holds(idx))
+            children_.Transform(idx, TransformFor(idx), VisibilityFor(idx), out);
     }
 }
 

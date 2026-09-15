@@ -400,8 +400,9 @@ void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAd
         profiles::diablo3::D3ResolveParticleMaterial(*prt, &D3Cache(), desc->d3mat);
         profiles::diablo3::D3BindParticleTextures(actor, desc);
         const bool samplesSurface = desc->SamplesModelSurface();
-        auto em = particle::EmitterFactory::CreateD3(std::move(desc), bone, offset,
-                                                     {actor.handle, emitterId, [this] { return rs_.Scene().AllocActorId(); }});
+        auto em = particle::EmitterFactory::CreateD3(
+            std::move(desc), bone, offset, particle::MixSeed(actor.handle, (u32)emitterId),
+            {actor.handle, emitterId, [this] { return rs_.Scene().AllocActorId(); }});
         if (samplesSurface) {
             if (!emitMeshTried) {
                 emitMeshTried = true;
@@ -1790,11 +1791,9 @@ void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSo
                 if (parBase >= 0) {
                     if (const auto* surf = table->Surface((u32)(parBase + i)); surf && surf->valid) {
                         // Stamped BEFORE the desc is frozen, so nothing looks a
-                        // material up at draw time. Both copies: the draw
-                        // dispatcher branches on the MATERIAL's index (as
-                        // `DrawRibbonStrip` does) while the geometry build
-                        // reads the `PAR_` block's.
-                        desc->sc2.look.m3Surface = parBase + i;
+                        // material up at draw time. The draw dispatcher
+                        // branches on the material's index, as
+                        // `DrawRibbonStrip` does.
                         desc->material.m3Surface = parBase + i;
                         desc->sc2.look.flipbookUv =
                             profiles::sc2_heroes::M3ParticleFlipbookUv(*surf);
@@ -1807,12 +1806,13 @@ void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSo
                     for (const auto& path : desc->childModelPaths)
                         PreloadSc2ModelParticle(actor, path);
                 }
-                // The constructor's own seed. An SC2 emitter draws from its
-                // runtime's stream, which nothing seeds from the actor yet
-                // (PARTICLE_REFACTOR_PLAN F3).
+                // Seeded from stable identity, as every other dialect's are:
+                // the runtime's own generator takes it, so two actors of one
+                // model do not emit one cloud.
                 auto em = particle::EmitterFactory::Create(
                     desc, rs_.Pipeline().LoadTimeProfile().Particles(),
-                    particle::kDefaultEmitterSeed, {actor.handle, i, [this] { return rs_.Scene().AllocActorId(); }});
+                    particle::MixSeed(actor.handle, (u32)i),
+                    {actor.handle, i, [this] { return rs_.Scene().AllocActorId(); }});
                 if (emitMesh && sc2Particles[i].emitShape ==
                                     static_cast<u8>(::whiteout::m3::EmitterShape::Mesh)) {
                     em->SetEmitMesh(emitMesh);

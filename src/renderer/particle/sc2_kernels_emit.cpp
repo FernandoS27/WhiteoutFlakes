@@ -11,10 +11,9 @@ namespace whiteout::flakes::renderer::particle {
 
 namespace {
 
-namespace bits = whiteout::flakes::renderer::sc2;
 
 /// Both bits arm the same multiply — see `kStateScaleTimeAlso`.
-constexpr u32 kScaleTimeMask = bits::kStateScaleTimeByParent | bits::kStateScaleTimeAlso;
+constexpr u32 kScaleTimeMask = sc2::kStateScaleTimeByParent | sc2::kStateScaleTimeAlso;
 
 /// `Tick`'s sub-step ladder — 60 Hz below a 60th of a second, 30 Hz below a
 /// 30th, 15 Hz otherwise — and the cap on the steps one frame may take.
@@ -53,7 +52,7 @@ Sc2StepPlan Sc2TickClock(Sc2EmitClock& clock, const Sc2ClockInputs& in) {
             static_cast<f32>(in.nowMs - static_cast<i32>(dtMs)) * sc2::kSecondsPerMs;
 
     plan.dt = static_cast<f32>(dtMs) * sc2::kSecondsPerMs;
-    plan.catchUp = (clock.stateFlags & bits::kStateUseLocalTime) != 0
+    plan.catchUp = (clock.stateFlags & sc2::kStateUseLocalTime) != 0
                        ? plan.dt
                        : (static_cast<f32>(in.nowMs) * sc2::kSecondsPerMs + in.timeOffset) -
                              clock.emitterTime;
@@ -70,7 +69,7 @@ Sc2StepPlan Sc2TickClock(Sc2EmitClock& clock, const Sc2ClockInputs& in) {
 
     const bool skippedFrame = clock.lastFrameIndex < in.frameIndex - 1;
     if (rate == 0.0f || skippedFrame || in.modelPaused ||
-        (clock.stateFlags & bits::kStateSquirtResync) != 0) {
+        (clock.stateFlags & sc2::kStateSquirtResync) != 0) {
         plan.fullStep = true;
         plan.nSteps = 1;
         plan.subDt = rate >= kMinInvertibleRate ? 1.0f / rate : (std::min)(1.0f, plan.dt);
@@ -82,7 +81,7 @@ Sc2StepPlan Sc2TickClock(Sc2EmitClock& clock, const Sc2ClockInputs& in) {
         // The resync is one-shot: it buys this one full step and is spent. The
         // golden cannot say whether retail clears it here or before the test —
         // both produce the same frame — so it is cleared where it is consumed.
-        clock.stateFlags &= ~static_cast<u32>(bits::kStateSquirtResync);
+        clock.stateFlags &= ~static_cast<u32>(sc2::kStateSquirtResync);
     } else {
         const f32 gap = clock.variationTime - clock.lastSubStepTime;
         plan.subDt = 1.0f / rate;
@@ -127,10 +126,10 @@ Sc2StepPlan Sc2TickClock(Sc2EmitClock& clock, const Sc2ClockInputs& in) {
 
 Sc2RestartCheck Sc2TickRestartCheck(Sc2EmitClock& clock, const Sc2ClockInputs& in) {
     Sc2RestartCheck out;
-    constexpr u32 kArmMask = bits::kStateSequenceChanged | bits::kStateRestartBusy;
-    if ((clock.stateFlags & kArmMask) != bits::kStateSequenceChanged)
+    constexpr u32 kArmMask = sc2::kStateSequenceChanged | sc2::kStateRestartBusy;
+    if ((clock.stateFlags & kArmMask) != sc2::kStateSequenceChanged)
         return out;
-    clock.stateFlags &= ~static_cast<u32>(bits::kStateSequenceChanged);
+    clock.stateFlags &= ~static_cast<u32>(sc2::kStateSequenceChanged);
     out.armed = true;
     // The same scaled frame `Sc2TickClock` steps, measured against the stamp
     // the PREVIOUS tick left: the pre-roll is owed for the frames the emitter
@@ -179,15 +178,25 @@ f32 Sc2ComputeEmitCount(const Sc2EmitCountInputs& in) {
     if (in.suppressed || !in.nodeVisible)
         return 0.0f;
 
-    const i32 idxCut = bits::LodIndex(in.lodCut, in.quality);
-    const i32 idxReduce = bits::LodIndex(in.lodReduce, in.quality);
+    const i32 idxCut = sc2::LodIndex(in.lodCut, in.quality);
+    const i32 idxReduce = sc2::LodIndex(in.lodReduce, in.quality);
     const f32 lodMul =
-        bits::kLodCut[idxCut] != 0 ? 0.0f : in.elemScaleX * bits::kLodReduce[idxReduce];
+        sc2::kLodCut[idxCut] != 0 ? 0.0f : in.elemScaleX * sc2::kLodReduce[idxReduce];
 
     const f32 count = (in.rate * in.dt * in.timeScale + in.burst) * lodMul;
     return count > 0.0f ? count : 0.0f;
 }
 
+namespace {
+
+/// The floor-and-carry `EmitParticles` applies to that count (RE §5.3, part of
+/// gate OP3b). @p carry is the fractional particle the rate has not released
+/// yet; it is replaced by the new remainder.
+///
+/// NOT clamped at zero. A negative rate floors to −1 and returns 0xFFFFFFFF,
+/// which spawns nothing (the spawn guard is signed) but is still what retail
+/// divides `catchUp` by — the golden records a `spawnTimeStep` of 3.9e-12 for
+/// exactly that case, so clamping here would quietly diverge.
 u32 Sc2SlotEmitTarget(f32& carry, f32 count) {
     const f32 wanted = count + carry;
     const f32 whole = std::floor(wanted);
@@ -196,6 +205,8 @@ u32 Sc2SlotEmitTarget(f32& carry, f32 count) {
     // that 0xFFFFFFFF, because it is what retail divides `catchUp` by.
     return static_cast<u32>(static_cast<i32>(whole));
 }
+
+} // namespace
 
 namespace {
 
@@ -271,14 +282,19 @@ f32 Sc2SquirtBurst(const Sc2KeySink& sink) {
     return static_cast<f32>(sum);
 }
 
+namespace {
+
+/// `rcpps` plus the one Newton step the reciprocal lane goes through.
 f32 Sc2RcpNewton(f32 x) {
-#if WDX_SC2_HAS_RCPSS
+#if WDX_SC2_HAS_SSE
     const f32 r = _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(x)));
 #else
     const f32 r = 1.0f / x;
 #endif
     return r * (2.0f - x * r);
 }
+
+} // namespace
 
 namespace {
 
@@ -306,12 +322,13 @@ void Sc2SpawnPass(const Sc2ScheduleInputs& in, std::span<const u32> targets,
 } // namespace
 
 Sc2Schedule Sc2SpawnSchedule(const Sc2ScheduleInputs& in, std::span<f32> carry,
-                             std::span<u32> targets, std::vector<Sc2EmitEvent>& events) {
+                             std::span<u32> targets, std::span<u32> emitted,
+                             std::vector<Sc2EmitEvent>& events) {
     Sc2Schedule out;
     events.clear();
 
     const usize slots = targets.size();
-    std::vector<u32> emitted(slots, 0u);
+    std::fill(emitted.begin(), emitted.end(), 0u);
 
     const auto measure = [&] {
         for (usize s = 0; s < slots; ++s) {

@@ -12,10 +12,11 @@
 // between two of them. That is what this file is, and why it is a free
 // function over plain structs rather than a method on `Emitter2`.
 //
-// It does NOT integrate. An analytic emitter's particles are moved by the
-// vertex shader from the birth state alone (`Sc2ExpandQuad`), so the whole of
-// MOVE on that path is the retirement — which is what `Sc2UseRetirePath` says
-// and what `Update` does. The Euler arm is X4's.
+// Both motion arms are joined here, and `Sc2UseRetirePath` picks between them
+// as `Update` does. An analytic emitter's particles are moved by the vertex
+// shader from the birth state alone (`Sc2ExpandQuad`), so its whole MOVE is the
+// retirement; every other emitter takes `Sc2SimulateParticles` per sub-step and
+// has its stored vertices rebuilt once the frame's MOVE is done.
 // ============================================================================
 
 #include "sc2_runtime.h"
@@ -41,7 +42,9 @@ struct Sc2TickFrame {
     /// The animation player's time scale, which `ComputeEmitCount` multiplies
     /// the rate by. NOT `Tick`'s argument — retail samples it out of the rate
     /// AnimRef — so a pre-roll block that overrides the one leaves the other
-    /// alone.
+    /// alone. `TickSc2` never sets it: the port's sampler has no time-scale
+    /// out-param, so the rate ignores the player's speed (coverage.csv,
+    /// `m3_sample_anim_ref_f32`).
     f32 playerTimeScale = 1.0f;
     /// The host's own emission multiplier, folded into the sampled rate before
     /// `ComputeEmitCount` sees it — it is a viewer control, not a `PAR_` field.
@@ -62,7 +65,6 @@ struct Sc2TickFrame {
 
     Matrix44f worldMatrix = Matrix44f::identity();
     Matrix44f boneMatrix = Matrix44f::identity();
-    bool hasBone = false;
     Vector3f worldPos{0, 0, 0};
 
     /// Renderer units per SC2 unit, in which the transforms above, every
@@ -81,9 +83,15 @@ struct Sc2TickFrame {
     const EmitSurface* surface = nullptr;
 };
 
+/// Renderer units per SC2 unit, as every reader takes it: a scale that is not
+/// positive — zero, negative, NaN — is no scale at all.
+inline f32 Sc2HostScale(f32 hostScale) {
+    return hostScale > 0.0f ? hostScale : 1.0f;
+}
+
 /// @p m with the host's world scale taken off: columns x, y and z of every row
-/// divided by @p hostScale, so a point it maps lands in SC2 units. The w column
-/// stays, and a scale of 1 returns @p m bit for bit.
+/// divided by `Sc2HostScale(hostScale)`, so a point it maps lands in SC2 units.
+/// The w column stays, and a scale of 1 returns @p m bit for bit.
 Matrix44f Sc2FromHostSpace(const Matrix44f& m, f32 hostScale);
 
 /// What the frame did, for the caller and for the tests.
@@ -95,11 +103,8 @@ struct Sc2TickResult {
     /// per element and simply stops; the shortfall is never retried, so a
     /// non-zero here is normal for a saturated emitter and not an error.
     u32 refused = 0;
-    /// Requests MOVE made of the children this frame, before any cap.
-    usize childRequests = 0;
     /// 33 ms pre-roll blocks run ahead of the frame.
     u32 preRollBlocks = 0;
-    usize events = 0;
 };
 
 /// Run one frame. Mutates @p rt — the clock, the pool, the carries and the

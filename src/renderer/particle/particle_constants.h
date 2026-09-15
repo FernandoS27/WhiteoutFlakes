@@ -79,6 +79,11 @@ inline constexpr u32 kDefaultEmitterSeed = 0x1234567u;
 /// Mixed into the emitter seed for the compaction stream, which must never
 /// perturb the spawn stream the trace compares.
 inline constexpr u32 kCompactSeedSalt = 0x5BF03635u;
+/// Mixed into the emitter seed for an SC2 runtime's `sc2::Rng`, and for a
+/// Diablo III system's emitter-channel seed, so neither shares a stream with
+/// the spawn stream above.
+inline constexpr u32 kSc2SeedSalt = 0x2545F491u;
+inline constexpr u32 kD3ChannelSeedSalt = 0x6C8E9CF5u;
 
 // -- twinkle ---------------------------------------------------------------------------
 

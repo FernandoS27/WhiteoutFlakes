@@ -78,6 +78,8 @@ struct Sc2AnalyticInputs {
     bool clampedTailLength = false;
 };
 
+/// The quad build reads `position`, `velocity` and `tailLength`; the other
+/// lanes are returned for the gate, which compares every one.
 struct Sc2AnalyticStep {
     Vector3f position{0, 0, 0};
     Vector3f displacement{0, 0, 0};
@@ -151,13 +153,12 @@ struct Sc2ElementList {
 
 /// The `ParticleVB` slots retirement hands back, in the order it frees them.
 ///
-/// Retail grows this by a fixed increment rather than doubling, and a system
-/// with no array at all simply keeps the slot — which is why @ref enabled is a
-/// field and not the emptiness of @ref slots.
+/// A system with no array at all simply keeps the slot — which is why
+/// @ref enabled is a field and not the emptiness of @ref slots. Retail grows
+/// its array by a fixed increment; the port's vector has no capacity anything
+/// can observe, so it models none.
 struct Sc2RecycleArray {
     bool enabled = true;
-    u32 capacity = 8;
-    u32 growth = 8;
     std::vector<i32> slots;
 };
 
@@ -273,7 +274,8 @@ struct Sc2SimulateInputs {
 struct Sc2SimulateResult {
     u32 killed = 0;
     /// Maintained only under `PAR_.flags` bit 31, and left at the empty
-    /// sentinel otherwise — as retail leaves it.
+    /// sentinel otherwise — as retail leaves it. Gate-only: nothing here
+    /// reads the bounds.
     Vector3f boundsMin{sc2::kFltMax, sc2::kFltMax, sc2::kFltMax};
     Vector3f boundsMax{-sc2::kFltMax, -sc2::kFltMax, -sc2::kFltMax};
 };
@@ -290,21 +292,10 @@ struct Sc2ChildRequests {
     std::vector<SpawnRequest> trail;     ///< to child 1
 };
 
-/// Retail's cap on one emitter's pending requests (`CParticleSystem+0x358`).
-inline constexpr usize kSc2MaxSpawnRequests = 128;
-
 /// `QueueSpawnRequest` (`0x102923CD0`): append while fewer than 128 wait, and
 /// drop the rest without a word — a dropped request is a particle that never
 /// spawns (OP9 `cap`).
 void Sc2QueueSpawnRequest(std::vector<SpawnRequest>& queue, const SpawnRequest& req);
-
-/// One element's integration and the type-6 freeze.
-///
-/// Gravity (unless resting), drag in two branches — linear below `k·dt < 1`,
-/// and above it the velocity simply becomes `gravity·dt` — then `v += a·dt` and
-/// `p += (v + wind)·dt`. Wind reaches the POSITION only, so it never
-/// accumulates into the particle's own momentum.
-void Sc2StepEuler(Sc2SpawnedElement& e, const Sc2SimulateInputs& in);
 
 /// `SimulateParticles`: one sub-step over the live list. Returns how many died
 /// and appends to @p children what the step asked of them, drawing the

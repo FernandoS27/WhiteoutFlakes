@@ -42,6 +42,17 @@ struct Splat {
     f32 age = 0.f;
 };
 
+namespace detail {
+/// @brief The sprite cell of an SPL key at nudged time @p t —
+///        `CSplatKey::Interpolate` @0x141FE5BE0.
+///
+/// The key is built by @0x141FE73F0: a reversed range starts one past @p start
+/// and sweeps one past @p end, the same sweep the particle cell uses. A
+/// @p repeat of 1 sweeps once, anything else wraps `repeat * t`. The result is
+/// clamped to a byte, not to the range.
+i32 SplatCell(i32 start, i32 end, i32 repeat, f32 t);
+} // namespace detail
+
 struct SplatDrawList {
     i32 vertexOffset = 0;
     i32 vertexCount = 0;

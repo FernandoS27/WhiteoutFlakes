@@ -38,10 +38,6 @@ struct EmitterDrawHeader {
     i32 priorityPlane = 0;
     /// Never null for a live emitter; points into its desc.
     const ParticleMaterialDesc* material = nullptr;
-    /// The clock the emitter's material runs on. Zero for every dialect whose
-    /// material does not move on its own; a Diablo III layer's UV transform is
-    /// sampled against the system's own age.
-    f32 materialTimeSec = 0.0f;
     /// M2 `Refraction`: the draw goes to the refraction pass, never the scene.
     bool refraction = false;
     /// M2 `MultiTexture`: the vertices go to the three-layer stream.

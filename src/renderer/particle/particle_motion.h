@@ -31,11 +31,10 @@ struct MotionParams {
 
 // Immutable motion configuration. Seeds MotionParams at registration; formats
 // that animate a field overwrite it in ApplyState.
+// Gravity is not here: every format animates it, so it arrives in ApplyState.
 struct MotionDesc {
-    Vector3f gravity{0, 0, 0};
     Vector3f wind{0, 0, 0};
     f32 drag = 0.0f;
-    f32 mass = 1.0f; // M3; unused until a format populates it
 };
 
 // Semi-implicit Euler with the position's quadratic acceleration term, matching

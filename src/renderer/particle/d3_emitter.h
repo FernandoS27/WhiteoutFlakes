@@ -26,7 +26,9 @@
 #include "d3_emitter_desc.h"
 #include "d3_particle.h"
 #include "d3_path.h"
+#include "particle_constants.h"
 #include "particle_emitter.h"
+#include "rnd_seed.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -36,6 +38,21 @@
 #include <vector>
 
 namespace whiteout::flakes::renderer::particle::d3 {
+
+/// What one tick of a system reads the same for every particle, built once
+/// after the system clock advances — the only place it changes. The two
+/// emitter-wide channels are sampled here, once, which is where
+/// `ParticleSystem_TickEmitter` samples them too (ch 34 -> sys+0x134
+/// @0x71000AEF48, ch 35 -> sys+0x12C @0x71000AEF64).
+struct EmitterFrame {
+    EvalCtx ctx;              ///< the emitter channels' context
+    Vector3f sysPos{0, 0, 0}; ///< the emitter's world position
+    f32 unit = 1.0f;          ///< renderer units per `.prt` unit
+    f32 invUnit = 1.0f;
+    f32 sizeScale = 1.0f;     ///< ch 34, 1 when absent
+    f32 effectScale = 1.0f;   ///< ch 35
+    bool hasEffectScale = false;
+};
 
 class Emitter final : public particle::ParticleEmitter {
 public:
@@ -59,6 +76,14 @@ public:
     i32 BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& out) const override;
     void CollectOutputEvents(std::vector<ChildModelEvent>& out) override;
 
+    /// Seeds the system stream and the emitter-channel seed (`sys+28`) from
+    /// @p seed, so two actors of one `.prt` do not emit one cloud. An emitter
+    /// never seeded keeps the fixed pair below and is still reproducible.
+    void SetSystemSeed(u32 seed) {
+        sysRng_ = MwcRng::Seed(MixSeed(seed));
+        emitterSeed_ = MixSeed(seed ^ kD3ChannelSeedSalt);
+    }
+
     /// The desc's material and priority, in the id space its output declares:
     /// a type 1/3/4 system draws nothing of its own — every emission is a whole
     /// model — so it registers as a child-model emitter and the geometry
@@ -76,23 +101,14 @@ public:
     /// allocator such a system counts its emissions and produces nothing, which
     /// is the right answer for a test that only wants the simulation.
     void SetChildOwner(u32 owner, i32 emitterId, std::function<u32()> alloc) {
-        childOwner_ = owner;
-        childEmitterId_ = emitterId;
-        allocHandle_ = std::move(alloc);
+        children_.Bind(owner, emitterId, std::move(alloc));
     }
 
     /// How many child actors this system has spawned. The engine's emit clamp
     /// counts these and not particles (`sys+408 + sys+376`), which is what makes
     /// a target count of 1 — 4,189 of 4,795 shipped files — mean "one model".
     i32 ChildCount() const {
-        return static_cast<i32>(childHandles_.size());
-    }
-
-    /// The system's own age, which is the clock every layer's UV transform is
-    /// sampled against — what makes a re-triggered effect restart its scroll
-    /// instead of jumping to wherever a scene clock had reached.
-    f32 MaterialTimeSec() const {
-        return systemAge_;
+        return static_cast<i32>(children_.LiveCount());
     }
 
     /// The emitter's orientation. Frozen onto each particle at birth and used
@@ -105,7 +121,9 @@ public:
     }
 
     /// The bound spawn target the seek model converges on. Without one the
-    /// model is inert, which is what the engine does when nothing is bound.
+    /// model is inert, which is what the engine does when nothing is bound. No
+    /// host binds one yet, so the seek arm is unreachable outside a direct
+    /// call.
     void SetSeekTarget(const Vector3f& t) {
         seekTarget_ = t;
         hasSeekTarget_ = true;
@@ -125,7 +143,8 @@ public:
     }
 
     /// Global wind, for the two foliage system types. `phase` is a shared
-    /// clock; each particle offsets it by its own random so a gust travels.
+    /// clock; each particle offsets it by its own random so a gust travels. No
+    /// host sets it yet: the spring runs at strength 0 and only settles.
     void SetWind(const Vector2f& dir, f32 strength, f32 phase) {
         windDir_ = dir;
         windStrength_ = strength;
@@ -173,8 +192,9 @@ public:
         return emittedLastUpdate_;
     }
 
-    /// Restart the system: age, accumulator and pool. Used when an actor
-    /// re-triggers an effect rather than respawning it.
+    /// Restart the system: age, accumulator, pool and the placement the next
+    /// move measures from. Used when an actor re-triggers an effect rather than
+    /// respawning it.
     void Restart();
 
     /// A scene rewind is a re-trigger, so it is the same call.
@@ -190,6 +210,8 @@ private:
     /// `ParticleSystem_SampleEmitterShape` reads per particle.
     struct EmitContext {
         Shape shape = Shape::Point;
+        /// Never written, so zero. Kept as a term of the shape sum because
+        /// dropping its `0 +` can flip the sign of a zero position.
         Vector3f offset{0, 0, 0};
         /// The two LANES of each shape-extent path at the emitter's current
         /// time, as `InterpolationPath_GetScalarEndpoints` hands them over —
@@ -209,22 +231,26 @@ private:
     bool SampleEmitMeshPoint(bool sequential, u32 sequence, Vector3f& out);
     Vector3f SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const;
 
+    EmitterFrame BuildEmitterFrame() const;
+
     EvalCtx EmitterCtx() const;
-    EvalCtx ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 age) const;
+    EvalCtx ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 age,
+                        const EmitterFrame& f) const;
     /// The material's atlas layer, per particle. See the definitions.
     void SeedUvStates(ParticleState& st) const;
     void StepUvStates(ParticleState& st, f32 dt) const;
 
-    void TickEmit(f32 dt, f32 emissionScaler);
-    EmitContext BuildEmitContext() const;
+    void TickEmit(f32 dt, f32 emissionScaler, const EmitterFrame& f);
+    EmitContext BuildEmitContext(const EvalCtx& ectx) const;
     Vector3f SampleShape(EmitContext& ec, const Vector3f& base);
-    bool BirthParticle(f32 dt, EmitContext& ec);
+    bool BirthParticle(f32 dt, EmitContext& ec, const EmitterFrame& f);
     /// `Particle_ComputeInitialVelocity` — channels 38/39/40, in `.prt` units
-    /// per second. Draws from `sysRng_` when the cone applies, so both callers
-    /// must reach it at the same point in the birth sequence.
+    /// per second. Draws from `sysRng_` when the cone applies, so it is taken
+    /// only where the engine takes it: at the end of a type 2, 3 or 9 birth
+    /// record, and again when a child actor spawns.
     Vector3f BirthVelocity(u32 seed, const EvalCtx& ectx);
-    bool SpawnChildActor(EmitContext& ec);
-    void StepParticle(u32 idx, f32 dt);
+    bool SpawnChildActor(f32 dt, EmitContext& ec, const EmitterFrame& f);
+    void StepParticle(u32 idx, f32 dt, const EmitterFrame& f);
     void StepWindSpring(f32 dt);
     /// `ParticleSystem_SetEmitterTransform` @0x71000AFBE0's carry, G-D3P-21.
     void CarryWithEmitter();
@@ -288,14 +314,11 @@ private:
     f32 windStrength_ = 0.0f;
     f32 windPhase_ = 0.0f;
 
-    // The child actors a type 1/3/4 system has spawned, and the events not yet
-    // drained. Handles rather than pool indices: these are not particles, and
-    // the engine keeps them in a list of its own for exactly the same reason.
-    std::function<u32()> allocHandle_;
-    u32 childOwner_ = 0;
-    i32 childEmitterId_ = 0;
-    std::vector<u32> childHandles_;
-    std::vector<ChildModelEvent> childPending_;
+    // The child actors a type 1/3/4 system has spawned, slotted by birth
+    // order, and the events not yet drained. Not pool indices: these are not
+    // particles, and the engine keeps them in a list of its own for exactly
+    // the same reason.
+    ChildOutputChannel children_;
 };
 
 /// The five random draws the shape sampler makes, exposed so the shape gate
@@ -306,5 +329,23 @@ Vector3f SamplePointOnHemisphere(MwcRng& rng, f32 radius);
 Vector3f SamplePointOnCircleXY(MwcRng& rng, f32 radius);
 f32 SampleRadiusInAnnulus(MwcRng& rng, f32 inner, f32 thickness);
 /// @}
+
+/// @brief What `Particle_InitLifeAndSize` @0x71000B6BB0 writes after the shape
+///        sample, in its order, into @p st.
+///
+/// @p st.seed must already hold the particle seed. Base size (ch 28, else 1),
+/// lifetime (ch 29 in frames, else ONE frame), then channel 30 shortens the
+/// life by the emitter's speed over @p prev → @p now. The shortened life never
+/// grows and never falls below one frame — which lifts a zero lifetime to a
+/// frame rather than leaving it to be rejected. @p invUnit takes the positions
+/// back to `.prt` units, as the distance-rate driver does.
+///
+/// Then up to three draws: a unit-sphere spin axis under `kCapSpin`, the orbit
+/// phase under `kCapOrbit`, and the roll under `PrtFlag::RandomRoll`. Types 2, 3
+/// and 9 take the birth velocity after that, which the caller owns.
+///
+/// Both of the emitter's birth paths call it, and G-D3P-A4 replays it.
+void InitLifeAndSize(MwcRng& rng, const EmitterDesc& d, const EvalCtx& ctx, const Vector3f& prev,
+                     const Vector3f& now, f32 invUnit, f32 dt, ParticleState& st);
 
 } // namespace whiteout::flakes::renderer::particle::d3

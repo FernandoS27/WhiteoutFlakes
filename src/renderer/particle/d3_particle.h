@@ -16,6 +16,7 @@
 // ============================================================================
 
 #include "d3_channels.h"
+#include "d3_path.h" // MwcRng
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
@@ -33,7 +34,9 @@ struct ParticleState {
     f32 baseSize = 1.0f; ///< particle+24 (ch 28)
 
     Quaternion orientation = Quaternion::identity();      ///< particle+216
-    Quaternion birthEmitterQuat = Quaternion::identity(); ///< particle+184, triple B's frame
+    /// particle+184, triple B's frame. For foliage (types 6 and 8) it is a random
+    /// turn about world Z instead, and its w is the sway phase.
+    Quaternion birthEmitterQuat = Quaternion::identity();
 
     /// pool+444 and pool+456 — the frame's displacement and the last non-zero
     /// direction it had. `ParticleSystem_UpdateParticles` @0x71000BEB00 stores
@@ -51,7 +54,7 @@ struct ParticleState {
     Vector2f groundAt{0, 0};
     bool groundSeeded = false;
 
-    Vector3f spinAxis{0, 1, 0}; ///< particle+172, normalised ch 23
+    Vector3f spinAxis{0, 1, 0}; ///< particle+172: the birth draw, or normalised ch 23
     Vector3f radialDir{0, 0, 0}; ///< particle+48, cached at first use
     Vector2f orbitDir{1, 0};     ///< particle+60, seeded (cos phi, sin phi) at birth
 
@@ -60,12 +63,12 @@ struct ParticleState {
     Vector3f prevOffsetA{0, 0, 0}; ///< particle+76
     Vector3f accelVelA{0, 0, 0};   ///< particle+88
 
-    // Kinematic triple B — emitter-local. Same shape, plus the running total
-    // of the local displacement the engine keeps at particle+124 (which it
-    // does NOT use for motion; the per-frame delta is what gets rotated).
+    // Kinematic triple B — emitter-local. Same shape. The engine also keeps a
+    // running total of the local displacement at particle+124, which it does
+    // NOT use for motion — the per-frame delta is what gets rotated — so it is
+    // not kept here.
     Vector3f prevOffsetB{0, 0, 0}; ///< particle+100
     Vector3f accelVelB{0, 0, 0};   ///< particle+112
-    Vector3f localDispB{0, 0, 0};  ///< particle+124
 
     f32 prevOrbitRadius = 0.0f; ///< particle+68  (ch 7)
     f32 prevRadial = 0.0f;      ///< particle+72  (ch 11)
@@ -95,7 +98,6 @@ struct ParticleState {
     Vector2f swayOffset{0, 0};
     Vector2f swayVelocity{0, 0};
     Vector2f swayForce{0, 0};
-    f32 swayPhase = 0.0f;
 
     /// @brief The four UV animation states, one per texture stage.
     ///
@@ -120,9 +122,6 @@ struct ParticleState {
         f32 cursor = 0.0f, cursorRate = 0.0f;
     };
     std::array<UvState, 4> uv{};
-
-    bool orbitSeeded = false;
-    bool radialSeeded = false;
 };
 
 /// The five `.prt` fields the wind spring reads, at SNO+176..192.
@@ -148,6 +147,9 @@ struct WindSpringRig {
 ///
 /// `reuseForce` is the engine's second arm, selected by the float at system+624: it
 /// integrates with the force stored on the particle instead of recomputing it.
+///
+/// The gust phase is pool+500, which is the w of the birth quaternion at pool+488:
+/// the random turn a foliage birth writes there doubles as its phase.
 inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
                            const Vector2f& windDir, f32 windStrength, f32 windPhase, f32 dt,
                            bool reuseForce = false) {
@@ -160,7 +162,7 @@ inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
 
     if (!reuseForce) {
         const f32 gust = rig.baseAmount -
-                         rig.gustAmount * (std::cos(st.swayPhase * kTwoPi + windPhase) *
+                         rig.gustAmount * (std::cos(st.birthEmitterQuat.w * kTwoPi + windPhase) *
                                            windStrength);
         st.swayForce = {windDir.x * gust * kFrameSeconds, windDir.y * gust * kFrameSeconds};
     }
@@ -187,6 +189,89 @@ inline void StepWindSpring(ParticleState& st, const WindSpringRig& rig,
         st.swayOffset = {(lim * kParkFraction) * st.swayOffset.x,
                          (lim * kParkFraction) * st.swayOffset.y};
     }
+}
+
+/// The first draws of a birth: the particle's seed, and where along the emitter's
+/// frame it is born.
+struct BirthDraw {
+    u32 seed = 0;
+    Vector3f base{0, 0, 0};
+};
+
+/// @brief `Particle_InitLifeAndSize`'s seed draw and sub-frame birth lerp.
+///
+/// The seed is the raw draw, nudged past the engine's two sentinel values so a
+/// seed-for-seed trace matches. Then, unless @p atEmitter, a second draw places
+/// the base at a uniform point on the segment the emitter travelled this frame,
+/// @p prev to @p now: what stops a fast emitter stamping a whole frame's
+/// particles at one spot. `PrtFlag::BirthAtEmitter` skips the lerp AND ITS DRAW,
+/// which shifts every draw after it.
+///
+/// G-D3P-A4 replays this function; the emitter's two birth paths both call it.
+inline BirthDraw DrawSeedAndBase(MwcRng& rng, const Vector3f& prev, const Vector3f& now,
+                                 bool atEmitter) {
+    BirthDraw b;
+    const u32 raw = rng.Next();
+    b.seed = (raw >= kFirstSentinelSeed) ? (raw + 2u) : raw;
+    b.base = now;
+    if (!atEmitter) {
+        const f32 u = rng.NextUnit();
+        b.base = {prev.x + u * (now.x - prev.x), prev.y + u * (now.y - prev.y),
+                  prev.z + u * (now.z - prev.z)};
+    }
+    return b;
+}
+
+/// What one move of the emitter does to its live particles.
+struct CarryMove {
+    bool carries = false; ///< any particle moves at all
+    bool rotates = false; ///< about the emitter by @ref dq; else translated
+    Vector3f from{0, 0, 0};
+    Vector3f to{0, 0, 0};
+    Quaternion dq = Quaternion::identity();
+};
+
+/// @brief `ParticleSystem_SetEmitterTransform` @0x71000AFBE0's rule, measured by
+///        G-D3P-21, for a move from (@p from, @p fromQ) to (@p to, @p toQ).
+///
+/// `dwPrtFlags` bit 8 (@p carry) carries the LIVE particles when the emitter
+/// moves, which is what makes a system emitter-local rather than world-space; bit
+/// 29 (@p withoutRotation) restricts that to translation. Types 1, 2 and 3 never
+/// carry whatever the flags say, and type 9 leaves the function before anything
+/// happens.
+///
+/// The exact `!= 0` displacement guard belongs to the TRANSLATE arm alone: the
+/// rotating arm runs on a turn in place, which is the whole point of it — an
+/// emitter that spins without moving still sweeps its particles round.
+inline CarryMove PlanCarry(SystemType type, bool carry, bool withoutRotation, const Vector3f& from,
+                           const Quaternion& fromQ, const Vector3f& to, const Quaternion& toQ) {
+    CarryMove m;
+    m.from = from;
+    m.to = to;
+    if (type == SystemType::Weather || type == SystemType::Swarm ||
+        type == SystemType::RibbonPhysics || type == SystemType::Ribbon || !carry)
+        return m;
+    const Vector3f delta{from.x - to.x, from.y - to.y, from.z - to.z};
+    const bool moved = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z != 0.0f;
+    const bool sameQuat =
+        toQ.x == fromQ.x && toQ.y == fromQ.y && toQ.z == fromQ.z && toQ.w == fromQ.w;
+    if (withoutRotation || sameQuat) {
+        m.carries = moved;
+        return m;
+    }
+    m.carries = true;
+    m.rotates = true;
+    m.dq = toQ * fromQ.conjugate();
+    return m;
+}
+
+/// Where a live particle at @p p lands under @p m, which must carry.
+inline Vector3f CarryPoint(const CarryMove& m, const Vector3f& p) {
+    if (!m.rotates)
+        return {m.to.x + (p.x - m.from.x), m.to.y + (p.y - m.from.y), m.to.z + (p.z - m.from.z)};
+    const Vector3f rel{p.x - m.from.x, p.y - m.from.y, p.z - m.from.z};
+    const Vector3f r = m.dq.rotate_vector(rel);
+    return {m.to.x + r.x, m.to.y + r.y, m.to.z + r.z};
 }
 
 /// @brief The emission cone, `sub_710097E390` as `Particle_ComputeInitialVelocity`

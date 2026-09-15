@@ -322,6 +322,15 @@ void Emitter2::SetSeed(u32 seed) {
     // compares, and it must not depend on how often the pool happened to empty.
     compactSeed_.SetSeed(MixSeed(seed ^ kCompactSeedSalt));
 
+    // An SC2 emitter draws from its runtime's `sc2::Rng`, which this seeds too,
+    // so two actors of one model do not emit one cloud. Retail shares a global
+    // generator whose position differs per emitter; a stream per emitter
+    // seeded from the actor gives the same difference reproducibly.
+    if (sc2_) {
+        const u32 s = MixSeed(seed ^ kSc2SeedSalt);
+        sc2_->rng.SetState(s, MixSeed(s));
+    }
+
     // RandFlipbookStart is resolved once, off the emitter's own stream, the way
     // the loader does it (`SetRandFlipBookStart` @0x1016a6ad0 calls dice_ with
     // the emitter seed). It therefore consumes a draw before any particle is
@@ -464,12 +473,10 @@ void Emitter2::AdvanceStep(f32 elapsed, f32 emissionScaler) {
             continue;
         }
 
-        if (!wowForces) {
-            IntegrateWc3(p, motion_, elapsed);
-            ++i;
-            continue;
-        }
-
+        // Each feature below answers to its own flag, not to the force model:
+        // an `.m2` run under a behaviour that integrates the WC3 way still
+        // scrolls its texture layers and drives its trails. Under the two
+        // shipped presets the order is the client's either way.
         if (behavior_.followPosition && desc_->followPosition && (elapsed + elapsed) < p.age) {
             p.position.x += wow_.motion.followDelta.x;
             p.position.y += wow_.motion.followDelta.y;
@@ -480,15 +487,19 @@ void Emitter2::AdvanceStep(f32 elapsed, f32 emissionScaler) {
         // @0x1016a9d30 advances them at the top and only then calls
         // MoveParticle. A particle that dies this step still scrolled.
         AdvanceMultiTex(idx, elapsed);
-        const bool implode = behavior_.implosionKill && desc_->implosionFilter;
-        if (!MoveParticleWow(p, forces, elapsed, implode, center)) {
-            KillAt(i, idx);
-            continue;
+        if (!wowForces) {
+            IntegrateWc3(p, motion_, elapsed);
+        } else {
+            const bool implode = behavior_.implosionKill && desc_->implosionFilter;
+            if (!MoveParticleWow(p, forces, elapsed, implode, center)) {
+                KillAt(i, idx);
+                continue;
+            }
         }
         // Only a particle that survived its move drives anything: the client
         // drives its children from the true half of `MoveParticle`'s result and
-        // nowhere else. The WC3 branch above has no equivalent because no MDX
-        // record can name a trail model.
+        // nowhere else. No MDX record can name a trail model, so a WC3 emitter
+        // has none to drive.
         if (!trails_.Empty())
             trails_.Drive(*this, p, elapsed, emissionScaler);
         ++i;

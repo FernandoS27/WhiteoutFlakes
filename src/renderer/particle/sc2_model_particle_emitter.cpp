@@ -18,9 +18,7 @@ bool Placeable(const Sc2ModelPose& p) {
 } // namespace
 
 void Sc2ModelParticleEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& out) {
-    for (auto& ev : pending_)
-        out.push_back(ev);
-    pending_.clear();
+    children_.Drain(out);
     const Sc2Runtime* rt = Sc2State();
     if (!rt)
         return;
@@ -28,16 +26,8 @@ void Sc2ModelParticleEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& 
     const Sc2ElementList& list = rt->store.list;
     for (i32 node = list.head; node >= 0; node = list.next[static_cast<usize>(node)]) {
         const u32 idx = static_cast<u32>(node);
-        if (idx >= childHandles_.size() || childHandles_[idx] == 0)
-            continue;
-        ChildModelEvent ev;
-        ev.kind = ChildModelEvent::Kind::Transform;
-        ev.owner = owner_;
-        ev.emitterId = emitterId_;
-        ev.childHandle = childHandles_[idx];
-        ev.transform = TransformFor(idx);
-        ev.visibility = VisibilityFor(idx);
-        out.push_back(ev);
+        if (children_.Holds(idx))
+            children_.Transform(idx, TransformFor(idx), VisibilityFor(idx), out);
     }
 }
 

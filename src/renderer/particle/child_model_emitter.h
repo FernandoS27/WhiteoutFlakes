@@ -24,10 +24,7 @@ namespace whiteout::flakes::renderer::particle {
 
 class ChildModelEmitter : public Emitter2 {
 public:
-    // `allocHandle` mints a fresh ActorId per birth — routed through
-    // SceneManager::AllocActorId by the caller so the renderer does not expose
-    // a mutable counter.
-    using HandleAllocator = std::function<u32()>;
+    using HandleAllocator = ChildOutputChannel::HandleAllocator;
 
     ChildModelEmitter(ModelId owner, i32 emitterId, HandleAllocator allocHandle);
 
@@ -69,18 +66,11 @@ protected:
         return ChildModelEvent::Route::Pe1Template;
     }
 
-    // Protected rather than private for the SC2 output, whose particles live
-    // in the SC2 runtime's store instead of the pool: it walks that store for
-    // its Transform events, and the handles are keyed by store node.
-    ModelId owner_;
-    i32 emitterId_;
-    HandleAllocator allocHandle_;
-
-    // Index-parallel with the pool (or the SC2 store); Particle2 is frozen at
-    // 32 bytes so the handle cannot live inside it. 0 means "no live child".
-    std::vector<u32> childHandles_;
-
-    std::vector<ChildModelEvent> pending_;
+    // Slots index-parallel with the pool (or the SC2 store); Particle2 is
+    // frozen at 32 bytes so the handle cannot live inside it. Protected for the
+    // SC2 output, whose particles live in the SC2 runtime's store instead of
+    // the pool: it walks that store for its Transform events.
+    ChildOutputChannel children_;
 };
 
 } // namespace whiteout::flakes::renderer::particle

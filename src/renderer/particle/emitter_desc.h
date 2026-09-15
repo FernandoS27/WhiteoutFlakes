@@ -58,8 +58,6 @@ struct SpriteSheet {
 // one-shot burst when its emission rate crosses zero ("squirt"); M3's
 // emit-N-total is the third mode this leaves room for.
 struct EmissionDesc {
-    enum class Mode : u8 { Continuous, Burst };
-    Mode mode = Mode::Continuous;
     bool squirtAtStart = false;
 };
 

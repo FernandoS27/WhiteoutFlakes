@@ -145,9 +145,17 @@ TEST_CASE("sc2 particle conversion applies Init's load-time rules",
         cfg.additionalFlags = static_cast<u32>(m3::ParticleAdditionalFlag::LifespanRandomize);
         const auto d = Convert(cfg);
         REQUIRE(d->sc2.emit.sizeRandom);
-        REQUIRE(d->sc2.emit.lifetimeRandom);
-        REQUIRE_FALSE(d->sc2.emit.speedRandom);
-        REQUIRE_FALSE(d->sc2.emit.massRandom);
+        REQUIRE(d->sc2.Has(m3::ParticleAdditionalFlag::LifespanRandomize));
+        REQUIRE_FALSE(d->sc2.Has(m3::ParticleAdditionalFlag::EmitSpeedRandomize));
+        REQUIRE_FALSE(d->sc2.Has(m3::ParticleAdditionalFlag::MassRandomize));
+    }
+
+    SECTION("a particle without LitParts draws unlit, whatever its material") {
+        // `b_useLighting` is cleared unless flags & LitParts (RE §8.3); the
+        // M3 draw forces the surface unshaded off this.
+        REQUIRE(Convert(cfg)->material.unshaded);
+        cfg.flags = static_cast<u32>(m3::ParticleFlag::LitParts);
+        REQUIRE_FALSE(Convert(cfg)->material.unshaded);
     }
 
     SECTION("+0x5D0 is a non-zero TEST, not a probability") {
@@ -888,6 +896,73 @@ TEST_CASE("a burst queued before an emitter's first tick is not dropped",
     CHECK(em.TotalAlive() == 5);
 }
 
+TEST_CASE("two SC2 emitters seeded apart do not emit one cloud", "[sc2_particle][service]") {
+    // Every runtime started its generator at the same state, so two actors of
+    // one model drew identical particles. SetSeed now seeds it; one seed still
+    // reproduces its cloud exactly.
+    effects::Sc2ParticleEmitterConfig cfg;
+    cfg.maxParticles = 256;
+    cfg.slotBones = {0};
+    cfg.squirt.emplace_back();
+    cfg.sizeRandom = true;
+    const auto build = [&](u32 seed) {
+        particle::Emitter2 em;
+        em.SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
+        em.SetSeed(seed);
+        auto st = Sc2State(0, 30.0f);
+        st.sc2.size3 = {0.2f, 0.2f, 0.2f};
+        st.sc2.sizeRandom3 = {1.0f, 1.0f, 1.0f};
+        for (int frame = 0; frame < 30; ++frame) {
+            em.ApplyState(st);
+            em.Update(1.0f / 60.0f, 1.0f);
+        }
+        const Matrix44f view = Matrix44f::identity();
+        std::vector<renderer::Vertex> verts;
+        particle::BuildGeometryInput in;
+        in.worldToView = &view;
+        em.BuildGeometry(in, verts);
+        return verts;
+    };
+    const auto a = build(1u), again = build(1u), b = build(2u);
+    REQUIRE(!a.empty());
+    REQUIRE(a.size() == again.size());
+    bool same = true;
+    for (usize i = 0; i < a.size(); ++i)
+        same = same && a[i].position.x == again[i].position.x &&
+               a[i].position.y == again[i].position.y;
+    CHECK(same);
+    bool differ = a.size() != b.size();
+    for (usize i = 0; !differ && i < a.size(); ++i)
+        differ = a[i].position.x != b[i].position.x || a[i].position.y != b[i].position.y;
+    CHECK(differ);
+}
+
+TEST_CASE("a rewound SimulateInit emitter pre-rolls again", "[sc2_particle][service][preroll]") {
+    // A scrub rewinds every emitter in place. The rewind reset the clock but
+    // kept the active sequence, so the next frame's note was no change, no
+    // pre-roll was asked for, and a torch that opened already burning came
+    // back from a scrub empty.
+    effects::Sc2ParticleEmitterConfig cfg;
+    cfg.flags = static_cast<u32>(m3::ParticleFlag::SimulateInit);
+    cfg.maxParticles = 4096;
+    cfg.slotBones = {0};
+    cfg.squirt.emplace_back();
+    cfg.preRollInit = 1.0f; // a one-second lifetime to budget the pre-roll from
+    particle::Emitter2 em;
+    em.SetDesc(particle::DescFromSc2ParticleConfig(cfg, {}));
+    const auto frame = [&] {
+        em.SetSc2ActiveSequence(0);
+        em.ApplyState(Sc2State(0, 60.0f));
+        em.Update(1.0f / 60.0f, 1.0f);
+        return em.TotalAlive();
+    };
+    // 60 a second over a second of pre-roll, then the frame itself.
+    REQUIRE(frame() > 10);
+    em.ResetParticles();
+    REQUIRE(em.TotalAlive() == 0);
+    CHECK(frame() > 10);
+}
+
 TEST_CASE("an SC2 burst spawns its count whatever the actor's world scale",
           "[sc2_particle][service]") {
     // A frame state's `unitScale` is the renderer's world scale — 100 for an
@@ -1387,7 +1462,7 @@ TEST_CASE("an SC2 Mesh emitter is born only on the regions it names",
 
     std::vector<renderer::Vertex> verts;
     std::vector<particle::EmitterDrawList> draws;
-    service.BuildGeometry(Matrix44f::identity(), verts, draws);
+    service.BuildGeometry(Matrix44f::identity(), {verts, draws});
     REQUIRE_FALSE(verts.empty());
     for (const auto& v : verts) {
         INFO("vertex at z=" << v.position.z);

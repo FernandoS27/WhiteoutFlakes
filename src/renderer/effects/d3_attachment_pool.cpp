@@ -8,6 +8,7 @@
 #include "renderer/particle/d3_emitter.h"
 #include "renderer/particle/emitter_factory.h"
 #include "renderer/particle/particle_service.h"
+#include "renderer/particle/rnd_seed.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 
 #include <utility>
@@ -109,7 +110,9 @@ void D3AttachmentPool::Tick(Actor& actor, i32 activeSeq, i32 localTimeMs, i32 se
                 profiles::diablo3::D3BindParticleTextures(actor, desc);
                 e.emitterId = nextEmitterId_++;
                 auto em = particle::EmitterFactory::CreateD3(
-                    std::move(desc), e.bone, e.offset, {actor.handle, e.emitterId, allocHandle_});
+                    std::move(desc), e.bone, e.offset,
+                    particle::MixSeed(actor.handle, static_cast<u32>(e.emitterId)),
+                    {actor.handle, e.emitterId, allocHandle_});
                 e.output = em->DrawHeader().output;
                 particles->AddEmitter(actor.handle, e.emitterId, std::move(em));
                 continue; // Freshly built: already at age zero.

@@ -356,7 +356,7 @@ struct D3ParticleVsCb {
 ///
 /// `Particle_WriteQuadVertices` writes a 56-byte vertex whose +20/+24/+28/+32
 /// are four packed texcoords, one per stage, each already transformed. It bakes
-/// them because the transform is per PARTICLE — see BuildGeometryInput::d3Uv01.
+/// them because the transform is per PARTICLE — see `D3VertexStream`.
 /// Full floats rather than the engine's 16-bit pairs: the packing is a memory
 /// economy this build does not need, and a half-precision coordinate on a
 /// 64-tile sheet loses the tile.

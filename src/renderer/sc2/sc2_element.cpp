@@ -1,15 +1,10 @@
 #include "renderer/sc2/sc2_element.h"
 
+#include "renderer/sc2/sc2_newton.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
-
-#if defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
-#define WDX_SC2_HAS_RSQRTSS 1
-#include <xmmintrin.h>
-#else
-#define WDX_SC2_HAS_RSQRTSS 0
-#endif
 
 namespace whiteout::flakes::renderer::sc2 {
 
@@ -65,7 +60,7 @@ GroundHit GroundCollide(const Vector3f& oldPos, const Vector3f& newPos,
     f32 gz = 0.0f;
     if (!query(newPos, kReach, kReach, gz))
         return r;
-    const f32 contactZ = gz + kCollideRadius;
+    const f32 contactZ = gz + kRibbonCollideRadius;
     if (newPos.z > contactZ)
         return r; // ended above the surface: no contact this step.
 
@@ -123,8 +118,6 @@ namespace {
 
 constexpr f32 kDrawScale = 0.00390625f; // 1/256 (dword_103BC9A6C)
 constexpr f32 kNegOne = -1.0f;          // flt_103C472BC
-constexpr f32 kNegHalf = -0.5f;         // xmmword_103BC8C00[3]
-constexpr f32 kNegThree = -3.0f;        // dword_103C472C0
 constexpr f32 kFadeK1 = -2.0f;          // dword_103AD5BF0
 constexpr f32 kFadeK2 = 3.0f;           // dword_103AAD5F4
 // The three row biases. They are what makes truncation read as floor (§16.3),
@@ -139,12 +132,12 @@ constexpr f32 kBiasRow2 = 3896.0f; // dword_103AD81CC
 /// exactly why OP2 carries rtol 2e-6 on the gradients and why porting the
 /// instruction sequence beats porting the algebra.
 f32 RsqrtNewton(f32 len2) {
-#if WDX_SC2_HAS_RSQRTSS
+#if WDX_SC2_HAS_SSE
     const f32 r = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(len2)));
 #else
     const f32 r = 1.0f / std::sqrt(len2);
 #endif
-    return (r * kNegHalf) * (((len2 * r) * r) + kNegThree);
+    return NewtonRsqrt(len2, r);
 }
 
 } // namespace

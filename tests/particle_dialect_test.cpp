@@ -521,6 +521,28 @@ TEST_CASE("implosion and follow are per-emitter, not dialect-wide", "[particle][
     REQUIRE(em.TotalAlive() > 0);
 }
 
+TEST_CASE("texture layers scroll whatever force model integrates the particle",
+          "[particle][dialect]") {
+    // The force model chooses the integrator and nothing else. Gating the
+    // scroll on it too meant an `.m2` under the WC3 behaviour never moved its
+    // layers — latent while the two presets are the only behaviours there are.
+    auto d = MakeDesc(10.0f);
+    d->multiTexture = true;
+    d->multiTexScrollMid[0] = {0.25f, 0.0f};
+    Emitter2 em;
+    em.SetDesc(d);
+    REQUIRE(em.Behavior().forceModel == ParticleForceModel::Wc3Gravity);
+    Arm(em, 60.0f);
+    Step(em, 0.05f);
+    REQUIRE(em.TotalAlive() > 0);
+    const u32 idx = em.Pool().AliveAt(0);
+    const f32 before = em.MultiTex()[idx].uv[0].x;
+    Step(em, 0.05f);
+    const f32 after = em.MultiTex()[idx].uv[0].x;
+    const f32 moved = after - before - std::floor(after - before);
+    CHECK(moved == Approx(0.25f * 0.05f).margin(1e-5f));
+}
+
 TEST_CASE("the implosion filter kills only outbound particles", "[particle][dialect]") {
     MotionParams m;
     Particle2 outbound;

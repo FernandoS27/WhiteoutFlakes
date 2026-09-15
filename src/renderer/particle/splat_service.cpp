@@ -141,7 +141,41 @@ void Lerp4(f32 out[4], const f32 a[4], const f32 b[4], f32 t) {
     out[2] = a[2] + (b[2] - a[2]) * t;
     out[3] = a[3] + (b[3] - a[3]) * t;
 }
+
+/// `CSplatKey::Interpolate`'s saturation: truncate, then clamp to a byte.
+i32 ClampByte(f32 v) {
+    const i32 i = static_cast<i32>(v);
+    return (i < 0) ? 0 : (i > 255 ? 255 : i);
+}
+
+/// The byte `DatabaseInt` stored, recovered from the parsed `/ 255` colour.
+i32 ColorByte(f32 c) {
+    return static_cast<i32>(std::lround(c * 255.0f)) & 0xFF;
+}
+
+/// One SPL key over [@p from, @p to): the colour in integer bytes and the cell,
+/// both at the same nudged time.
+void InterpolateKey(f32 age, f32 from, f32 to, const f32 c0[4], const f32 c1[4], i32 start,
+                    i32 end, i32 repeat, f32 outColor[4], i32& outCellIdx) {
+    const f32 inv = 1.0f / (to - from);
+    const f32 t = ((age - from) * inv) * kWc3SampleSpan + kWc3SampleBias;
+    for (u32 k = 0; k < 4; ++k) {
+        const i32 s = ColorByte(c0[k]);
+        const i32 delta = ColorByte(c1[k]) - s;
+        outColor[k] = static_cast<f32>(ClampByte(static_cast<f32>(delta) * t + static_cast<f32>(s))) /
+                      255.0f;
+    }
+    outCellIdx = detail::SplatCell(start, end, repeat, t);
+}
 } // namespace
+
+i32 detail::SplatCell(i32 start, i32 end, i32 repeat, f32 t) {
+    const bool reversed = end < start;
+    const i32 first = reversed ? start + 1 : start;
+    const i32 delta = end + (reversed ? -1 : 1) - start;
+    const f32 sweep = (repeat == 1) ? t : std::fmod(static_cast<f32>(repeat) * t, 1.0f);
+    return ClampByte(sweep * static_cast<f32>(delta) + static_cast<f32>(first));
+}
 
 void SplatService::EvaluateAt(const Splat& s, f32 outColor[4], i32& outCellIdx) {
     outCellIdx = -1;
@@ -161,23 +195,20 @@ void SplatService::EvaluateAt(const Splat& s, f32 outColor[4], i32& outCellIdx) 
         return;
     }
 
-    auto cellOf = [](i32 start, i32 end, i32 repeat, f32 t) {
-        const f32 nudge = t * kWc3SampleSpan + kWc3SampleBias;
-        const f32 r = (repeat < 1) ? 1.0f : (f32)repeat;
-        const i32 delta = (end >= start) ? (end - start + 1) : (end - start - 1);
-        const f32 effT = (r == 1.0f) ? nudge : std::fmod(nudge * r, 1.0f);
-        const f32 val = (f32)start + (f32)delta * effT;
-        return (i32)val;
-    };
-
+    // `CSplatEmitter::RenderSplat` @0x141FE6990 picks the key whose range holds
+    // the age: [0, lifespan) start->middle, [lifespan, lifespan + decay)
+    // middle->end (`AddSplatToTable` @0x1412E0C00). A splat with no decay is
+    // removed at its lifespan by `Tick` before it would need the second key.
     if (age < s.t0 && s.t0 > 0.f) {
-        const f32 t = age / s.t0;
-        Lerp4(outColor, s.c[0], s.c[1], t);
-        outCellIdx = cellOf(s.uvLifeStart, s.uvLifeEnd, s.lifespanRepeat, t);
+        InterpolateKey(age, 0.0f, s.t0, s.c[0], s.c[1], s.uvLifeStart, s.uvLifeEnd,
+                       s.lifespanRepeat, outColor, outCellIdx);
+    } else if (s.t1 > 0.f) {
+        InterpolateKey(age, s.t0, s.total, s.c[1], s.c[2], s.uvDecayStart, s.uvDecayEnd,
+                       s.decayRepeat, outColor, outCellIdx);
     } else {
-        const f32 t = (s.t1 > 0.f) ? ((age - s.t0) / s.t1) : 1.f;
-        Lerp4(outColor, s.c[1], s.c[2], t);
-        outCellIdx = cellOf(s.uvDecayStart, s.uvDecayEnd, s.decayRepeat, t);
+        // The last key's end, as the engine's finished splat holds it.
+        std::memcpy(outColor, s.c[2], sizeof(f32) * 4);
+        outCellIdx = s.uvDecayEnd;
     }
 }
 

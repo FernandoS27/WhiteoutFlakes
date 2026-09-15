@@ -154,11 +154,9 @@ public:
 
     // Deterministic per-emitter RNG seed. Callers derive it from stable identity
     // (actor handle + emitter index) so the same scene reproduces run to run.
+    /// Seeds the spawn and compaction streams and, for an SC2 emitter, its
+    /// runtime's generator — which is why it follows SetDesc.
     void SetSeed(u32 seed);
-
-    void Squirt() {
-        run_.squirtOwed = true;
-    }
 
     /// See @ref WowRuntime::lifeSpan.
     void SetLifeSpan(f32 s) {
@@ -227,9 +225,6 @@ public:
     }
     static constexpr usize kMaxTrails = TrailSet::kMax;
 
-    f32 EmissionRate() const {
-        return emissionRate_;
-    }
 
     // The extra texture layers, index-parallel with the pool. Empty unless the
     // desc asked for refraction or multi-texture — see MultiTexState.

@@ -50,6 +50,16 @@ constexpr bool Sc2Has(u32 word, Flag bit) {
     return (word & static_cast<u32>(bit)) != 0;
 }
 
+/// The `flags` bits WhiteoutLib's `m3::ParticleFlag` names wrongly, by what
+/// executing the image shows the runtime doing with them.
+namespace Sc2ParBit {
+/// Bit 31. Demotes the emitter to the Euler path (`CanUseGpuMotion`, OP1,
+/// tested signed) and runs the CPU bounds pass (`SimulateParticles`).
+/// TODO(WhiteoutLib): labelled `ForceProceduralPosition` there — the opposite
+/// of what it does.
+inline constexpr ParticleFlag CpuBounds = static_cast<ParticleFlag>(0x80000000u);
+} // namespace Sc2ParBit
+
 /// The `rotationFlags` bits by what the runtime does with them (RE §3, §16).
 /// WhiteoutLib's `m3::ParticleRotationFlag` names only 0x2, 0x4, 0x40 and 0x80,
 /// two of those provisionally, so the roles are named here over its enum.
@@ -103,8 +113,9 @@ struct Sc2EmitterDesc {
         /// Mesh shape only: the `.m3` region ids particles are born on.
         std::vector<i32> shapeRegions;
 
+        /// The three per-channel enables. The speed, lifetime and mass
+        /// randomisers are `additionalFlags` bits, which the kernels read raw.
         bool sizeRandom = false, rotationRandom = false, colorRandom = false;
-        bool speedRandom = false, lifetimeRandom = false, massRandom = false;
 
         /// The overlay wave type per channel group, indexed by
         /// `sc2::OverlayGroup` (RE §9).
@@ -115,8 +126,7 @@ struct Sc2EmitterDesc {
         /// it with the active sequence.
         std::vector<f32> preRollPeaks;
         f32 preRollInit = 0.0f;
-        bool worldSpace = false;      ///< additionalFlags & WorldSpace.
-        bool inheritVelocity = false; ///< flags & InheritParentVelocity.
+        bool worldSpace = false; ///< additionalFlags & WorldSpace.
     } emit;
 
     // ---- MOVE ----
@@ -139,10 +149,6 @@ struct Sc2EmitterDesc {
 
     // ---- BUILD ----
     struct Look {
-        i32 materialIndex = -1; ///< `MATM` index.
-        /// Resolved by the loader BEFORE the desc is frozen; −1 leaves the draw
-        /// on the BLS fallback rather than a prebuilt SC2 surface.
-        i32 m3Surface = -1;
         u8 instanceType = 0; ///< `Sc2InstanceType`, the shader's `b_iInstanceType`.
         /// `sc2::SmoothingMode`, as authored. The legacy Bezier bits reach nothing
         /// (design §8); the per-frame conversion a Bezier channel does need is
@@ -162,9 +168,9 @@ struct Sc2EmitterDesc {
         u8 flipbookStartInit = 0, flipbookStartStop = 0, flipbookEndInit = 0;
         /// `b_iUVMapping[0] == UVMAP_PARTICLE_FLIPBOOK` on the resolved
         /// surface's diffuse layer, stamped by the loader beside
-        /// @ref m3Surface. It is a MATERIAL property, not a `PAR_` one, and it
-        /// lands here so the geometry build never looks a material up — the
-        /// same rule `m3Surface` follows. False leaves every particle on cell
+        /// `ParticleMaterialDesc::m3Surface`. It is a MATERIAL property, not a
+        /// `PAR_` one, and it lands here so the geometry build never looks a
+        /// material up — the same rule `m3Surface` follows. False leaves every particle on cell
         /// 0 of its sheet, which is what an unresolved material gets too.
         ///
         /// Its sibling arm `b_UVRandomOffsetEnable[0]` has no field here: the
@@ -175,7 +181,8 @@ struct Sc2EmitterDesc {
         f32 tailLength = 1.0f;
         Vector3f instanceAngle{0, 0, 0};
         f32 instanceDistance = 1.0f;
-        /// `flags & LitParts`. The draw takes `forceUnshaded = !lit`.
+        /// `flags & LitParts`. The adapter turns it into
+        /// `ParticleMaterialDesc::unshaded = !lit`, which the M3 draw forces.
         bool lit = false;
     } look;
 
@@ -199,8 +206,6 @@ struct Sc2EmitterDesc {
         /// seven presets distinct, and the `variant == 6` arm dead.
         bool modelOrientLegacy = false;
         i32 modelOrientVariant = -1;
-        bool scaleCollisionChild = false; ///< `Sc2RotationBit::ScaleCollisionChild`.
-        bool scaleTrailChild = false;     ///< `Sc2RotationBit::ScaleTrailChild`.
     } children;
 };
 
@@ -238,7 +243,7 @@ inline bool Sc2CanUseGpuMotion(const Sc2EmitterDesc& d) {
            (flags & kDemote) == 0 && d.motion.windMultiplier < sc2::kGpuMotionGate &&
            d.motion.killRadius < sc2::kGpuMotionGate &&
            d.motion.noiseAmplitude < sc2::kGpuMotionGate &&
-           !d.Has(ParticleFlag::ForceProceduralPosition);
+           !d.Has(Sc2ParBit::CpuBounds);
 }
 
 } // namespace whiteout::flakes::renderer::particle

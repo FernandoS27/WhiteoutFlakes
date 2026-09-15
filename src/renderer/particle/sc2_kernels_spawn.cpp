@@ -3,6 +3,7 @@
 #include "sc2_emitter_desc.h"
 
 #include "renderer/sc2/sc2_element.h"
+#include "renderer/sc2/sc2_element_math.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,15 +12,14 @@ namespace whiteout::flakes::renderer::particle {
 
 namespace {
 
-namespace bits = whiteout::flakes::renderer::sc2;
 
 // The image's own constants, not recomputed: `two_pi` and `deg_to_rad` are the
 // exact floats the shipped code multiplies by (RE §16.5).
 using sc2::kDegToRad;
 using sc2::kPi;
 using sc2::kTwoPi;
-/// A spline tangent above this |z| takes the world basis. DISAGREES — F4.
-using sc2::kSplineVerticalCos;
+/// A spline tangent above this |z| takes the world basis.
+using sc2::kVerticalCos;
 
 } // namespace
 
@@ -49,9 +49,7 @@ void SetComponent(Vector3f& v, i32 i, f32 value) {
     (i == 0 ? v.x : (i == 1 ? v.y : v.z)) = value;
 }
 
-Vector3f Cross(const Vector3f& a, const Vector3f& b) {
-    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
+using sc2::vs::Cross3;
 
 /// Returns false when the vector has no length, leaving `v` untouched.
 bool Normalize(Vector3f& v) {
@@ -87,10 +85,10 @@ f32 Bezier3Deriv(const Vector3f* p, f32 u, i32 i) {
 /// generator — so where each one sits in the stream is observable exactly
 /// there. OP5's original grid armed one group at a time and could not see the
 /// order at all; widened to arm two, it says SPEED is sampled first.
-f32 Overlay(sc2::Rng& rng, const Sc2Overlay& o, f32 time, f32 phase) {
+f32 Overlay(sc2::Rng& rng, const Sc2Overlay& o, const Sc2Variation& v) {
     if (o.type == 0)
         return 0.0f;
-    return sc2::SampleWave(o.type, o.frequency * time + phase, o.amplitude, &rng);
+    return sc2::SampleWave(o.type, o.frequency * v.time + v.phase, o.amplitude, &rng);
 }
 
 } // namespace
@@ -178,10 +176,10 @@ Vector3f Sc2SampleSpawnPosition(sc2::Rng& rng, const Sc2SpawnPosInputs& in, Vect
         // A vertical tangent has no well-defined frame about world Z, so the
         // world basis stands in. The threshold is the shipped constant, not a
         // round number: a segment at 0.9989 still builds its own frame.
-        if (Normalize(tangent) && std::fabs(tangent.z) <= kSplineVerticalCos) {
-            n1 = Cross(tangent, Vector3f{0.0f, 0.0f, 1.0f});
+        if (Normalize(tangent) && std::fabs(tangent.z) <= kVerticalCos) {
+            n1 = Cross3(tangent, Vector3f{0.0f, 0.0f, 1.0f});
             Normalize(n1);
-            n2 = Cross(n1, tangent);
+            n2 = Cross3(n1, tangent);
             Normalize(n2);
         }
         const f32 r = ShapeRadius(rng, in);
@@ -207,19 +205,20 @@ Vector3f Sc2SampleSpawnPosition(sc2::Rng& rng, const Sc2SpawnPosInputs& in, Vect
 /// Below this much horizontal speed a flattened velocity keeps no direction.
 constexpr f32 kFlattenMinXY = 1e-5f;
 
-Vector3f Sc2SampleSpawnVelocity(sc2::Rng& rng, const Sc2SpawnVelInputs& in) {
+Vector3f Sc2SampleSpawnVelocity(sc2::Rng& rng, const Sc2SpawnVelInputs& in,
+                                const Vector3f& position, const Vector3f& normal) {
     // SPEED FIRST. Only a type-5 overlay draws, so this ordering is invisible
     // until two of them are armed at once; OP5's widened grid is what pins it.
-    const f32 speedOverlay = Overlay(rng, in.speedOverlay, in.variationTime, in.variationPhase);
+    const f32 speedOverlay = Overlay(rng, in.speedOverlay, in.variation);
     const f32 yaw = in.spawnYaw +
-                    Overlay(rng, in.yawOverlay, in.variationTime, in.variationPhase);
+                    Overlay(rng, in.yawOverlay, in.variation);
     const f32 pitch = in.spawnPitch +
-                      Overlay(rng, in.pitchOverlay, in.variationTime, in.variationPhase);
+                      Overlay(rng, in.pitchOverlay, in.variation);
     const f32 horizontal =
         in.spawnHorizontal +
-        Overlay(rng, in.horizontalOverlay, in.variationTime, in.variationPhase);
+        Overlay(rng, in.horizontalOverlay, in.variation);
     const f32 vertical =
-        in.spawnVertical + Overlay(rng, in.verticalOverlay, in.variationTime, in.variationPhase);
+        in.spawnVertical + Overlay(rng, in.verticalOverlay, in.variation);
 
     Vector3f dir{0.0f, 0.0f, 0.0f};
     f32 speed = 0.0f;
@@ -249,13 +248,13 @@ Vector3f Sc2SampleSpawnVelocity(sc2::Rng& rng, const Sc2SpawnVelInputs& in) {
         break;
     }
     case Sc2VelocityType::Radial:
-        dir = in.position;
+        dir = position;
         if (!Normalize(dir))
             dir = {0.0f, 0.0f, 0.0f};
         speed = drawSpeed();
         break;
     case Sc2VelocityType::Axis:
-        dir = {0.0f, 0.0f, in.position.z >= 0.0f ? 1.0f : -1.0f};
+        dir = {0.0f, 0.0f, position.z >= 0.0f ? 1.0f : -1.0f};
         speed = drawSpeed();
         break;
     case Sc2VelocityType::Random: {
@@ -272,7 +271,7 @@ Vector3f Sc2SampleSpawnVelocity(sc2::Rng& rng, const Sc2SpawnVelInputs& in) {
     }
     case Sc2VelocityType::MeshNormal:
     default:
-        dir = in.normal;
+        dir = normal;
         speed = drawSpeed();
         break;
     }
@@ -328,7 +327,7 @@ i32 LerpChannel(i32 base, i32 random, i32 t) {
 
 std::array<u32, 3> Sc2SampleColor(sc2::Rng& rng, const Sc2ColorInputs& in) {
     const f32 overlay =
-        Overlay(rng, in.alphaOverlay, in.variationTime, in.variationPhase);
+        Overlay(rng, in.alphaOverlay, in.variation);
 
     Bgra nodes[3];
     for (i32 n = 0; n < 3; ++n) {
@@ -370,8 +369,8 @@ std::array<u32, 3> Sc2SampleColor(sc2::Rng& rng, const Sc2ColorInputs& in) {
     return out;
 }
 
-std::array<f32, 4> Sc2SampleSize(sc2::Rng& rng, const Sc2SizeInputs& in) {
-    const f32 overlay = Overlay(rng, in.sizeOverlay, in.variationTime, in.variationPhase);
+std::array<f32, 4> Sc2SampleSize(sc2::Rng& rng, const Sc2SizeInputs& in, f32 blend) {
+    const f32 overlay = Overlay(rng, in.sizeOverlay, in.variation);
 
     std::array<f32, 3> keys = in.keys;
     if (in.randomEnable) {
@@ -386,7 +385,7 @@ std::array<f32, 4> Sc2SampleSize(sc2::Rng& rng, const Sc2SizeInputs& in) {
     const f32 half = overlay * 0.5f;
     std::array<f32, 4> out{};
     for (std::size_t k = 0; k < 3; ++k)
-        out[k] = (keys[k] * 0.5f + half) * in.blend;
+        out[k] = (keys[k] * 0.5f + half) * blend;
     out[3] =
         Sc2InstanceTypeOf(in.instanceType) == Sc2InstanceType::Pinned ? in.instanceDistance : 1.0f;
     return out;
@@ -394,7 +393,7 @@ std::array<f32, 4> Sc2SampleSize(sc2::Rng& rng, const Sc2SizeInputs& in) {
 
 std::array<f32, 3> Sc2SampleRotation(sc2::Rng& rng, const Sc2RotationInputs& in) {
     const f32 overlay =
-        Overlay(rng, in.rotationOverlay, in.variationTime, in.variationPhase);
+        Overlay(rng, in.rotationOverlay, in.variation);
 
     f32 start = in.keys[0];
     f32 mid = in.keys[1];
@@ -467,10 +466,14 @@ Matrix44f NormalizedBasis(const Matrix44f& m) {
     return n;
 }
 
-Vector3f BasisMul(const Matrix44f& b, const Vector3f& v) {
-    return {(v.x * b.data[0][0] + v.y * b.data[1][0]) + v.z * b.data[2][0],
-            (v.x * b.data[0][1] + v.y * b.data[1][1]) + v.z * b.data[2][1],
-            (v.x * b.data[0][2] + v.y * b.data[1][2]) + v.z * b.data[2][2]};
+/// A matrix's upper 3×3, as `vs::MulVecMat3` multiplies it: a row vector
+/// through the rows, `(x·r0 + y·r1) + z·r2`.
+sc2::vs::Mat3 Upper3(const Matrix44f& b) {
+    sc2::vs::Mat3 r{};
+    for (usize i = 0; i < 3; ++i)
+        for (usize j = 0; j < 3; ++j)
+            r.m[i][j] = b.data[i][j];
+    return r;
 }
 
 f32 PackOrient(f32 hi, f32 lo) {
@@ -481,7 +484,8 @@ f32 PackOrient(f32 hi, f32 lo) {
 
 } // namespace
 
-void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
+void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in,
+                    std::span<const SpawnRequest> requests, Sc2InitState& state,
                     std::span<Sc2SpawnedElement> out) {
     // The size sampler's scale argument. Exactly 1.0 for slot 0; for a `PARC`
     // slot it is the bone's max row length over the emitter's, and zero when
@@ -501,6 +505,8 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
     const Matrix44f& basis =
         emitterBasis ? in.worldMatrix : (in.hasBone ? in.boneMatrix : in.worldMatrix);
     const Matrix44f nbasis = NormalizedBasis(basis);
+    const sc2::vs::Mat3 basis3 = Upper3(basis);
+    const sc2::vs::Mat3 nbasis3 = Upper3(nbasis);
 
     // Its TRANSLATION is NOT the matrix's: `curPos + spawnPosStep`, and for
     // slot > 0 the bone's translation MINUS the emitter world matrix's, so a
@@ -525,10 +531,27 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
 
     const Sc2InstanceType type = Sc2InstanceTypeOf(in.instanceType);
 
+    // The flag words, decoded once for the batch.
+    // `CollideTerrain` and `CollideObjects`, each moved one bit up onto the
+    // element's collide bits.
+    const u16 collideBits = static_cast<u16>(
+        (in.parFlags * 2) & (sc2::kElemCollideTerrain | sc2::kElemCollideObjects));
+    const bool noise = (in.emitFlagsWord & sc2::kEmitNoise) != 0;
+    // The normal a velocityType 4 reads is ZEROED first and only the Mesh
+    // shape writes it, so type 4 on any other shape has no velocity.
+    const bool meshNormal =
+        static_cast<Sc2VelocityType>(in.velocity.velocityType) == Sc2VelocityType::MeshNormal;
+    const bool lifespanRandom =
+        Sc2Has(in.additionalFlags, ParticleAdditionalFlag::LifespanRandomize);
+    const bool randomUv = Sc2Has(in.rotationFlags, Sc2RotationBit::RandomUvOffset);
+    const bool massRandom = Sc2Has(in.additionalFlags, ParticleAdditionalFlag::MassRandomize);
+    const bool worldSpace = Sc2Has(in.additionalFlags, ParticleAdditionalFlag::WorldSpace);
+
     // The local path's transform, built once: bone × inverse(emitter world).
     Matrix44f localXform = Matrix44f::identity();
     if (in.slot > 0 && in.hasBone)
         localXform = in.boneMatrix * Matrix44f::inverse(in.worldMatrix);
+    const sc2::vs::Mat3 local3 = Upper3(localXform);
 
     for (std::size_t n = 0; n < out.size(); ++n) {
         Sc2SpawnedElement& e = out[n];
@@ -539,25 +562,15 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
                         state.curPos.y + in.spawnPosStep.y,
                         state.curPos.z + in.spawnPosStep.z};
 
-        // `CollideTerrain` and `CollideObjects`, each moved one bit up onto the
-        // element's collide bits.
-        e.flags = static_cast<u16>((in.parFlags * 2) &
-                                   (bits::kElemCollideTerrain | bits::kElemCollideObjects));
-        if ((in.emitFlagsWord & bits::kEmitNoise) != 0)
+        e.flags = collideBits;
+        if (noise)
             e.noisePhase = rng.RangeF(0.0f, in.noiseCoherence);
 
-        // The normal a velocityType 4 reads is ZEROED first and only the Mesh
-        // shape writes it, so type 4 on any other shape has no velocity.
         Vector3f normal{0.0f, 0.0f, 0.0f};
-        const bool meshNormal = static_cast<Sc2VelocityType>(in.velocity.velocityType) ==
-                                Sc2VelocityType::MeshNormal;
         Vector3f pos = Sc2SampleSpawnPosition(rng, in.shape, meshNormal ? &normal : nullptr);
-        Sc2SpawnVelInputs vel = in.velocity;
-        vel.position = pos;
-        vel.normal = normal;
-        Vector3f velocity = Sc2SampleSpawnVelocity(rng, vel);
+        Vector3f velocity = Sc2SampleSpawnVelocity(rng, in.velocity, pos, normal);
 
-        const SpawnRequest* req = n < in.requests.size() ? &in.requests[n] : nullptr;
+        const SpawnRequest* req = n < requests.size() ? &requests[n] : nullptr;
         if (req != nullptr) {
             // Position ADDS, velocity multiplies per axis, orientation is
             // COPIED wholesale rather than combined.
@@ -570,45 +583,39 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
         }
 
         e.birthTime = state.emitterTime;
-        const f32 life = Sc2Has(in.additionalFlags, ParticleAdditionalFlag::LifespanRandomize)
-                             ? rng.RangeF(in.lifetime, in.lifetimeRandom)
-                             : in.lifetime;
+        const f32 life =
+            lifespanRandom ? rng.RangeF(in.lifetime, in.lifetimeRandom) : in.lifetime;
         e.deathTime = life + e.birthTime;
 
         e.colorNodes = Sc2SampleColor(rng, in.color);
-        Sc2SizeInputs sz = in.size;
-        sz.blend = sizeBlend;
-        const auto size = Sc2SampleSize(rng, sz);
+        const auto size = Sc2SampleSize(rng, in.size, sizeBlend);
         for (std::size_t k = 0; k < 4; ++k)
             e.size[k] = Quant(size[k] * kSizeQuant);
         const auto rot = Sc2SampleRotation(rng, in.rotation);
         for (std::size_t k = 0; k < 3; ++k)
             e.rotation[k] = Quant(rot[k] * kRotationQuant);
-        if (Sc2Has(in.rotationFlags, Sc2RotationBit::RandomUvOffset))
+        if (randomUv)
             e.flipbookRand = static_cast<u16>(rng.RangeInt(0, 0xFFFF));
 
-        const f32 mass = Sc2Has(in.additionalFlags, ParticleAdditionalFlag::MassRandomize)
-                             ? rng.RangeF(in.mass, in.massRandom)
-                             : in.mass;
+        const f32 mass = massRandom ? rng.RangeF(in.mass, in.massRandom) : in.mass;
         e.invMass = 1.0f / mass;
 
         // A request forces the LOCAL path even on a world-space emitter, so a
         // request-born particle is placed in its parent's frame.
-        const bool worldArm =
-            Sc2Has(in.additionalFlags, ParticleAdditionalFlag::WorldSpace) && req == nullptr;
+        const bool worldArm = worldSpace && req == nullptr;
         if (worldArm) {
-            const Vector3f b = BasisMul(basis, pos);
+            const Vector3f b = sc2::vs::MulVecMat3(pos, basis3);
             pos = {b.x + emitPos.x, b.y + emitPos.y, b.z + emitPos.z};
-            if ((in.stateFlags & bits::kStateInheritVelocity) != 0) {
+            if ((in.stateFlags & sc2::kStateInheritVelocity) != 0) {
                 // NORMALISED basis, plus the inherited parent velocity. Both
                 // halves hang off this bit: without it the raw basis is used
                 // and no parent velocity is inherited at all.
-                const Vector3f nv = BasisMul(nbasis, velocity);
+                const Vector3f nv = sc2::vs::MulVecMat3(velocity, nbasis3);
                 velocity = {nv.x + in.smoothedPos.x * in.inheritVelocityScale,
                             nv.y + in.smoothedPos.y * in.inheritVelocityScale,
                             nv.z + in.smoothedPos.z * in.inheritVelocityScale};
             } else {
-                velocity = BasisMul(basis, velocity);
+                velocity = sc2::vs::MulVecMat3(velocity, basis3);
             }
             emitPos = {emitPos.x + in.spawnPosStep.x, emitPos.y + in.spawnPosStep.y,
                        emitPos.z + in.spawnPosStep.z};
@@ -623,10 +630,10 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
             if (type == Sc2InstanceType::EmitterOriented)
                 e.orientVec = fwd;
             if (in.slot > 0 && in.hasBone) {
-                const Vector3f p = BasisMul(localXform, pos);
+                const Vector3f p = sc2::vs::MulVecMat3(pos, local3);
                 pos = {p.x + localXform.data[3][0], p.y + localXform.data[3][1],
                        p.z + localXform.data[3][2]};
-                velocity = BasisMul(localXform, velocity);
+                velocity = sc2::vs::MulVecMat3(velocity, local3);
             }
         }
 
@@ -643,7 +650,7 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
 
         if (Sc2Has(in.parFlags, ParticleFlag::SpawnTrailingParticles) && in.hasChildEmitter1) {
             if (rng.RangeF(0.0f, 1.0f) <= in.trailChance) {
-                e.flags |= bits::kElemTrail;
+                e.flags |= sc2::kElemTrail;
                 e.trailAccum = 0.0f;
             }
         }
@@ -666,9 +673,10 @@ void Sc2InitSpawned(sc2::Rng& rng, const Sc2InitInputs& in, Sc2InitState& state,
     }
 }
 
-Sc2SpawnBatchPlan Sc2PlanSpawnBatch(const Sc2SpawnBatchInputs& in) {
+void Sc2PlanSpawnBatch(const Sc2SpawnBatchInputs& in, Sc2SpawnBatchPlan& plan) {
     constexpr u32 kFlushAt = 128;
-    Sc2SpawnBatchPlan plan;
+    plan.created = 0;
+    plan.flushes.clear();
     u32 alive = in.elementCount;
     u32 pending = 0;
     Sc2SpawnFlush cur;
@@ -699,7 +707,6 @@ Sc2SpawnBatchPlan Sc2PlanSpawnBatch(const Sc2SpawnBatchInputs& in) {
     if (pending != 0)
         plan.flushes.push_back(cur);
     plan.requestsConsumed = !plan.flushes.empty();
-    return plan;
 }
 
 } // namespace whiteout::flakes::renderer::particle

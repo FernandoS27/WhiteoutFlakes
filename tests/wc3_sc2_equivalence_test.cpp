@@ -345,6 +345,10 @@ std::vector<f32> Wc3Polars(u32 seed, f32 latDeg) {
     return out;
 }
 
+// The spawn position and mesh normal the velocity types drawn here never read.
+constexpr Vector3f kAtOrigin{0.0f, 0.0f, 0.0f};
+constexpr Vector3f kUp{0.0f, 0.0f, 1.0f};
+
 std::vector<f32> Sc2Polars(u32 seed, f32 horizontal, f32 vertical) {
     sc2r::Rng rng(seed, seed * 2654435761u);
     part::Sc2SpawnVelInputs in;
@@ -355,7 +359,7 @@ std::vector<f32> Sc2Polars(u32 seed, f32 horizontal, f32 vertical) {
     in.speedRandom = 1.0f;
     std::vector<f32> out;
     for (int i = 0; i < kDraws; ++i)
-        out.push_back(PolarOf(part::Sc2SampleSpawnVelocity(rng, in)));
+        out.push_back(PolarOf(part::Sc2SampleSpawnVelocity(rng, in, kAtOrigin, kUp)));
     return out;
 }
 
@@ -396,7 +400,7 @@ TEST_CASE("E2 a line emitter's fan is the cone with no vertical spread",
     f32 wc3Off = 0.0f, sc2Off = 0.0f;
     for (int i = 0; i < kDraws; ++i) {
         const Vector3f w = Wc3Spawn(rnd, lat, true, 0.0f, 0.0f).localVel;
-        const Vector3f s = part::Sc2SampleSpawnVelocity(rng, in);
+        const Vector3f s = part::Sc2SampleSpawnVelocity(rng, in, kAtOrigin, kUp);
         // The fan lies in the X-Z plane of the bone in BOTH -- the frame claim.
         wc3Off = std::max(wc3Off, std::fabs(w.y));
         sc2Off = std::max(sc2Off, std::fabs(s.y));
@@ -413,7 +417,7 @@ TEST_CASE("E2 a line emitter's fan is the cone with no vertical spread",
     in.spawnHorizontal = rad * 0.5f;
     std::vector<f32> halfFan;
     for (int i = 0; i < kDraws; ++i) {
-        const Vector3f s = part::Sc2SampleSpawnVelocity(rng2, in);
+        const Vector3f s = part::Sc2SampleSpawnVelocity(rng2, in, kAtOrigin, kUp);
         halfFan.push_back(std::atan2(-s.x, s.z));
     }
     CHECK(Ks(wc3Fan, halfFan) > 0.2f);
@@ -575,7 +579,7 @@ TEST_CASE("E2 a cone past 120 degrees is nearest StarCraft II's random sphere",
         in.speedRandom = 1.0f;
         std::vector<f32> out;
         for (int i = 0; i < kDraws; ++i)
-            out.push_back(PolarOf(part::Sc2SampleSpawnVelocity(rng, in)));
+            out.push_back(PolarOf(part::Sc2SampleSpawnVelocity(rng, in, kAtOrigin, kUp)));
         return out;
     };
     for (const f32 lat : {90.0f, 150.0f, 180.0f}) {

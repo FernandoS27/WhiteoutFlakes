@@ -73,7 +73,6 @@ private:
     gfx::PipelineHandle GetOrBuildPso(const bls::MatParams& mat);
 
     gfx::IGFXDevice* gfx_ = nullptr;
-    gfx::GfxApi api_ = gfx::GfxApi::D3D12;
     bool shadersReady_ = false;
 
     gfx::ShaderHandle vs_ = gfx::ShaderHandle::Invalid;

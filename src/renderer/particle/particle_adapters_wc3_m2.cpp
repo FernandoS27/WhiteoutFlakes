@@ -3,8 +3,6 @@
 #include "particle.h" // ParticleEmitterConfig
 #include "particle_constants.h"
 
-#include <algorithm>
-#include <bit>
 #include <cmath>
 #include <vector>
 
@@ -12,9 +10,16 @@ namespace whiteout::flakes::renderer::particle {
 
 namespace {
 
-FilterMode LegacyFilterToService(i32 legacy) {
-
-    switch (legacy) {
+/// The WC3 MDX filter mode and the M2 blend index, which are one numbering, as
+/// the service's filter modes. The M2 loader's own file->id map
+/// (M2ParticleFile.h) collapses to these six draw states.
+FilterMode FilterFromBlendIndex(i32 blend) {
+    switch (blend) {
+    case 0:
+        // "Opaque" in M2, "None" in MDX. Particles draw in the transparent
+        // pass regardless, and this enum has no opaque state, so it lands on
+        // the default.
+        return FilterMode::Blend;
     case 1:
         return FilterMode::AlphaKey;
     case 2:
@@ -70,16 +75,14 @@ std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig
     desc->shape = std::make_shared<PlaneShape>();
     desc->longitude = cfg.lineEmitter ? 0.0f : kWowTwoPi;
 
-    desc->angularVelocity = 0.0f;
     desc->priorityPlane = cfg.priorityPlane;
 
     desc->material.textureId = cfg.textureId;
-    desc->material.filterMode = LegacyFilterToService(cfg.filterMode);
+    desc->material.filterMode = FilterFromBlendIndex(cfg.filterMode);
     desc->material.unshaded = cfg.unshaded;
     desc->material.unfogged = cfg.unfogged;
     desc->material.replaceableId = cfg.replaceableId;
 
-    desc->emission.mode = EmissionDesc::Mode::Continuous;
     desc->emission.squirtAtStart = cfg.squirt;
 
     // WC3's start/mid/end triple becomes a three-key curve. The mid key lands at
@@ -116,38 +119,11 @@ std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig
     c.tailCells.AddSegment(midT, cfg.tailLifeStart, cfg.tailLifeEnd, cfg.tailLifeRepeat);
     c.tailCells.AddSegment(1.0f, cfg.tailDecayStart, cfg.tailDecayEnd, cfg.tailDecayRepeat);
 
-    desc->coordSpace = kDefaultCoordSpace;
 
     return desc;
 }
 
 namespace {
-
-// M2 blend index -> the service's filter modes. The loader's own file->id map
-// (M2ParticleFile.h) collapses to these six draw states.
-FilterMode M2BlendToFilter(i32 blend) {
-    switch (blend) {
-    case 0:
-        // "Opaque". Particles draw in the transparent pass regardless, and this
-        // enum has no opaque state, so it lands on the same default the MDX
-        // adapter uses.
-        return FilterMode::Blend;
-    case 1:
-        return FilterMode::AlphaKey;
-    case 2:
-        return FilterMode::Blend;
-    case 3:
-        return FilterMode::Additive;
-    case 4:
-        return FilterMode::Additive;
-    case 5:
-        return FilterMode::Modulate;
-    case 6:
-        return FilterMode::Modulate2X;
-    default:
-        return FilterMode::Blend;
-    }
-}
 
 // Display-referred -> linear. The record's colour keys were authored against a
 // gamma display, so an HDR profile that shades linearly has to de-gamma them or
@@ -277,7 +253,7 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     desc->motion.wind = cfg.windVector;
 
     desc->material.textureId = cfg.textureId;
-    desc->material.filterMode = M2BlendToFilter(cfg.filterMode);
+    desc->material.filterMode = FilterFromBlendIndex(cfg.filterMode);
     desc->material.unshaded = cfg.unshaded;
     desc->material.unfogged = cfg.unfogged;
     desc->material.multiTexture = cfg.multiTexture;
@@ -294,7 +270,6 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
         desc->multiTexScrollRange[layer] = cfg.multiTexScrollRange[layer];
     }
 
-    desc->emission.mode = EmissionDesc::Mode::Continuous;
     // Squirt is the same mechanism in both clients: the emitter stops emitting
     // continuously and instead bursts `(int)rate` particles each time the rate
     // track rises through zero. WoW's loader expresses that by clearing the
@@ -334,7 +309,6 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     desc->tumbleVary = {cfg.tumbleMax.x - cfg.tumbleMin.x, cfg.tumbleMax.y - cfg.tumbleMin.y,
                         cfg.tumbleMax.z - cfg.tumbleMin.z};
 
-    desc->coordSpace = kDefaultCoordSpace;
     return desc;
 }
 
@@ -376,146 +350,8 @@ DescFromWc3ChildModelConfig(const model::PE1EmitterConfig& cfg) {
     // starts with. No curves: death is age against lifespan, which is exactly
     // why that had to stop depending on the key count.
     desc->longitude = 0.0f;
-    desc->coordSpace = kDefaultCoordSpace;
 
     return desc;
-}
-
-// ---------------------------------------------------------------------------
-// StarCraft II `PAR_`
-// ---------------------------------------------------------------------------
-
-namespace {
-
-/// `InitCopy`'s mid-time clamp, in 4.8 as in 5.0 — see Sc2EmitterDesc::Look::midTime.
-f32 Sc2ClampMid(f32 v) {
-    return v > sc2::kMidTimeCeil ? sc2::kMidTimeCeil : v;
-}
-
-} // namespace
-
-std::shared_ptr<EmitterDesc>
-DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
-                          std::span<const effects::Sc2ParticleEmitterConfig> siblings) {
-    auto d = std::make_shared<EmitterDesc>();
-    d->family = EmitterDesc::Family::Sc2;
-
-    Sc2EmitterDesc& s = d->sc2;
-    s.flags = static_cast<ParticleFlag>(cfg.flags);
-    s.additionalFlags = static_cast<ParticleAdditionalFlag>(cfg.additionalFlags);
-    s.rotationFlags = static_cast<ParticleRotationFlag>(cfg.rotationFlags);
-
-    // ---- EMIT ----
-    s.emit.shape = cfg.emitShape;
-    s.emit.velocityType = static_cast<u8>(cfg.velocityType);
-    // The pool is capped by the vertex arena, not by the author (RE §3.1). An
-    // emitter asking for more gets fewer.
-    s.emit.maxParticles = (std::min)(cfg.maxParticles, sc2::kMaxParticles);
-    s.emit.lodReduce = cfg.lodReduce;
-    s.emit.lodCut = cfg.lodCut;
-    s.emit.slotBones = cfg.slotBones;
-    s.emit.squirt = cfg.squirt;
-    s.emit.shapeRegions = cfg.shapeRegions;
-    s.emit.sizeRandom = cfg.sizeRandom;
-    s.emit.rotationRandom = cfg.rotationRandom;
-    s.emit.colorRandom = cfg.colorRandom;
-    s.emit.speedRandom = s.Has(ParticleAdditionalFlag::EmitSpeedRandomize);
-    s.emit.lifetimeRandom = s.Has(ParticleAdditionalFlag::LifespanRandomize);
-    s.emit.massRandom = s.Has(ParticleAdditionalFlag::MassRandomize);
-    for (i32 k = 0; k < sc2::OverlayGroup::kCount; ++k)
-        s.emit.overlayType[k] = cfg.overlayType[k];
-    s.emit.preRollPeaks = cfg.preRollPeaks;
-    s.emit.preRollInit = cfg.preRollInit;
-    s.emit.worldSpace = s.Has(ParticleAdditionalFlag::WorldSpace);
-    s.emit.inheritVelocity = s.Has(ParticleFlag::InheritParentVelocity);
-
-    // ---- MOVE ----
-    // `drag` is carried AUTHORED. The floor (`max(drag, 0.01)`, and an
-    // `invDrag` of 100 chosen on the RAW value) is applied per particle at
-    // spawn, not here — flooring at load would lose the raw value the fallback
-    // is chosen on (RE §16 and §8.1).
-    s.motion.drag = cfg.drag;
-    s.motion.mass = cfg.mass;
-    s.motion.massRandom = cfg.massRandom;
-    s.motion.gravity3 = cfg.gravity3;
-    s.motion.bounce = cfg.bounce;
-    s.motion.friction = cfg.friction;
-    s.motion.collisionDieBounce = cfg.collisionDieBounce;
-    s.motion.windMultiplier = cfg.windMultiplier;
-    s.motion.killRadius = cfg.killRadius;
-    s.motion.noiseAmplitude = cfg.noiseAmplitude;
-    s.motion.noiseFrequency = cfg.noiseFrequency;
-    s.motion.noiseCoherence = cfg.noiseCoherence;
-    s.motion.noiseEdge = cfg.noiseEdge;
-    s.motion.forces = cfg.forces;
-    s.motion.forcesFallback = cfg.forcesFallback;
-
-    // ---- BUILD ----
-    s.look.materialIndex = cfg.materialIndex;
-    s.look.instanceType = cfg.instanceType;
-    // As authored. The three legacy Bezier bits convert `Init`'s caches, and the
-    // first `UpdateAnimatedParams` re-samples over that conversion before any
-    // particle reads it (design §8), so they change nothing a port can see.
-    s.look.sizeSmoothing = cfg.sizeSmoothing;
-    s.look.colorSmoothing = cfg.colorSmoothing;
-    s.look.rotationSmoothing = cfg.rotationSmoothing;
-    for (i32 k = 0; k < sc2::MidChannel::kCount; ++k) {
-        s.look.midTime[k] = Sc2ClampMid(cfg.midTime[k]);
-        s.look.midHold[k] = cfg.midHold[k];
-    }
-    s.look.flipbookMidTime = Sc2ClampMid(cfg.flipbookMidTime);
-    s.look.flipbookColumns = cfg.flipbookColumns;
-    s.look.flipbookRows = cfg.flipbookRows;
-    s.look.flipbookColumnFraction = cfg.flipbookColumnFraction;
-    s.look.flipbookRowFraction = cfg.flipbookRowFraction;
-    s.look.flipbookStartInit = cfg.flipbookStartInit;
-    s.look.flipbookStartStop = cfg.flipbookStartStop;
-    s.look.flipbookEndInit = cfg.flipbookEndInit;
-    s.look.tailLength = cfg.tailLength;
-    s.look.instanceAngle = cfg.instanceAngle;
-    s.look.instanceDistance = cfg.instanceDistance;
-    s.look.lit = s.Has(ParticleFlag::LitParts);
-
-    // ---- OUTPUT ----
-    s.children.collisionSpawnIndex = cfg.collisionSpawnIndex;
-    s.children.collisionSpawnMin = cfg.collisionSpawnMin;
-    s.children.collisionSpawnMax = cfg.collisionSpawnMax;
-    s.children.collisionSpawnChance = cfg.collisionSpawnChance;
-    s.children.collisionSpawnEnergy = cfg.collisionSpawnEnergy;
-    // Resolved now so the MOVE stage never looks an emitter up per collision.
-    if (cfg.collisionSpawnIndex >= 0 &&
-        static_cast<usize>(cfg.collisionSpawnIndex) < siblings.size()) {
-        constexpr u32 kWorldSpace = static_cast<u32>(ParticleAdditionalFlag::WorldSpace);
-        s.children.collisionChildIsWorldSpace =
-            (siblings[static_cast<usize>(cfg.collisionSpawnIndex)].additionalFlags & kWorldSpace) !=
-            0;
-    }
-    s.children.trailLinkIndex = cfg.trailLinkIndex;
-    s.children.trailChance = cfg.trailChance;
-    s.children.splatProjectorIndex = cfg.splatProjectorIndex;
-    s.children.splatChance = cfg.splatChance;
-    // A NON-ZERO TEST, not a probability: see the desc's comment. On the raw
-    // bits, as `UpdateModelParticle` reads them (`LODWORD(...)`), so a
-    // negative zero counts where a float compare would not.
-    s.children.modelOrientLegacy = std::bit_cast<u32>(cfg.modelOrientPreset) != 0u;
-    s.children.modelOrientVariant = cfg.modelOrientVariant;
-    s.children.scaleCollisionChild = s.Has(Sc2RotationBit::ScaleCollisionChild);
-    s.children.scaleTrailChild = s.Has(Sc2RotationBit::ScaleTrailChild);
-
-    // The derivation, once, on the finished block. Anything that reads
-    // `motion.analytic` reads a decision, never a re-derivation (OP1's second
-    // case is that this lands in the desc at all).
-    s.motion.analytic = Sc2CanUseGpuMotion(s);
-
-    // ---- the shared fields the block SETS rather than duplicates ----
-    d->sortZ = s.Has(ParticleFlag::Sort);
-    d->modelSpace = !s.emit.worldSpace;
-    d->output = s.Has(ParticleFlag::ModelParticles) ? ParticleOutput::ChildModel
-                                                    : ParticleOutput::Billboard;
-    d->childModelPaths = cfg.modelPaths;
-    // `m3Surface` and `priorityPlane` are stamped by the loader, which owns the
-    // surface table; -1 leaves the draw on the BLS fallback.
-    return d;
 }
 
 } // namespace whiteout::flakes::renderer::particle

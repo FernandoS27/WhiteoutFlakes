@@ -60,8 +60,9 @@ struct MaterialLayer {
     /// Index into the owning actor's texture scope, assigned when the emitter
     /// is created. -1 until then, and for an emitter with no actor.
     i32 textureId = -1;
-    /// The entry's `EMaterialTextureType`: 1, 19, 12 or 14. Diagnostics only —
-    /// the bind order is this array's order.
+    /// The entry's `EMaterialTextureType`: 1, 19, 12 or 14. The bind order is
+    /// this array's order; the type is what the stage chain keys a layer's
+    /// texcoord set, wrap bits and combine on.
     i32 rawType = 0;
     /// From the entry's UV flags word, bits 0 and 1.
     u32 wrapFlags = 0x3;
@@ -141,9 +142,6 @@ struct MaterialDesc {
     std::array<MaterialLayer, kMaxLayers> layers{};
     /// How many of @ref layers are live, in bind order.
     u32 layerCount = 0;
-
-    /// The `.shm` the pass came from, or -1. Kept for the census.
-    i32 snoShaderMap = -1;
 
     /// @brief Which entry of @ref layers fills each POSITIONAL uv set (types 1,
     ///        19, 12, 14), or -1 for a hole.

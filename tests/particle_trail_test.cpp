@@ -347,7 +347,7 @@ TEST_CASE("the service draws and counts a trail", "[particle][trail]") {
 
     std::vector<Vertex> verts;
     std::vector<EmitterDrawList> lists;
-    svc.BuildGeometry(Matrix44f::identity(), verts, lists);
+    svc.BuildGeometry(Matrix44f::identity(), {verts, lists});
 
     REQUIRE(lists.size() == 2);
     CHECK(lists[0].emitterId == 0);

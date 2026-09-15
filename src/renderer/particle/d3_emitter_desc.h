@@ -34,8 +34,8 @@ struct EmitterDesc {
     /// sampled at `elapsed / lifetime` — and, when @ref prtFlags lacks bit 0,
     /// also the system's expiry. @ref emissionPeriod is NOT a loop length: it
     /// is the wind-down the engine runs after a stop request, which a viewer
-    /// never sends, so nothing here reads it. Kept because the corpus gate
-    /// asserts on the parsed value.
+    /// never sends, so nothing here reads it. The tests set it to prove that
+    /// nothing mistakes it for the period.
     f32 lifetime = 0.0f;
     f32 emissionPeriod = 0.0f;
     f32 preSimulate = 0.0f;
@@ -53,16 +53,12 @@ struct EmitterDesc {
     /// `InterpolationDriver_Evaluate` @0x7100374760.
     Driver lifetimeRandom{};
 
-    f32 mass = 0.031059f;
-    i32 maxInstances = 0;
-
     /// Kill radius, and the normalising divisor for driver mode 3.
     f32 maxDistance = 10.0f;
     /// Camera-relative placement scale, and the divisor for driver mode 6.
     f32 cameraDistScale = 0.8f;
 
     // ---- the wind spring (system types 6 and 8 only) ----
-    f32 burstZOffset = 0.0f;
     f32 swayFrequency = 1.0f;
     f32 swayDamping = 0.3f;
     f32 swayMaxOffset = 1.0f;
@@ -85,6 +81,11 @@ struct EmitterDesc {
     /// step function integrates five motion models for every particle of every
     /// asset; with it the typical asset runs one.
     u32 caps = 0;
+    /// Channel 23 takes one value whatever the seed and time — absent, or one
+    /// node with no driver and start == end. Bit 0x200 of the constancy mask
+    /// `ParticleSystem_Spawn` stores at `sys+0x27C`: a constant axis is read
+    /// once at birth, a varying one every step.
+    bool spinAxisConstant = true;
 
     /// What the draw list carries: one texture id and a blend class, filled
     /// from @ref d3mat once its layers have actor texture ids. The dialects

@@ -227,7 +227,6 @@ struct LifetimeCurves {
     ParticleCurve<Vector3f> color; // linear RGB, 0..1
     ParticleCurve<f32> alpha;      // 0..1
     ParticleCurve<Vector2f> size;  // non-uniform; WC3 sets x == y
-    ParticleCurve<f32> rotation;   // radians; unused by WC3
 
     CellAnimTrack headCells;
     CellAnimTrack tailCells;

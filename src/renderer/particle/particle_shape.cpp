@@ -33,6 +33,14 @@ inline Vector3f AimFromZSource(const Vector3f& pos, f32 zSource) {
     return {d.x * inv, d.y * inv, d.z * inv};
 }
 
+// Speed draw, shared by every shape. It comes off the same stream as the
+// shape's own angle draws and WC3 takes it *after* them, so the shape decides
+// when it happens rather than being handed a pre-drawn value — the ordering is
+// observable in the particle trace.
+inline f32 DrawSpeed(RndSeed& rnd, const SpawnParams& p) {
+    return p.speed.base * (1.0f + CRandom::reals_(rnd) * p.speed.variance);
+}
+
 } // namespace
 
 void PlaneShape::Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const {

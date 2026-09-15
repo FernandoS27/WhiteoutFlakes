@@ -13,7 +13,9 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes::renderer::particle {
 
@@ -89,6 +91,120 @@ struct ChildModelEvent {
     // twinkle, which the client expresses by clearing the child model's own
     // render flags. PE1 has no twinkle and leaves this at 1.
     f32 visibility = 1.0f;
+};
+
+/// @brief One emitter's child-model output: which child each slot holds, and the
+///        events not yet drained.
+///
+/// A PE1, an M2 or SC2 model-particle emitter and a Diablo III child-actor
+/// system each hold one, so the event is filled in one place. A slot is
+/// whatever the emitter numbers its children by — a pool index, an SC2 store
+/// node, or, for a D3 system that never kills a child on its own, the birth
+/// order. Handle 0 is "this slot holds no child".
+class ChildOutputChannel {
+public:
+    /// Mints a fresh child handle per birth; 0 refuses. Routed through the
+    /// scene's actor-id allocator by whoever registers the emitter, so the
+    /// renderer exposes no mutable counter.
+    using HandleAllocator = std::function<u32()>;
+
+    void Bind(ModelId owner, i32 emitterId, HandleAllocator alloc) {
+        owner_ = owner;
+        emitterId_ = emitterId;
+        alloc_ = std::move(alloc);
+    }
+    bool Bound() const {
+        return static_cast<bool>(alloc_);
+    }
+
+    /// Room for @p slots slots, handles kept.
+    void Resize(usize slots) {
+        handles_.resize(slots, 0);
+    }
+    usize SlotCount() const {
+        return handles_.size();
+    }
+    bool Holds(u32 slot) const {
+        return slot < handles_.size() && handles_[slot] != 0;
+    }
+    /// How many slots hold a child.
+    usize LiveCount() const {
+        usize n = 0;
+        for (const u32 h : handles_)
+            n += h != 0 ? 1u : 0u;
+        return n;
+    }
+
+    /// Mints the handle @p slot holds from now on and queues its Birth, with
+    /// @p fill supplying what the dialect decides — route, path, transform.
+    /// Returns 0, queueing nothing and leaving the slot empty, when nothing is
+    /// bound or the allocator refuses; @p fill runs only after a handle exists.
+    template <class Fill>
+    u32 Birth(u32 slot, Fill&& fill) {
+        if (slot >= handles_.size())
+            handles_.resize(static_cast<usize>(slot) + 1, 0);
+        const u32 handle = alloc_ ? alloc_() : 0;
+        handles_[slot] = handle;
+        if (handle == 0)
+            return 0;
+        ChildModelEvent ev = Event(ChildModelEvent::Kind::Birth, handle);
+        fill(ev);
+        pending_.push_back(std::move(ev));
+        return handle;
+    }
+
+    /// Ends the child @p slot holds, if any.
+    void Death(u32 slot) {
+        if (slot >= handles_.size())
+            return;
+        const u32 handle = handles_[slot];
+        handles_[slot] = 0;
+        if (handle != 0)
+            pending_.push_back(Event(ChildModelEvent::Kind::Death, handle));
+    }
+
+    /// Ends every child, in slot order, and forgets the slots.
+    void DeathAll() {
+        for (const u32 handle : handles_) {
+            if (handle != 0)
+                pending_.push_back(Event(ChildModelEvent::Kind::Death, handle));
+        }
+        handles_.clear();
+    }
+
+    /// The Births and Deaths queued since the last drain, in the order they
+    /// happened.
+    void Drain(std::vector<ChildModelEvent>& out) {
+        for (auto& ev : pending_)
+            out.push_back(ev);
+        pending_.clear();
+    }
+
+    /// Where the child @p slot holds is this frame. The caller asks `Holds`
+    /// first, so a slot with no child costs no transform.
+    void Transform(u32 slot, const Matrix44f& xf, f32 visibility,
+                   std::vector<ChildModelEvent>& out) const {
+        ChildModelEvent ev = Event(ChildModelEvent::Kind::Transform, handles_[slot]);
+        ev.transform = xf;
+        ev.visibility = visibility;
+        out.push_back(ev);
+    }
+
+private:
+    ChildModelEvent Event(ChildModelEvent::Kind kind, u32 handle) const {
+        ChildModelEvent ev;
+        ev.kind = kind;
+        ev.owner = owner_;
+        ev.emitterId = emitterId_;
+        ev.childHandle = handle;
+        return ev;
+    }
+
+    ModelId owner_ = 0;
+    i32 emitterId_ = 0;
+    HandleAllocator alloc_;
+    std::vector<u32> handles_;
+    std::vector<ChildModelEvent> pending_;
 };
 
 /// An emitter adopts at most this many trails — the client's

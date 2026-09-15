@@ -46,7 +46,6 @@ Matrix44f Transposed(const Matrix44f& m) {
 
 void MultiTexParticleService::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api) {
     gfx_ = &gfx;
-    api_ = api;
 
     using namespace whiteout::flakes::Shaders;
     const u8* vs = kMultiTexParticleVS;

@@ -121,34 +121,33 @@ Sc2BatchDesc Sc2BatchDescFrom(const Sc2EmitterDesc& d) {
 }
 
 Sc2InitWords Sc2InitRuntimeWords(const Sc2EmitterDesc& d) {
-    namespace bits = whiteout::flakes::renderer::sc2;
     Sc2InitWords w;
     const u32 flags = static_cast<u32>(d.flags);
     if ((flags & static_cast<u32>(ParticleFlag::ScaleTimeByParent)) != 0)
-        w.stateFlags |= bits::kStateScaleTimeByParent;
+        w.stateFlags |= sc2::kStateScaleTimeByParent;
     if ((flags & static_cast<u32>(ParticleFlag::UseLocalTime)) != 0)
-        w.stateFlags |= bits::kStateUseLocalTime;
+        w.stateFlags |= sc2::kStateUseLocalTime;
     // An ASSIGNMENT, not an or: an emitter with a fallback force pair loses the
     // two time bits it was just given. Transcribed, not tidied.
     if (d.motion.forcesFallback != 0)
-        w.stateFlags = bits::kStateForces;
+        w.stateFlags = sc2::kStateForces;
     if (d.Has(ParticleAdditionalFlag::WorldSpace))
-        w.stateFlags |= bits::kStateWorldSpace;
+        w.stateFlags |= sc2::kStateWorldSpace;
     // `local | world << 16`: any world channel puts the pair at or above this.
     constexpr u32 kFirstWorldForceChannel = 0x10000u;
     if (d.motion.forces >= kFirstWorldForceChannel)
-        w.stateFlags |= bits::kStateWorldForces;
+        w.stateFlags |= sc2::kStateWorldForces;
     // Strictly above the threshold: an amplitude of exactly 0.001 demotes the
     // emitter to Euler — `CanUseGpuMotion` tests `< 0.001` — and still leaves
     // its noise off.
-    if (d.motion.noiseAmplitude > bits::kNoiseThreshold)
-        w.emitFlags |= bits::kEmitNoise;
+    if (d.motion.noiseAmplitude > sc2::kNoiseThreshold)
+        w.emitFlags |= sc2::kEmitNoise;
     if ((flags & static_cast<u32>(ParticleFlag::InheritParentVelocity)) != 0)
-        w.stateFlags |= bits::kStateInheritVelocity;
+        w.stateFlags |= sc2::kStateInheritVelocity;
     // The load already asked `Sc2CanUseGpuMotion`; asking again here would be
     // a second spelling of the one selector.
     if (d.motion.analytic)
-        w.stateFlags |= bits::kStateGpuMotion;
+        w.stateFlags |= sc2::kStateGpuMotion;
     return w;
 }
 

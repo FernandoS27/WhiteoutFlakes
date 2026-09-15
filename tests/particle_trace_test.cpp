@@ -59,6 +59,8 @@ Trace MakeTrace() {
     e.boundsMin = {-9.0f, -1.0f, 2.0f};
     e.boundsMax = {2.0f, 3.0f, 17.0f};
     e.meanColor = {0.5f, 0.25f, 0.125f, 1.0f};
+    e.sideCount = 18;
+    e.sideHash = 0x0123456789ABCDEFull;
 
     TraceFrame f;
     f.frame = 0;
@@ -123,6 +125,18 @@ TEST_CASE("Every field the trace records is actually compared") {
     SECTION("bounds") {
         other.frames[0].emitters[0].boundsMax.x += 1.0f;
         field = "bounds";
+    }
+    SECTION("priority plane") {
+        other.frames[0].emitters[0].priorityPlane = 5;
+        field = "priority plane";
+    }
+    SECTION("the side streams' vertex count") {
+        other.frames[0].emitters[0].sideCount = 12;
+        field = "side stream vertex count";
+    }
+    SECTION("the side streams' hash") {
+        other.frames[0].emitters[0].sideHash ^= 1ull;
+        field = "side stream differs";
     }
     SECTION("emitter identity") {
         other.frames[0].emitters[0].emitterId = 5;
@@ -225,6 +239,31 @@ TEST_CASE("A recorded trace round-trips exactly") {
     REQUIRE(CompareTraces(original, loaded, CompareTolerance{}, report));
     REQUIRE(loaded.frames.size() == 1u);
     REQUIRE(loaded.frames[0].emitters[0].priorityPlane == 4);
+}
+
+TEST_CASE("A v2 baseline without the side streams still checks what it recorded") {
+    // The side-stream columns came after these baselines were recorded. A v2
+    // file must load, and must not fail on the columns it never had — while
+    // still failing on the ones it did.
+    const TempFile file("wf_trace_v2.wpt");
+    file.Write("wpt2\n"
+               "f 0 1\n"
+               "e 7 0 2 1 12 16045690984503098046 4 -9 -1 2 2 3 17 0.5 0.25 0.125 1\n"
+               "p 1 2 3 0.25 -0.5 4 0.125 1\n");
+
+    Trace old;
+    std::string err;
+    REQUIRE(ReadTrace(old, file.Path(), err));
+    REQUIRE_FALSE(old.hasSideStreams);
+
+    Trace now = MakeTrace();
+    now.frames[0].emitters[0].particles.pop_back();
+    std::string report;
+    CHECK(CompareTraces(old, now, CompareTolerance{}, report));
+    INFO(report);
+
+    now.frames[0].emitters[0].priorityPlane = 5;
+    CHECK_FALSE(CompareTraces(old, now, CompareTolerance{}, report));
 }
 
 TEST_CASE("A v1 baseline without the output column still loads") {

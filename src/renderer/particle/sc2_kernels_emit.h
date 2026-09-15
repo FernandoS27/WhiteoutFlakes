@@ -86,6 +86,8 @@ struct Sc2StepPlan {
     /// time as the remainder — so a viewer above 60 Hz simulates on some
     /// frames only, and that is retail behaviour, not something to smooth.
     u32 nSteps = 0;
+    /// Gate-only: the golden pins it bit-exact and no stage reads it — the
+    /// spawn sweep measures its own step from `prevPos`.
     Vector3f displacement{0, 0, 0};
     f32 subDt = 0.0f;
     f32 dt = 0.0f;
@@ -191,19 +193,9 @@ struct Sc2EmitCountInputs {
 ///
 /// Returns a FRACTIONAL count. The design's table folded the floor and the
 /// carry into this signature; they belong to `EmitParticles` and are pinned by
-/// OP3b, so they live in @ref Sc2SlotEmitTarget instead and each function is
-/// gated by the gate that actually measured it.
+/// OP3b, so they live in `Sc2SpawnSchedule`'s floor-and-carry instead and each
+/// function is gated by the gate that actually measured it.
 f32 Sc2ComputeEmitCount(const Sc2EmitCountInputs& in);
-
-/// The floor-and-carry `EmitParticles` applies to that count (RE §5.3, part of
-/// gate OP3b). @p carry is the fractional particle the rate has not released
-/// yet; it is replaced by the new remainder.
-///
-/// NOT clamped at zero. A negative rate floors to −1 and returns 0xFFFFFFFF,
-/// which spawns nothing (the spawn guard is signed) but is still what retail
-/// divides `catchUp` by — the golden records a `spawnTimeStep` of 3.9e-12 for
-/// exactly that case, so clamping here would quietly diverge.
-u32 Sc2SlotEmitTarget(f32& carry, f32 count);
 
 // ---------------------------------------------------------------------------
 // EMIT — the squirt crossing (`M3Anim_CollectCrossedKeys`, RE §16.7, gate
@@ -333,16 +325,18 @@ struct Sc2Schedule {
 /// `CParticleSystem::EmitParticles` — RE §5.3, gate OP3b.
 ///
 /// Fills @p targets and @p events and returns the frame's totals; @p carry is
-/// per-slot in/out. Nothing is spawned or simulated here — the stage method
-/// walks @p events, which is what keeps the arithmetic testable apart from the
-/// pool.
+/// per-slot in/out. @p emitted is the caller's per-slot scratch, as long as
+/// @p targets: zeroed here and left holding what the passes booked. Nothing is
+/// spawned or simulated here — the stage method walks @p events, which is what
+/// keeps the arithmetic testable apart from the pool.
 ///
 /// Two divisions that are NOT the same: the full step computes
 /// `catchUp / total`, the sub-stepped path builds `1 / total` once and
 /// multiplies all four lanes by it (three displacement lanes and `catchUp`).
 /// They differ in the last bits and the golden carries both.
 Sc2Schedule Sc2SpawnSchedule(const Sc2ScheduleInputs& in, std::span<f32> carry,
-                             std::span<u32> targets, std::vector<Sc2EmitEvent>& events);
+                             std::span<u32> targets, std::span<u32> emitted,
+                             std::vector<Sc2EmitEvent>& events);
 
 struct Sc2SweepInputs {
     bool fullStep = false;
@@ -368,9 +362,6 @@ struct Sc2Sweep {
 /// `nSubSteps == 0` leaves it alone (OP3b's vectors hold that arm at the
 /// origin, so they do not discriminate).
 Sc2Sweep Sc2SpawnSweep(const Sc2SweepInputs& in);
-
-/// `rcpps` plus the one Newton step the reciprocal lane above goes through.
-f32 Sc2RcpNewton(f32 x);
 
 /// The window `ComputeEmitCount` is asked for: one SUB-step on the full-step
 /// path, the whole FRAME on the sub-stepped one.

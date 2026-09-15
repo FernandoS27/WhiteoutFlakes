@@ -2450,7 +2450,6 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
     out.reserve(model_.particleEmitters.size());
     for (const ParticleEmitter& par : model_.particleEmitters) {
         renderer::effects::Sc2ParticleEmitterConfig c;
-        c.boneIndex = static_cast<i32>(par.boneIndex);
         c.materialIndex = static_cast<i32>(par.materialIndex);
         c.flags = static_cast<u32>(par.flags);
         c.additionalFlags = static_cast<u32>(par.additionalFlags);
@@ -2488,7 +2487,9 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
         c.sizeRandom = par.sizeRandomEnable != 0;
         c.rotationRandom = par.rotationRandomEnable != 0;
         c.colorRandom = par.colorRandomEnable != 0;
-        c.alphaRandom = par.alphaRandomEnable != 0;
+        // `alphaRandomEnable` (+0x2BC) is not carried: `SampleParticleColor`
+        // (4.8 `0x102920A90`) tests `colorRandomEnable` at +0x27C and never
+        // reads the record's +0x2BC.
         const u32 types[9] = {par.yawType,      par.pitchType,      par.speedType,
                               par.sizeType,     par.alphaType,      par.colorType,
                               par.rotationType, par.horizontalType, par.verticalType};

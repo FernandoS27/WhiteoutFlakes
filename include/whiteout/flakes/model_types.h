@@ -418,7 +418,6 @@ using Sc2SquirtKeys = std::vector<Sc2SquirtKey>;
 /// this struct sees settled semantics (the same place the ribbon adapter
 /// absorbed its `emitterShape`/`ribbonType` swap).
 struct Sc2ParticleEmitterConfig {
-    i32 boneIndex = 0;
     i32 materialIndex = -1; ///< `MATM` index; resolved to an M3 surface at load.
 
     u32 flags = 0;           ///< PAR_ `ParticleFlag`.
@@ -442,7 +441,6 @@ struct Sc2ParticleEmitterConfig {
     std::vector<Sc2SquirtKeys> squirt;
 
     bool sizeRandom = false, rotationRandom = false, colorRandom = false;
-    bool alphaRandom = false;
 
     /// Overlay-wave types, in the order the runtime groups them: yaw, pitch,
     /// speed, size, alpha, color, rotation, horizontal, vertical. 0 = off; the

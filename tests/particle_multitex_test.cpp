@@ -166,7 +166,7 @@ TEST_CASE("a multi-texture emitter keeps its draw in the scene but its vertices 
         std::vector<Vertex> verts;
         std::vector<EmitterDrawList> draws;
         MultiTexGeometry multiGeo;
-        svc.BuildGeometry(view, verts, draws, nullptr, &multiGeo);
+        svc.BuildGeometry(view, {verts, draws, nullptr, &multiGeo});
 
         // Two draws in the ONE sorted list — that is the difference from
         // refraction, which would have moved its draw out entirely.
@@ -198,7 +198,7 @@ TEST_CASE("a multi-texture emitter keeps its draw in the scene but its vertices 
     SECTION("without a sink it falls back to one layer, and says so") {
         std::vector<Vertex> verts;
         std::vector<EmitterDrawList> draws;
-        svc.BuildGeometry(view, verts, draws);
+        svc.BuildGeometry(view, {verts, draws});
 
         // Still drawn — a multi-texture emitter is ordinary colour, so an
         // approximate particle beats a missing one.
@@ -234,7 +234,7 @@ TEST_CASE("refraction and multi-texture emitters take separate streams",
     std::vector<EmitterDrawList> draws;
     MultiTexGeometry refractGeo;
     MultiTexGeometry multiGeo;
-    svc.BuildGeometry(view, verts, draws, &refractGeo, &multiGeo);
+    svc.BuildGeometry(view, {verts, draws, &refractGeo, &multiGeo});
 
     // The refraction emitter leaves the scene; the multi-texture one does not.
     REQUIRE(refractGeo.draws.size() == 1);

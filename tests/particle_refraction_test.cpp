@@ -254,7 +254,7 @@ TEST_CASE("the service routes refraction emitters out of the scene", "[particle]
         std::vector<Vertex> verts;
         std::vector<EmitterDrawList> draws;
         MultiTexGeometry refractGeo;
-        svc.BuildGeometry(view, verts, draws, &refractGeo);
+        svc.BuildGeometry(view, {verts, draws, &refractGeo});
 
         REQUIRE(draws.size() == 1);
         REQUIRE(draws[0].emitterId == 0);
@@ -270,7 +270,7 @@ TEST_CASE("the service routes refraction emitters out of the scene", "[particle]
     SECTION("without a sink, it is dropped rather than drawn as colour") {
         std::vector<Vertex> verts;
         std::vector<EmitterDrawList> draws;
-        svc.BuildGeometry(view, verts, draws);
+        svc.BuildGeometry(view, {verts, draws});
 
         REQUIRE(draws.size() == 1);
         REQUIRE(draws[0].emitterId == 0);

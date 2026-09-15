@@ -14,8 +14,11 @@ namespace whiteout::flakes::renderer::particle {
 
 namespace {
 
-using detail::EulerDot;
 using detail::kFreezeSpeedSq;
+// `(a·b)` left to right is the grouping the CPU vertex builder's tail clamp and
+// velocity test use (OP11), and it is `vs::Dot3`'s. The simulate step groups
+// its own dot products differently and spells them out where they are.
+using sc2::vs::Dot3;
 using sc2::kRotationQuant;
 using sc2::kSizeQuant;
 
@@ -48,6 +51,13 @@ Sc2DragLanes Sc2ComputeDragLanes(f32 drag) {
     return out;
 }
 
+namespace {
+
+/// `vInterpolator2.xyz` for one instance type.
+///
+/// Types 1/10 put the tail length in x and zero y,z; 2 the velocity; 3/4 the
+/// authored angle triple; 7/8 the element's orientation; 9 its spawn origin;
+/// everything else — billboards included — zero.
 Vector3f Sc2InstanceVector(const Sc2VertexBodyInputs& in, const Sc2SpawnedElement& e) {
     switch (static_cast<Sc2InstanceType>(in.instanceType)) {
     case Sc2InstanceType::Tail:
@@ -68,8 +78,9 @@ Vector3f Sc2InstanceVector(const Sc2VertexBodyInputs& in, const Sc2SpawnedElemen
     }
 }
 
-std::array<Sc2GpuVertex, 4> Sc2VertexBody(const Sc2VertexBodyInputs& in,
-                                          const Sc2SpawnedElement& e) {
+} // namespace
+
+Sc2GpuVertex Sc2VertexBody(const Sc2VertexBodyInputs& in, const Sc2SpawnedElement& e) {
     Sc2GpuVertex v{};
     Store3(v.position, e.position);
     // The element's lane, which nothing writes and no shader path reads.
@@ -99,14 +110,7 @@ std::array<Sc2GpuVertex, 4> Sc2VertexBody(const Sc2VertexBodyInputs& in,
 
     Store3(v.noise, e.noiseVec);
     v.flipbookRandStart = e.flipbookRandStart;
-
-    std::array<Sc2GpuVertex, 4> quad{};
-    for (usize k = 0; k < 4; ++k) {
-        quad[k] = v;
-        quad[k].corner[0] = kSc2Corners[k][0];
-        quad[k].corner[1] = kSc2Corners[k][1];
-    }
-    return quad;
+    return v;
 }
 
 void Sc2CpuVertexBody(const Sc2CpuVertexInputs& in, Sc2SpawnedElement& e, Sc2GpuVertex& cache) {
@@ -167,8 +171,8 @@ void Sc2CpuVertexBody(const Sc2CpuVertexInputs& in, Sc2SpawnedElement& e, Sc2Gpu
         if (Sc2Has(in.parFlags, ParticleFlag::ClampTailLength) && !in.gpuMotion) {
             const Vector3f d{e.position.x - e.spawnOrigin.x, e.position.y - e.spawnOrigin.y,
                              e.position.z - e.spawnOrigin.z};
-            const f32 dist2 = EulerDot(d, d);
-            const f32 speed = std::sqrt(EulerDot(e.velocity, e.velocity));
+            const f32 dist2 = Dot3(d, d);
+            const f32 speed = std::sqrt(Dot3(e.velocity, e.velocity));
             f32 reach = in.tailLength * speed;
             if (!Sc2Has(in.parFlags, ParticleFlag::FixTailLengthOnCreation))
                 reach = (std::max)(reach, in.tailLength);
@@ -206,7 +210,7 @@ void Sc2CpuVertexBody(const Sc2CpuVertexInputs& in, Sc2SpawnedElement& e, Sc2Gpu
     case Sc2InstanceType::TerrainDirOriented: {
         terrainLanes();
         Store3(cache.velocity,
-               EulerDot(e.velocity, e.velocity) < kFreezeSpeedSq ? e.orientVec : e.velocity);
+               Dot3(e.velocity, e.velocity) < kFreezeSpeedSq ? e.orientVec : e.velocity);
         // The tail length, not `instanceAngle.x`, and one dword store that zeroes
         // the other two keys and stops short of `flipbookRand`.
         e.rotation = {static_cast<u16>(static_cast<i32>(in.tailLength * kRotationQuant)), 0, 0};
@@ -431,6 +435,100 @@ Sc2QuadResult Sc2ExpandQuad(const Sc2QuadInput& v, const Sc2QuadBatch& b,
         up = vs::Normalize3(vs::Cross3(forward, right));
     };
 
+    // The corner-invariant half of every arm, built once. Each expression
+    // reads `interp1`/`interp2` as the procedural step left them, the camera
+    // and the angle, and nothing a corner writes, so building it ahead of the
+    // corners is the same bits the shader's per-vertex evaluation makes.
+    //   right    the quad's x axis and the corner's tangent
+    //   up       its y axis, the binormal's source — each arm says what it is
+    //   forward  the rotation axis, or the frame's direction
+    struct CornerFrame {
+        Vector3f right{}, up{}, forward{}, normal{};
+        vs::Mat3 m{};
+        f32 vsize = 0.0f;
+        Vector3f delta{}, centre{};
+    } f;
+    switch (type) {
+    case Sc2InstanceType::SingleAxis:
+        f.right = vs::Normalize3(vs::Cross3(interp2, cam.direction));
+        f.forward = vs::Normalize3(vs::Cross3(f.right, interp2));
+        f.m = vs::MakeRotation(angle, f.forward);
+        f.normal = vs::Normalize3(vs::Cross3(f.right, f.forward));
+        break;
+    case Sc2InstanceType::FaceTravelDir:
+    case Sc2InstanceType::FaceWorldDir:
+    case Sc2InstanceType::EmitterOriented:
+    case Sc2InstanceType::PhysicsOriented:
+        // `forward` is the direction: the rotation axis here, and the normal
+        // the second pass faces the camera with.
+        unpackNormals(f.right, f.up, f.forward);
+        f.m = vs::MakeRotation(angle, f.forward);
+        break;
+    case Sc2InstanceType::TerrainOriented: {
+        // `up` is the projected direction, rotated.
+        Vector3f projected = vs::Sub(interp1, vs::Scale(interp2, vs::Dot3(interp1, interp2)));
+        const vs::Mat3 m = vs::MakeRotation(angle, interp2);
+        if (vs::Dot3(projected, projected) < sc2::kTerrainProjectMinSq)
+            projected = {1.0f, 0.0f, 0.0f};
+        projected = vs::Normalize3(projected);
+        const Vector3f right = vs::Cross3(projected, interp2);
+        f.up = vs::MulVecMat3(projected, m);
+        f.right = vs::MulVecMat3(right, m);
+        f.normal = vs::Normalize3(vs::Cross3(f.right, f.up));
+        break;
+    }
+    case Sc2InstanceType::TerrainDirOriented: {
+        // No rotation at all: `rot.x` is a length SCALE here, which is what
+        // the CPU builder's re-key of `rotation[0]` is for. `up` is the
+        // projected direction, scaled.
+        const f32 mag = vs::Length3(interp1);
+        const Vector3f direction = vs::Normalize3(interp1);
+        const Vector3f projected = vs::Normalize3(
+            vs::Sub(direction, vs::Scale(interp2, vs::Dot3(direction, interp2))));
+        f.right = vs::Cross3(projected, interp2);
+        f.up = vs::Scale(projected, (std::max)(inRot[0], mag * inRot[0]));
+        f.normal = vs::Normalize3(vs::Cross3(f.right, f.up));
+        break;
+    }
+    case Sc2InstanceType::Tail:
+    case Sc2InstanceType::Trail: {
+        // `up` is the direction, scaled by the tail.
+        Vector3f velocity = vs::Add(interp1, v.noise);
+        // Taken BEFORE the local-to-world rotation.
+        const f32 mag = vs::Length3(velocity);
+        if (fl.localSpace)
+            velocity = vs::MulVecMat4As3(velocity, b.prWorld);
+        const Vector3f direction = vs::Normalize3(velocity);
+        f.right = vs::Normalize3(vs::Cross3(cam.direction, direction));
+        const f32 tail =
+            fl.fixedTailLength ? interp2.x : (std::max)(interp2.x, mag * interp2.x);
+        f.up = vs::Scale(direction, tail);
+        f.vsize = scale * out.size;
+        f.normal = vs::Normalize3(vs::Cross3(f.right, f.up));
+        break;
+    }
+    case Sc2InstanceType::Pinned: {
+        // The noise moved the head end only, so a noisy Pinned particle
+        // lengthens its streak rather than displacing it.
+        const Vector3f origin =
+            fl.localSpace ? vs::MulPointMat4(interp2, b.prWorld) : interp2;
+        f.delta = vs::Sub(position, origin);
+        f.forward = vs::SafeNormalize(f.delta, Vector3f{1.0f, 0.0f, 0.0f});
+        f.right = vs::Normalize3(vs::Cross3(cam.direction, f.forward));
+        f.centre = vs::Scale(vs::Add(position, origin), 0.5f);
+        f.normal = vs::Cross3(f.right, f.forward);
+        break;
+    }
+    default:
+        // The billboard: the quad is laid on the camera's axes, and the frame
+        // is those axes rotated.
+        f.m = vs::MakeRotation(angle, cam.direction);
+        f.right = vs::MulVecMat3(cam.billboardRight, f.m);
+        f.up = vs::MulVecMat3(cam.billboardUp, f.m);
+        f.normal = vs::Normalize3(vs::Cross3(f.right, f.up));
+        break;
+    }
+
     for (usize k = 0; k < 4; ++k) {
         const f32 ox = static_cast<f32>(kSc2Corners[k][0]);
         const f32 oy = static_cast<f32>(kSc2Corners[k][1]);
@@ -439,108 +537,57 @@ Sc2QuadResult Sc2ExpandQuad(const Sc2QuadInput& v, const Sc2QuadBatch& b,
 
         switch (type) {
         case Sc2InstanceType::SingleAxis: {
-            const Vector3f right = vs::Normalize3(vs::Cross3(interp2, cam.direction));
-            const Vector3f forward = vs::Normalize3(vs::Cross3(right, interp2));
-            const vs::Mat3 m = vs::MakeRotation(angle, forward);
-            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(interp2, oy));
+            Vector3f off = vs::Add(vs::Scale(f.right, ox), vs::Scale(interp2, oy));
             off = vs::Scale(off, scale);
-            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), m));
-            c.normal = vs::Normalize3(vs::Cross3(right, forward));
-            c.tangent = right;
-            c.binormal = forward;
+            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), f.m));
+            c.normal = f.normal;
+            c.tangent = f.right;
+            c.binormal = f.forward;
             break;
         }
         case Sc2InstanceType::FaceTravelDir:
         case Sc2InstanceType::FaceWorldDir:
         case Sc2InstanceType::EmitterOriented:
         case Sc2InstanceType::PhysicsOriented: {
-            Vector3f right, up, direction;
-            unpackNormals(right, up, direction);
-            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(up, oy));
+            Vector3f off = vs::Add(vs::Scale(f.right, ox), vs::Scale(f.up, oy));
             off = vs::Scale(off, scale);
-            const vs::Mat3 m = vs::MakeRotation(angle, direction);
-            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), m));
+            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), f.m));
             // The frame is the SECOND pass's, after the instance transform.
             break;
         }
-        case Sc2InstanceType::TerrainOriented: {
-            Vector3f projected =
-                vs::Sub(interp1, vs::Scale(interp2, vs::Dot3(interp1, interp2)));
-            const vs::Mat3 m = vs::MakeRotation(angle, interp2);
-            if (vs::Dot3(projected, projected) < sc2::kTerrainProjectMinSq)
-                projected = {1.0f, 0.0f, 0.0f};
-            projected = vs::Normalize3(projected);
-            Vector3f right = vs::Cross3(projected, interp2);
-            projected = vs::MulVecMat3(projected, m);
-            right = vs::MulVecMat3(right, m);
-            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(projected, oy));
-            off = vs::Scale(off, scale);
-            p = vs::Add(p, vs::Scale(off, out.size));
-            c.normal = vs::Normalize3(vs::Cross3(right, projected));
-            c.tangent = right;
-            c.binormal = projected;
-            faceCamera(p, c, false);
-            break;
-        }
+        case Sc2InstanceType::TerrainOriented:
         case Sc2InstanceType::TerrainDirOriented: {
-            // No rotation at all: `rot.x` is a length SCALE here, which is
-            // what the CPU builder's re-key of `rotation[0]` is for.
-            const f32 mag = vs::Length3(interp1);
-            const Vector3f direction = vs::Normalize3(interp1);
-            Vector3f projected = vs::Normalize3(
-                vs::Sub(direction, vs::Scale(interp2, vs::Dot3(direction, interp2))));
-            const Vector3f right = vs::Cross3(projected, interp2);
-            projected = vs::Scale(projected, (std::max)(inRot[0], mag * inRot[0]));
-            Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(projected, oy));
+            Vector3f off = vs::Add(vs::Scale(f.right, ox), vs::Scale(f.up, oy));
             off = vs::Scale(off, scale);
             p = vs::Add(p, vs::Scale(off, out.size));
-            c.normal = vs::Normalize3(vs::Cross3(right, projected));
-            c.tangent = right;
-            c.binormal = projected;
+            c.normal = f.normal;
+            c.tangent = f.right;
+            c.binormal = f.up;
             faceCamera(p, c, false);
             break;
         }
         case Sc2InstanceType::Tail:
         case Sc2InstanceType::Trail: {
-            Vector3f velocity = vs::Add(interp1, v.noise);
-            // Taken BEFORE the local-to-world rotation.
-            const f32 mag = vs::Length3(velocity);
-            if (fl.localSpace)
-                velocity = vs::MulVecMat4As3(velocity, b.prWorld);
-            Vector3f direction = vs::Normalize3(velocity);
-            const Vector3f right = vs::Normalize3(vs::Cross3(cam.direction, direction));
-            const f32 tail =
-                fl.fixedTailLength ? interp2.x : (std::max)(interp2.x, mag * interp2.x);
-            direction = vs::Scale(direction, tail);
-            const Vector3f off = vs::Add(vs::Scale(right, ox), vs::Scale(direction, oy));
-            const f32 vsize = scale * out.size;
-            p = vs::Add(p, vs::Scale(off, vsize));
+            const Vector3f off = vs::Add(vs::Scale(f.right, ox), vs::Scale(f.up, oy));
+            p = vs::Add(p, vs::Scale(off, f.vsize));
             if (type == Sc2InstanceType::Trail)
-                p = vs::Sub(p, vs::Scale(direction, vsize));
-            c.normal = vs::Normalize3(vs::Cross3(right, direction));
-            c.tangent = right;
+                p = vs::Sub(p, vs::Scale(f.up, f.vsize));
+            c.normal = f.normal;
+            c.tangent = f.right;
             // Scaled by the tail: this binormal is NOT unit (1, 6, 10 only).
-            c.binormal = vs::Scale(direction, -1.0f);
+            c.binormal = vs::Scale(f.up, -1.0f);
             break;
         }
         case Sc2InstanceType::Pinned: {
-            // The noise moved the head end only, so a noisy Pinned particle
-            // lengthens its streak rather than displacing it.
-            const Vector3f origin =
-                fl.localSpace ? vs::MulPointMat4(interp2, b.prWorld) : interp2;
-            const Vector3f delta = vs::Sub(p, origin);
-            const Vector3f forward = vs::SafeNormalize(delta, Vector3f{1.0f, 0.0f, 0.0f});
-            const Vector3f right = vs::Normalize3(vs::Cross3(cam.direction, forward));
             const f32 endScale = vs::Lerp(1.0f, inSize[3], oy * 0.5f + 0.5f);
-            const Vector3f centre = vs::Scale(vs::Add(p, origin), 0.5f);
             // No elementScale on this branch — the one type whose quad does not
             // follow the emitter's world scale — and the only trapezoid.
-            const Vector3f off = vs::Add(vs::Scale(vs::Scale(right, ox * out.size), endScale),
-                                         vs::Scale(delta, 0.5f * oy));
-            p = vs::Add(centre, off);
-            c.normal = vs::Cross3(right, forward);
-            c.tangent = right;
-            c.binormal = vs::Scale(forward, -1.0f);
+            const Vector3f off = vs::Add(vs::Scale(vs::Scale(f.right, ox * out.size), endScale),
+                                         vs::Scale(f.delta, 0.5f * oy));
+            p = vs::Add(f.centre, off);
+            c.normal = f.normal;
+            c.tangent = f.right;
+            c.binormal = vs::Scale(f.forward, -1.0f);
             break;
         }
         default: {
@@ -549,16 +596,13 @@ Sc2QuadResult Sc2ExpandQuad(const Sc2QuadInput& v, const Sc2QuadBatch& b,
             // quad and skips the common instance transform after.
             if (fl.modelInstancing)
                 p = vs::MulPointMat4(p, b.instanceTransform);
-            const vs::Mat3 m = vs::MakeRotation(angle, cam.direction);
             Vector3f off = vs::Add(vs::Scale(cam.billboardRight, ox),
                                    vs::Scale(cam.billboardUp, oy));
             off = vs::Scale(off, scale);
-            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), m));
-            const Vector3f right = vs::MulVecMat3(cam.billboardRight, m);
-            const Vector3f up = vs::MulVecMat3(cam.billboardUp, m);
-            c.normal = vs::Normalize3(vs::Cross3(right, up));
-            c.tangent = right;
-            c.binormal = vs::Scale(up, -1.0f);
+            p = vs::Add(p, vs::MulVecMat3(vs::Scale(off, out.size), f.m));
+            c.normal = f.normal;
+            c.tangent = f.right;
+            c.binormal = vs::Scale(f.up, -1.0f);
             break;
         }
         }
@@ -570,11 +614,9 @@ Sc2QuadResult Sc2ExpandQuad(const Sc2QuadInput& v, const Sc2QuadBatch& b,
         if (type == Sc2InstanceType::FaceTravelDir || type == Sc2InstanceType::FaceWorldDir ||
             type == Sc2InstanceType::EmitterOriented ||
             type == Sc2InstanceType::PhysicsOriented) {
-            Vector3f right, up, direction;
-            unpackNormals(right, up, direction);
-            c.normal = direction;
-            c.tangent = right;
-            c.binormal = up;
+            c.normal = f.forward;
+            c.tangent = f.right;
+            c.binormal = f.up;
             faceCamera(p, c, true);
         }
 
@@ -584,6 +626,17 @@ Sc2QuadResult Sc2ExpandQuad(const Sc2QuadInput& v, const Sc2QuadBatch& b,
     return out;
 }
 
+namespace {
+
+/// `p_v..._ElementScale_...y` — the largest row length of the world matrix.
+///
+/// Retail computes it as `rsqrtss` plus one Newton-Raphson step rather than a
+/// `sqrtss`, and guards a zero matrix to 0 instead of letting it divide. The
+/// refined estimate is within about `2^-22` relative of the true root on real
+/// hardware (and within one float32 ulp under the oracle's emulator), so this
+/// uses `std::sqrt` and the OP15 replay allows this one lane a relative
+/// tolerance where every other lane is compared bit for bit. The value scales
+/// particle size, so the last ulp of it is not observable.
 f32 Sc2ElementScale(const std::array<f32, 16>& m) {
     // `z*z + (y*y + x*x)`, in that association — the binary adds the z term to
     // the already-summed pair, and float addition does not reassociate.
@@ -605,6 +658,8 @@ f32 Sc2ElementScale(const std::array<f32, 16>& m) {
     // them — it is transcribed from the disassembly, not measured.
     return mx == 0.0f ? 0.0f : std::sqrt(mx);
 }
+
+} // namespace
 
 void Sc2WriteQuadBatch(Sc2QuadBatch& row, const Sc2BatchDesc& d,
                        const Sc2BatchFrame& f) {

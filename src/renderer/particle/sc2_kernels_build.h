@@ -73,13 +73,6 @@ struct Sc2VertexBodyInputs {
     u32 batchIndex = 0;
 };
 
-/// `vInterpolator2.xyz` for one instance type.
-///
-/// Types 1/10 put the tail length in x and zero y,z; 2 the velocity; 3/4 the
-/// authored angle triple; 7/8 the element's orientation; 9 its spawn origin;
-/// everything else — billboards included — zero.
-Vector3f Sc2InstanceVector(const Sc2VertexBodyInputs& in, const Sc2SpawnedElement& e);
-
 /// What `BuildParticleQuadVertices_List` / `_Ranged` read besides the element
 /// (RE §16.12, gate OP11) — the CPU path's per-frame vertex builder.
 struct Sc2CpuVertexInputs {
@@ -118,14 +111,15 @@ struct Sc2CpuVertexInputs {
 /// noise vector, the type-6 rotation re-key, and the tail clamp's latch.
 void Sc2CpuVertexBody(const Sc2CpuVertexInputs& in, Sc2SpawnedElement& e, Sc2GpuVertex& cache);
 
-/// The four vertices one element uploads.
+/// The vertex one element uploads, corner lanes left zero.
 ///
-/// `batchIndex` is written into all four. Retail's block path leaves those
-/// bytes at whatever the slot last held, which is why OP11b fills the range
-/// with a value keyed to the dword index: a body copy that skipped the lane
-/// and one that wrote a constant are otherwise the same green.
-std::array<Sc2GpuVertex, 4> Sc2VertexBody(const Sc2VertexBodyInputs& in,
-                                          const Sc2SpawnedElement& e);
+/// Retail writes four, identical but for `vOffset`, which is `kSc2Corners[k]`
+/// for every particle — so the store keeps one and the quad builder supplies
+/// the corner. `batchIndex` is written; retail's block path leaves those bytes
+/// at whatever the slot last held, which is why OP11b fills the range with a
+/// value keyed to the dword index: a body copy that skipped the lane and one
+/// that wrote a constant are otherwise the same green.
+Sc2GpuVertex Sc2VertexBody(const Sc2VertexBodyInputs& in, const Sc2SpawnedElement& e);
 
 // ---------------------------------------------------------------------------
 // The quad expansion (OP12, design P2 BUILD).
@@ -230,6 +224,8 @@ struct Sc2QuadCorner {
     Vector3f position{0, 0, 0};
     Vector2f uv{0, 0};
     Vector3f normal{0, 0, 0};
+    /// Gate-only, with `Sc2QuadResult::age`/`size`: the gate compares them and
+    /// the CPU vertex stream has no lane for them.
     Vector3f tangent{0, 0, 0};
     Vector3f binormal{0, 0, 0};
 };
@@ -318,17 +314,6 @@ struct Sc2BatchFrame {
     bool hasInstanceNode = false;
     f32 emitterTime = 0.0f;
 };
-
-/// `p_v..._ElementScale_...y` — the largest row length of the world matrix.
-///
-/// Retail computes it as `rsqrtss` plus one Newton-Raphson step rather than a
-/// `sqrtss`, and guards a zero matrix to 0 instead of letting it divide. The
-/// refined estimate is within about `2^-22` relative of the true root on real
-/// hardware (and within one float32 ulp under the oracle's emulator), so this
-/// uses `std::sqrt` and the OP15 replay allows this one lane a relative
-/// tolerance where every other lane is compared bit for bit. The value scales
-/// particle size, so the last ulp of it is not observable.
-f32 Sc2ElementScale(const std::array<f32, 16>& world);
 
 /// Fill one batch row, leaving unassigned exactly what retail leaves unwritten.
 ///

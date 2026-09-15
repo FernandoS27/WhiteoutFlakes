@@ -69,7 +69,9 @@ enum class TimeMode : i32 {
     LoopedBlend = 2, ///< as Looped, cross-fading toward a second sample at the end
 };
 
-/// `dwPrtFlags` — five read bits in the whole shipped runtime.
+/// `dwPrtFlags` — the bits the shipped runtime reads. One more is read and not
+/// reproduced: bit 2 gates a placement test in `Particle_InitLifeAndSize` that
+/// can reject the birth.
 enum class PrtFlag : u32 {
     /// Bit 0: the system runs until told to stop — time mode 1, no release test.
     Persistent = 0x1u,
@@ -78,6 +80,9 @@ enum class PrtFlag : u32 {
     BirthAtEmitter = 0x100u,
     /// Bit 10: the PARTICLE channels are sampled unwrapped (time mode 0).
     ParticleUnwrapped = 0x400u,
+    /// Bit 12: a uniform random initial roll, and for a child actor a second
+    /// uniform turn about world X.
+    RandomRoll = 0x1000u,
     /// Bit 28: ENABLES the `kDistanceEmissionMaxSpeed` clamp.
     ClampDistanceEmission = 0x10000000u,
     /// Bit 29: carry by translation only, never by rotation.
@@ -111,7 +116,7 @@ enum ChannelId : i32 {
     kChOffsetB = 20,      ///< VectorPath       — emitter-local triple, offset
     kChVelocityB = 21,    ///< VelocityVectorPath — emitter-local triple, velocity x60
     kChAccelB = 22,       ///< AccelVectorPath    — emitter-local triple, accel x3600
-    kChSpinAxis = 23,     ///< VectorPath   — free-spin axis, default (0,1,0)
+    kChSpinAxis = 23,     ///< VectorPath   — free-spin axis; unauthored, a random unit vector
     kChRollAngle = 24,    ///< AnglePath    — roll angle, differentiated
     kChRollRate = 25,     ///< AngularVelocityPath — roll rate, x60
 
@@ -134,7 +139,9 @@ enum ChannelId : i32 {
 /// Ids run 1..40, so a 41-entry array indexed by id needs no map.
 inline constexpr i32 kChannelIdCount = 41;
 
-/// File slot -> channel id, `arEmitterPath[0..12]` at `0x030 + 48N`.
+/// File slot -> channel id, `arEmitterPath[0..12]` at `0x030 + 48N`. No code
+/// indexes this table or the next: they are the record of how each `.prt`
+/// path was matched to its channel id, kept beside the ids they explain.
 inline constexpr i32 kEmitterSlotChannel[13] = {
     kChSizeScale,       // 0  arSizeScalePath
     kChTargetCount,     // 1  arCountPath
@@ -198,16 +205,20 @@ enum class Shape : i32 {
 /// the thing the per-frame step actually branches on. Not `dwPrtFlags` — that
 /// word has five read bits in the whole shipped runtime and none of them is a
 /// motion model.
+///
+/// The engine's mask carries one more bit nothing here branches on: 0x2000,
+/// `eSystemType` in {1, 3, 4} (`EmitsActors` answers that off the type).
 enum Capability : u32 {
     kCapOrbit = 0x0001,
     kCapRadial = 0x0002,
     kCapTripleA = 0x0004,
     kCapTripleB = 0x0008,
     kCapSpin = 0x0010,
+    /// Channel 23 is authored: its start lane's minimum is not (0,0,0). Without
+    /// it the spin axis is the unit-sphere point drawn at birth.
     kCapSpinAxis = 0x0040,
     kCapSeek = 0x0080,
     kCapRoll = 0x0100,
-    kCapRibbon = 0x2000, ///< eSystemType in {1,3,4}
 };
 
 /// `eSystemType` — this picks the whole update path, not a variation of one.

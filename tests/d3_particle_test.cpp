@@ -32,6 +32,7 @@
 #include "renderer/particle/d3_emitter_desc.h"
 #include "renderer/particle/d3_path.h"
 #include "renderer/particle/particle_geometry.h"
+#include "renderer/particle/particle2_emitter.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
@@ -492,6 +493,61 @@ TEST_CASE("d3 particle P2: the emission accumulator carries its fraction",
     for (int i = 0; i < 30; ++i)
         bare.Update(1.0f / 60.0f, 1.0f);
     REQUIRE(static_cast<i32>(bare.Pool().AliveCount()) == 1);
+}
+
+TEST_CASE("d3 particle: two actors of one .prt do not emit one cloud", "[d3][particle]") {
+    // Every system started on the same fixed stream, so a crowd of one model
+    // carried identical fires. The factory now seeds each from its actor. Every
+    // channel a particle evaluates keys off the seed the system stream hands it,
+    // so the seeds are the cloud.
+    auto d = MakeDesc(1.0f, 600.0f);
+    const auto cloud = [&](u32 seed) {
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetSystemSeed(seed);
+        e.SetVisible(true);
+        e.SetWorldPosition({0, 0, 0});
+        for (int i = 0; i < 10; ++i)
+            e.Update(1.0f / 60.0f, 1.0f);
+        std::vector<u32> out;
+        for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i)
+            out.push_back(e.States()[e.Pool().AliveAt(i)].seed);
+        return out;
+    };
+    const auto a = cloud(1u), again = cloud(1u), b = cloud(2u);
+    REQUIRE(a.size() == b.size());
+    REQUIRE(!a.empty());
+    bool differ = false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        CHECK(a[i] == again[i]);
+        differ = differ || a[i] != b[i];
+    }
+    CHECK(differ);
+}
+
+TEST_CASE("d3 particle: a restart forgets where the emitter was", "[d3][particle]") {
+    // A distance-rate system emits for the segment it travelled since the last
+    // frame. A scrub restarts it and moves it in the same breath, and a restart
+    // that kept the old placement measured that jump on the next frame and
+    // emitted a trail the emitter never drew.
+    auto d = MakeDesc(0.0f, 600.0f);
+    d->channels[pd3::kChDistanceRate] = ConstPath(1.0f);
+    d->DeriveCapabilities();
+    const auto run = [&](bool restart) {
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        e.SetWorldPosition({0, 0, 0});
+        e.Update(1.0f / 60.0f, 1.0f);
+        if (restart)
+            e.Restart();
+        e.SetWorldPosition({10, 0, 0});
+        e.Update(1.0f / 60.0f, 1.0f);
+        return e.EmittedLastUpdate();
+    };
+    // The same move without a restart is travel, and it does emit.
+    CHECK(run(false) > 0);
+    CHECK(run(true) == 0);
 }
 
 TEST_CASE("d3 particle P3: tmPreSimulate makes a system already running on its first frame",
@@ -1842,6 +1898,181 @@ TEST_CASE("d3 particle P7: with no handle allocator a child system is inert",
     CHECK(em.Pool().AliveCount() == 0);
 }
 
+TEST_CASE("d3 particle: a child actor honours BirthAtEmitter, as a particle does",
+          "[d3][particle][p7]") {
+    using whiteout::flakes::renderer::particle::ChildModelEvent;
+    // Both branches of `ParticleSystem_EmitParticle` run one
+    // `Particle_InitLifeAndSize`. The child branch used to take the sub-frame
+    // lerp whatever dwPrtFlags bit 8 said, so its models spread along a move
+    // the flag pins them against, and every later draw was one off.
+    const auto spawnXs = [](bool atEmitter) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = pd3::SystemType::Ribbon;
+        d->snoActor = 4242;
+        d->emissionPeriod = 1.0f;
+        d->lifetime = 1.0f;
+        d->prtFlags = atEmitter ? static_cast<u32>(pd3::PrtFlag::BirthAtEmitter) : 0u;
+        d->channels[pd3::kChTargetCount] = ConstPath(4.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(60.0f);
+        d->DeriveCapabilities();
+        pd3::Emitter em;
+        em.SetD3Desc(d);
+        em.SetVisible(true);
+        u32 next = 1;
+        em.SetChildOwner(7, 3, [&next] { return next++; });
+        em.SetWorldPosition({0, 0, 0});
+        em.SetWorldPosition({10, 0, 0}); // travelled 0 -> 10 this frame
+        em.Update(1.0f / 60.0f, 1.0f);
+        std::vector<ChildModelEvent> events;
+        em.CollectOutputEvents(events);
+        std::vector<f32> xs;
+        for (const ChildModelEvent& ev : events)
+            xs.push_back(ev.transform.data[3][0]);
+        return xs;
+    };
+    const std::vector<f32> pinned = spawnXs(true);
+    REQUIRE(pinned.size() == 4);
+    for (f32 x : pinned)
+        CHECK(x == 10.0f);
+    const std::vector<f32> spread = spawnXs(false);
+    REQUIRE(spread.size() == 4);
+    bool behind = false;
+    for (f32 x : spread) {
+        CHECK(x >= 0.0f);
+        CHECK(x <= 10.0f);
+        behind = behind || x < 9.0f;
+    }
+    CHECK(behind);
+}
+
+TEST_CASE("d3 particle: the birth record's three draws", "[d3][particle]") {
+    // `Particle_InitLifeAndSize` @0x71000B6BB0 draws a unit-sphere spin axis, an
+    // orbit phase and a random roll; G-D3P-A4 pins the numbers, these pin what
+    // an emitter does with them.
+    const auto run = [](const std::shared_ptr<pd3::EmitterDesc>& d, pd3::Emitter& e) {
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        e.SetWorldPosition({0, 0, 0});
+        for (int i = 0; i < 8; ++i)
+            e.Update(1.0f / 60.0f, 1.0f);
+        REQUIRE(e.Pool().AliveCount() == 8);
+    };
+
+    SECTION("an unauthored spin axis is each particle's own") {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->channels[pd3::kChSpinRate] = ConstPath(0.05f);
+        d->DeriveCapabilities();
+        REQUIRE(d->Cap(pd3::kCapSpin));
+        REQUIRE_FALSE(d->Cap(pd3::kCapSpinAxis));
+        pd3::Emitter e;
+        run(d, e);
+        std::set<f32> xs;
+        for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
+            const Vector3f a = e.States()[e.Pool().AliveAt(i)].spinAxis;
+            CHECK(std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z) == Catch::Approx(1.0f).margin(1e-4f));
+            xs.insert(a.x);
+        }
+        CHECK(xs.size() > 1);
+    }
+
+    SECTION("an authored constant axis replaces the draw, normalised") {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->channels[pd3::kChSpinRate] = ConstPath(0.05f);
+        d->channels[pd3::kChSpinAxis] = ConstVectorPath(0.0f, 0.0f, 2.0f);
+        d->DeriveCapabilities();
+        REQUIRE(d->Cap(pd3::kCapSpinAxis));
+        REQUIRE(d->spinAxisConstant);
+        pd3::Emitter e;
+        run(d, e);
+        for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
+            const Vector3f a = e.States()[e.Pool().AliveAt(i)].spinAxis;
+            CHECK(a.x == 0.0f);
+            CHECK(a.y == 0.0f);
+            CHECK(a.z == 1.0f);
+        }
+    }
+
+    SECTION("dwPrtFlags bit 12 starts each particle at its own roll") {
+        auto d = MakeDesc(1.0f, 600.0f);
+        d->prtFlags = static_cast<u32>(pd3::PrtFlag::RandomRoll);
+        pd3::Emitter e;
+        run(d, e);
+        std::set<f32> rolls;
+        for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
+            const f32 r = e.States()[e.Pool().AliveAt(i)].rollAngle;
+            CHECK(r >= 0.0f);
+            CHECK(r < kTwoPi);
+            rolls.insert(r);
+        }
+        CHECK(rolls.size() > 1);
+    }
+
+    SECTION("an ordinary particle takes no cone draw") {
+        // `Particle_ComputeInitialVelocity` runs in the birth record for types
+        // 2, 3 and 9 alone. A type 0 system with a cone must hand its particles
+        // the seeds a coneless one does.
+        auto plain = MakeDesc(1.0f, 600.0f);
+        auto coned = MakeDesc(1.0f, 600.0f);
+        coned->channels[pd3::kChInitialVelocity] = ConstVectorPath(0.0f, 0.0f, 1.0f);
+        coned->channels[pd3::kChSpreadAngle] = ConstPath(0.5f);
+        coned->DeriveCapabilities();
+        pd3::Emitter a, b;
+        run(plain, a);
+        run(coned, b);
+        for (std::size_t i = 0; i < a.Pool().AliveCount(); ++i)
+            CHECK(a.States()[a.Pool().AliveAt(i)].seed == b.States()[b.Pool().AliveAt(i)].seed);
+    }
+}
+
+TEST_CASE("d3 particle: channel 30 shortens a life by the emitter's speed", "[d3][particle]") {
+    // `life *= 1 - speed * ch30 * dt`, never longer than it was and never
+    // shorter than one frame.
+    const auto lifeAt = [](f32 cut, f32 stepX) {
+        auto d = MakeDesc(1.0f, 60.0f); // one second
+        d->channels[pd3::kChSpeedLifeCut] = ConstPath(cut);
+        d->DeriveCapabilities();
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        e.SetWorldPosition({0, 0, 0});
+        e.SetWorldPosition({stepX, 0, 0});
+        e.Update(1.0f / 60.0f, 1.0f);
+        REQUIRE(e.Pool().AliveCount() == 1);
+        return e.States()[e.Pool().AliveAt(0)].lifetime;
+    };
+    // Ten units a frame is 600 per second: 1 - 600 * 0.001 / 60 = 0.99.
+    CHECK(lifeAt(0.001f, 10.0f) == Catch::Approx(0.99f).margin(1e-5f));
+    CHECK(lifeAt(0.001f, 0.0f) == Catch::Approx(1.0f));
+    CHECK(lifeAt(1.0f, 10.0f) == 1.0f / 60.0f);
+}
+
+TEST_CASE("d3 particle: foliage turns each newborn about Z, and the turn is its gust phase",
+          "[d3][particle]") {
+    // `ParticleSystem_EmitParticle` @0x71000B28BC, types 6 and 8 only: one draw,
+    // a quaternion about world Z into the birth quaternion, whose w the wind
+    // spring then reads as the phase.
+    auto d = MakeDesc(0.0f, 600.0f);
+    d->systemType = pd3::SystemType::WindClutter;
+    d->channels[pd3::kChTargetCount] = ConstPath(6.0f);
+    d->DeriveCapabilities();
+    pd3::Emitter e;
+    e.SetD3Desc(d);
+    e.SetVisible(true);
+    e.SetWorldPosition({0, 0, 0});
+    e.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(e.Pool().AliveCount() == 6);
+    std::set<f32> phases;
+    for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
+        const Quaternion q = e.States()[e.Pool().AliveAt(i)].birthEmitterQuat;
+        CHECK(q.x == 0.0f);
+        CHECK(q.y == 0.0f);
+        CHECK(q.z >= 0.0f);
+        CHECK(q.z * q.z + q.w * q.w == Catch::Approx(1.0f).margin(1e-5f));
+        phases.insert(q.w);
+    }
+    CHECK(phases.size() > 1);
+}
+
 // ---------------------------------------------------------------------------
 // P5 — reachability: does a `.prt` reach a model at all?
 // ---------------------------------------------------------------------------
@@ -2268,9 +2499,9 @@ TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
     Matrix44f view = Matrix44f::identity();
     whiteout::flakes::renderer::particle::BuildGeometryInput in{};
     in.worldToView = &view;
-    std::vector<Vector4f> uv01, uv23;
-    in.d3Uv01 = &uv01;
-    in.d3Uv23 = &uv23;
+    whiteout::flakes::renderer::particle::D3VertexStream side;
+    in.d3 = &side;
+    const std::vector<Vector4f>& uv01 = side.uv01;
     std::vector<whiteout::flakes::renderer::Vertex> out;
     REQUIRE(e.BuildGeometry(in, out) > 0);
     REQUIRE(uv01.size() == out.size());
@@ -2476,11 +2707,10 @@ TEST_CASE("d3 particle: channel 6 rides COLOR1, not the vertex alpha", "[d3][par
         Matrix44f view = Matrix44f::identity();
         whiteout::flakes::renderer::particle::BuildGeometryInput in{};
         in.worldToView = &view;
-        std::vector<Vector4f> uv01, uv23;
-        std::vector<f32> color1;
-        in.d3Uv01 = &uv01;
-        in.d3Uv23 = &uv23;
-        in.d3Color1 = &color1;
+        whiteout::flakes::renderer::particle::D3VertexStream side;
+        in.d3 = &side;
+        const std::vector<Vector4f>& uv01 = side.uv01;
+        const std::vector<f32>& color1 = side.color1;
         std::vector<whiteout::flakes::renderer::Vertex> out;
         REQUIRE(e.BuildGeometry(in, out) >= 6);
         // Every side array stays the same length as the shared stream, which is
@@ -2505,6 +2735,66 @@ TEST_CASE("d3 particle: channel 6 rides COLOR1, not the vertex alpha", "[d3][par
     const auto [alphaBoth, c1Both] = build(0.5f, 0.5f);
     CHECK(alphaBoth == Catch::Approx(alphaHalf5));
     CHECK(c1Both == Catch::Approx(0.5f));
+}
+
+TEST_CASE("d3 particle: the side streams stay level when a non-D3 emitter draws last",
+          "[d3][particle][service]") {
+    // `D3ParticleShading::BeginFrame` refuses a frame whose three side arrays
+    // are not all the vertex stream's length, and draws every D3 quad of that
+    // frame through SD instead. The service levels them before each billboard
+    // build; the last emitter in map order has to be levelled after, too, or a
+    // scene whose last emitter draws quads and is not D3 loses its D3 shading.
+    namespace part = ::whiteout::flakes::renderer::particle;
+    part::ParticleService svc;
+
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = pd3::SystemType::Standard;
+    d->prtFlags = 0x1u;
+    d->shape = pd3::Shape::Point;
+    d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+    d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+    d->channels[pd3::kChBirthSize] = ConstPath(2.0f);
+    d->DeriveCapabilities();
+    auto d3 = std::make_unique<pd3::Emitter>();
+    d3->SetD3Desc(d);
+    part::ParticleEmitter* const first = d3.get();
+    svc.AddEmitter(1u, 0, std::move(d3));
+
+    // A WC3 billboard on a later model, so it builds after the D3 emitter.
+    auto w = std::make_shared<part::EmitterDesc>();
+    w->shape = std::make_shared<part::PlaneShape>();
+    w->lifeSpan = 1.0f;
+    w->sheet.Set(1, 1);
+    w->curves.alpha.SetInterp(part::Interp::Linear);
+    w->curves.alpha.AddKey(0.0f, 1.0f);
+    w->curves.alpha.AddKey(1.0f, 1.0f);
+    w->curves.size.SetInterp(part::Interp::Linear);
+    w->curves.size.AddKey(0.0f, {8.0f, 8.0f});
+    w->curves.size.AddKey(1.0f, {8.0f, 8.0f});
+    auto wc3 = std::make_unique<part::Emitter2>();
+    wc3->SetDesc(w);
+    wc3->SetSeed(808u);
+    wc3->SetEmissionRate(20.0f);
+    part::ParticleEmitter* const last = wc3.get();
+    svc.AddEmitter(2u, 0, std::move(wc3));
+
+    for (int i = 0; i < 30; ++i) {
+        first->SetVisible(true);
+        last->SetVisible(true);
+        svc.Simulate(1.0f / 60.0f);
+    }
+
+    const Matrix44f view = Matrix44f::identity();
+    std::vector<whiteout::flakes::renderer::Vertex> verts;
+    std::vector<part::EmitterDrawList> draws;
+    part::D3VertexStream side;
+    svc.BuildGeometry(view, {verts, draws, nullptr, nullptr, &side});
+    REQUIRE(draws.size() == 2u);
+    REQUIRE(draws.back().model == 2u);
+    REQUIRE(draws.back().vertexCount > 0);
+    CHECK(side.uv01.size() == verts.size());
+    CHECK(side.uv23.size() == verts.size());
+    CHECK(side.color1.size() == verts.size());
 }
 
 TEST_CASE("d3 particle: channel 2 scales the quad's height and not its width",
@@ -2911,11 +3201,13 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         CHECK(q.w == Approx(spun.w));
     }
 
-    SECTION("mode 3's gated arm is its ungated frame, cyclically shifted") {
+    SECTION("mode 3's gated arm keeps the axis as its normal, a quarter turn from the quad") {
         // The two arms of one mode, cross-checked against each other. Ungated
-        // reads (right, up, normal); gated reads the same three vectors as
-        // (normal, right, up). Getting that permutation wrong is a 120-degree
-        // relabel, which is exactly what this catches.
+        // reads (right, up, normal); gated reads (-up, right, normal) — the
+        // selected axis stays in column 2 and the other two turn a quarter
+        // about it. G-D3P-11 records exactly that on every gated case of modes
+        // 3 to 6; the cyclic shift the along-axis modes take matches none of
+        // them (F17).
         pd3::FrameInput in;
         in.camForward = camF;
         in.axis = {0.0f, 1.0f, 0.0f};
@@ -2929,25 +3221,29 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
 
         Quaternion q = Quaternion::identity();
         REQUIRE(BuildChildOrientation(Mode(3), in, q));
-        CHECK(same(col(q, 0), normal));
+        CHECK(same(col(q, 0), {-f.up.x, -f.up.y, -f.up.z}));
         CHECK(same(col(q, 1), f.right));
-        CHECK(same(col(q, 2), f.up));
+        CHECK(same(col(q, 2), normal));
     }
 
     SECTION("a velocity-aligned child faces the way it is going") {
-        // Modes 2, 3 and 12 -- 428 child-actor systems. Column 0 is the axis,
+        // Modes 2 and 12 -- 417 child-actor systems. Column 0 is the axis,
         // which for a Z-up +X-forward model is its facing, and column 2 stays
-        // world up for as long as the axis is horizontal.
+        // world up for as long as the axis is horizontal. Mode 3's 11 put the
+        // axis in column 2 instead (F17).
         pd3::FrameInput in;
         in.camForward = camF;
         in.axis = {0.0f, 2.5f, 0.0f}; // unnormalised on purpose
         in.axisUnit = in.axis;
-        for (i32 mode : {2, 3, 12}) {
+        for (i32 mode : {2, 12}) {
             Quaternion q = Quaternion::identity();
             REQUIRE(BuildChildOrientation(Mode(mode), in, q));
             CHECK(same(col(q, 0), {0.0f, 1.0f, 0.0f}));
             CHECK(same(col(q, 2), {0.0f, 0.0f, 1.0f}));
         }
+        Quaternion across = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(Mode(3), in, across));
+        CHECK(same(col(across, 2), {0.0f, 1.0f, 0.0f}));
         // Straight up has no horizontal perpendicular, so the engine writes
         // nothing and the emitter's quaternion stands.
         pd3::FrameInput vert = in;

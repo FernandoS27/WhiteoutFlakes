@@ -166,7 +166,7 @@ void Emitter2::SetSc2Scene(const Matrix44f& worldToView, f32 actorWorldScale) {
     // type-0 basis is exactly them, so a model's +Y looks away from the eye
     // and its SC2 front, −Y, faces it.
     sc2_->camera = {cam.billboardRight, cam.direction, cam.billboardUp};
-    sc2_->actorWorldScale = actorWorldScale > 0.0f ? actorWorldScale : 1.0f;
+    sc2_->actorWorldScale = Sc2HostScale(actorWorldScale);
 }
 
 void Emitter2::TickSc2(f32 elapsed, f32 emissionScaler) {
@@ -192,7 +192,6 @@ void Emitter2::TickSc2(f32 elapsed, f32 emissionScaler) {
     f.elemScaleX = 1.0f;
     f.worldMatrix = placement_.modelToWorld;
     f.boneMatrix = placement_.modelToWorld;
-    f.hasBone = false;
     f.worldPos = placement_.worldPos;
     // Renderer units per SC2 unit, which the tick takes off every host-space
     // input so the runtime runs in SC2 units; BUILD puts it back.
@@ -224,7 +223,7 @@ i32 Emitter2::BuildSc2Geometry(const Emitter2& e, const BuildGeometryInput& in,
 
     // The runtime's space: the transform without the host's world scale, as the
     // tick handed it to the simulation. The corners go back into the host's.
-    const f32 hostScale = e.sc2_->actorWorldScale;
+    const f32 hostScale = Sc2HostScale(e.sc2_->actorWorldScale);
     Sc2BatchFrame frame;
     frame.world = Sc2Mat16(Sc2FromHostSpace(e.placement_.modelToWorld, hostScale));
     frame.emitterTime = e.sc2_->clock.emitterTime;
@@ -244,7 +243,7 @@ i32 Emitter2::BuildSc2Geometry(const Emitter2& e, const BuildGeometryInput& in,
                                                                         : Sc2SortKey::Depth;
     // The eye into SC2 units with everything else; the directions carry no scale.
     Sc2QuadCamera camera = Sc2CameraFromView(*in.worldToView);
-    if (hostScale > 0.0f && hostScale != 1.0f)
+    if (hostScale != 1.0f)
         camera.eye = {camera.eye.x / hostScale, camera.eye.y / hostScale, camera.eye.z / hostScale};
     Sc2BuildQuads(e.sc2_->store, e.sc2_->batch, camera, flags,
                   e.desc_->sc2.Has(ParticleFlag::SortReverse), out, sort, hostScale);

@@ -131,7 +131,6 @@ Path FromColor(const d3n::ColorPath& src) {
 constexpr i32 kParticleStageTypes[pd3::MaterialDesc::kMaxLayers] = {1, 19, 12, 14};
 
 void BuildMaterial(const d3n::Particle& prt, pd3::MaterialDesc& out) {
-    out.snoShaderMap = prt.tMaterial.snoShaderMap.valid() ? prt.tMaterial.snoShaderMap.id : -1;
     for (const i32 want : kParticleStageTypes) {
         for (const auto& e : prt.tMaterial.arTextures) {
             if (D3TextureTypeOf(e) != want)
@@ -175,12 +174,9 @@ std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i
     d->lifetimeRandom = {prt.tLifetimeRandom.nMode, prt.tLifetimeRandom.flMin,
                          prt.tLifetimeRandom.flMax};
 
-    d->mass = prt.flMass;
-    d->maxInstances = prt.nMaxInstances;
     d->maxDistance = prt.flMaxDistance;
     d->cameraDistScale = prt.flCameraDistScale;
 
-    d->burstZOffset = prt.flBurstZOffset;
     d->swayFrequency = prt.flSwayFrequency;
     d->swayDamping = prt.flSwayDamping;
     d->swayMaxOffset = prt.flSwayMaxOffset;

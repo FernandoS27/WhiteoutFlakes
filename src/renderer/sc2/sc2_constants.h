@@ -132,23 +132,22 @@ inline constexpr f32 kInv255 = 1.0f / 255.0f;
 
 // -- the ground response ---------------------------------------------------------
 
-/// `0x103C2C9D0`, the RIBBON's swept radius against the map colliders.
-/// DISAGREES — F5: the particle step's push-out cites `0x103C2A004` (0.05) under
-/// the same role name; see `kParticleCollidePushOut`.
-inline constexpr f32 kCollideRadius = 0.03f;
-/// `0x103C2A004`, the particle step's swept radius and terrain push-out.
-/// DISAGREES — F5 with `kCollideRadius`.
-inline constexpr f32 kParticleCollidePushOut = 0.05f;
+/// `0x103C2C9D0`, 0.03 in the 4.8 image: the RIBBON's swept radius against the
+/// map colliders.
+inline constexpr f32 kRibbonCollideRadius = 0.03f;
+/// `0x103C2A004`, 0.05 in the 4.8 image: the particle step's swept radius and
+/// terrain push-out. A second dword with a second consumer, not a disagreement
+/// with the ribbon's.
+inline constexpr f32 kParticleCollideRadius = 0.05f;
 
 // -- the spline and the pole ------------------------------------------------------
 
-/// `0x103C2BC94` as the SPAWN spline's vertical test reads it (bits
-/// `0x3F7FBE76`; the oracle tooling agrees).
-/// DISAGREES — F4: the model-particle pose spells the same dword `0x3F7FBE77`.
-inline constexpr f32 kSplineVerticalCos = 0.99899995f;
-/// `0x103C2BC94` as the model-particle pose's pole test reads it.
-/// DISAGREES — F4 with `kSplineVerticalCos`, one ULP apart.
-inline constexpr f32 kModelPoleCos = 0.999f;
+/// `0x103C2BC94`, bits `0x3F7FBE77` (`float(0.999)`) in the 4.8 image the
+/// oracle maps: the one cosine both the spawn spline's vertical test
+/// (`ucomiss` at `0x10291FB72`) and the model-particle pose's pole test
+/// (`0x10293B5C5`) compare against. The spline once spelled it `0.99899995f`,
+/// one ULP low.
+inline constexpr f32 kVerticalCos = 0.999f;
 
 // -- quantisation ---------------------------------------------------------------
 
@@ -195,7 +194,12 @@ enum SystemStateFlag : u32 {
     /// tracing what the tick READS, which is the only place either bit is
     /// consumed (OP3).
     kStateScaleTimeAlso = 0x40,
-    kStateEmissionDisabled = 0x80,
+    /// The RE's `0x120` table calls it emission disabled, but the only
+    /// consumer the gates exercise is `UpdateModelParticle`'s: set, a
+    /// world-space type 7/8 reads `orientVec` as one plain direction rather
+    /// than a packed pair (`gate_modelparticle.py`). Named for what it was
+    /// measured doing.
+    kStatePlainOrient = 0x80,
     /// `Tick`'s second consumer of this bit: a resync forces the FULL-step
     /// path, so the sweep never straddles the discontinuity (OP3).
     kStateSquirtResync = 0x100,

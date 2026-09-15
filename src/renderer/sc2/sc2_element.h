@@ -78,8 +78,8 @@ f32 SampleWave(u32 type, f32 phase, f32 amp, Rng* rng = nullptr);
 // HEIGHT, so the surface is horizontal (normal = up); the dual query's
 // forward-particle-system half has nothing to hit in the viewer. Positions and
 // velocity are in the space the query answers (scene).
-// The radius and the speed floor are `kCollideRadius` / `kCollideSpeedSq` in
-// `sc2_constants.h`.
+// The radius and the speed floor are `kRibbonCollideRadius` / `kCollideSpeedSq`
+// in `sc2_constants.h`.
 
 struct GroundHit {
     Vector3f pos;

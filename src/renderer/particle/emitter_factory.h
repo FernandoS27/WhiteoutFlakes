@@ -54,11 +54,12 @@ std::unique_ptr<Emitter2> Create(std::shared_ptr<const EmitterDesc> desc,
                                  const core::ParticleBehavior& behavior, u32 seed,
                                  ChildModelOwner child = {});
 
-/// A Diablo III emitter riding @p bone at @p offset. Its children report to
-/// @p child when it carries an allocator; without one a child-actor system
-/// counts its emissions and spawns nothing.
+/// A Diablo III emitter riding @p bone at @p offset, its streams seeded from
+/// @p seed. Its children report to @p child when it carries an allocator;
+/// without one a child-actor system counts its emissions and spawns nothing.
 std::unique_ptr<d3::Emitter> CreateD3(std::shared_ptr<const d3::EmitterDesc> desc, i32 bone,
-                                      const Matrix44f& offset, ChildModelOwner child = {});
+                                      const Matrix44f& offset, u32 seed,
+                                      ChildModelOwner child = {});
 
 } // namespace EmitterFactory
 

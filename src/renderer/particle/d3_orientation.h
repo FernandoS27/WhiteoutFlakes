@@ -30,9 +30,9 @@
 //
 // What is NOT recovered here is how the shader turns the quaternion into corner
 // positions: `Particle_WriteQuadVertices` emits a local 2-D corner pair and the
-// expansion happens on the GPU, which this audit cannot reach. So these build the
-// frame the engine builds, and choosing which column is "right" and which is the
-// normal is still a rendering decision.
+// expansion happens on the GPU, which this audit cannot reach. Which column is
+// "right" and which is the normal was settled from the corpus instead — see
+// `QuadFrame`.
 // ============================================================================
 
 #include "d3_channels.h"  // PrtRenderMode
@@ -69,6 +69,32 @@ inline f32 CandidateLengthSq(const Vector3f& v) {
 inline Vector3f FrameNormalise(const Vector3f& v, f32 length) {
     const f32 inv = 1.0f / length;
     return {v.x * inv, v.y * inv, v.z * inv};
+}
+
+/// What every arm that builds its own basis computes, step 2 above.
+struct TwoCrossFrame {
+    Vector3f c; ///< the first cross, normalised
+    Vector3f d; ///< the cross back, normalised only when it has length
+};
+
+/// `c = normalise(a × b)`, false when that collapses; then `d = s × c`, or
+/// `c × s` under @p cFirst, normalised only when it has length.
+///
+/// The operand order is each arm's own and is passed, not normalised away:
+/// `x × y` and `-(y × x)` are the same vector except in the sign of a zero,
+/// and a zero's sign survives into the quaternion.
+inline bool TwoCross(const Vector3f& a, const Vector3f& b, const Vector3f& s, bool cFirst,
+                     TwoCrossFrame& out) {
+    const Vector3f c0 = FrameCross(a, b);
+    const f32 cl = FrameLength(c0);
+    if (cl <= kFrameEpsilon)
+        return false;
+    out.c = FrameNormalise(c0, cl);
+    out.d = cFirst ? FrameCross(out.c, s) : FrameCross(s, out.c);
+    const f32 dl = FrameLength(out.d);
+    if (dl > kFrameEpsilon)
+        out.d = FrameNormalise(out.d, dl);
+    return true;
 }
 
 /// Branch-on-largest-diagonal, from a matrix given by its COLUMNS.
@@ -116,47 +142,22 @@ inline Quaternion QuatFromBasis(const Vector3f& c0, const Vector3f& c1, const Ve
 /// the frame. Columns are (-axis, axis x up, (-axis) x that). False means the
 /// engine wrote nothing and the caller's quaternion stands.
 inline bool OrientBillboard(const Vector3f& axis, Quaternion& out) {
-    const Vector3f c0 = FrameCross(axis, kWorldUp);
-    const f32 cl = FrameLength(c0);
-    if (cl <= kFrameEpsilon)
-        return false;
-    const Vector3f c = FrameNormalise(c0, cl);
     const Vector3f u{-axis.x, -axis.y, -axis.z};
-    Vector3f b = FrameCross(u, c);
-    const f32 bl = FrameLength(b);
-    if (bl > kFrameEpsilon)
-        b = FrameNormalise(b, bl);
-    out = QuatFromBasis(u, c, b);
+    TwoCrossFrame f;
+    if (!TwoCross(axis, kWorldUp, u, false, f))
+        return false;
+    out = QuatFromBasis(u, f.c, f.d);
     return true;
 }
 
-/// Render mode 13 — the axis flattened onto XY and normalised, which is what makes
-/// this the world-vertical-locked quad. The gate bit permutes the columns.
-inline bool OrientFlattened(const Vector3f& axis, bool gated, Quaternion& out) {
-    const f32 length = std::sqrt((axis.x * axis.x + axis.y * axis.y) + 0.0f);
-    if (length <= kFrameEpsilon)
-        return false;
-    const f32 inv = 1.0f / length;
-    const Vector3f u{-(axis.x * inv), -(axis.y * inv), inv * 0.0f};
-    const Vector3f c0 = FrameCross(kWorldUp, u);
-    const f32 cl = FrameLength(c0);
-    if (cl <= kFrameEpsilon)
-        return false;
-    const Vector3f c = FrameNormalise(c0, cl);
-    Vector3f b = FrameCross(u, c);
-    const f32 bl = FrameLength(b);
-    if (bl > kFrameEpsilon)
-        b = FrameNormalise(b, bl);
-    out = gated ? QuatFromBasis(u, c, b) : QuatFromBasis(c, b, u);
-    return true;
-}
-
-/// The three-way pick at the head of `Particle_SelectOrientationAxis` and of the
-/// mode-2 helper: the raw candidate, else the stored unit vector, else world X.
+/// The three-way pick at the head of `Particle_SelectOrientationAxis`
+/// @0x71000BA5A0 (render modes 3, 4, 5 and 6) and of the mode-2 helper: the raw
+/// candidate, else the stored unit vector, else world X.
 ///
 /// The two candidates are a particle's frame displacement and its last non-zero
 /// direction, so a particle that has stopped keeps pointing where it was going,
-/// and only one that has never moved falls through to world X.
+/// and only one that has never moved falls through to world X. That fallback is
+/// what keeps a zero-velocity particle from getting a NaN frame.
 inline Vector3f SelectFrameAxis(const Vector3f& candidate, const Vector3f& fallback) {
     Vector3f n = candidate;
     if (CandidateLengthSq(n) >= kFrameEpsilon) {
@@ -171,33 +172,10 @@ inline Vector3f SelectFrameAxis(const Vector3f& candidate, const Vector3f& fallb
     return n;
 }
 
-/// `Particle_SelectOrientationAxis` @0x71000BA5A0 — render modes 3, 4, 5 and 6.
-///
-/// The three-way fallback (candidate, else fallback, else world X) is what keeps a
-/// zero-velocity particle from getting a NaN frame. Columns are (-c, b, axis), so
-/// here the selected axis is column 2 rather than column 0.
-inline bool OrientFromAxis(const Vector3f& candidate, const Vector3f& fallback,
-                           Quaternion& out) {
-    const Vector3f n = SelectFrameAxis(candidate, fallback);
-    const Vector3f c0 = FrameCross(n, kWorldUp);
-    const f32 cl = FrameLength(c0);
-    if (cl <= kFrameEpsilon)
-        return false;
-    const Vector3f c = FrameNormalise(c0, cl);
-    Vector3f b = FrameCross(c, n);
-    const f32 bl = FrameLength(b);
-    if (bl > kFrameEpsilon)
-        b = FrameNormalise(b, bl);
-    out = QuatFromBasis({-c.x, -c.y, -c.z}, b, n);
-    return true;
-}
-
 /// The frame the ungated modes leave, as the right/up pair a CPU-built quad
 /// needs.
 ///
-/// The header above says the column-to-axis mapping is "still a rendering
-/// decision". It is not: **column order is (right, up, normal)**, and the corpus
-/// proves it. Modes 6 and 13 are two different constructions — mode 6 takes the
+/// **Column order is (right, up, normal)**, and the corpus proves it. Modes 6 and 13 are two different constructions — mode 6 takes the
 /// negated camera direction through `Particle_SelectOrientationAxis`'s column
 /// order `(-c, b, n)`, mode 13 takes the same vector flattened through its own
 /// `(c, b, u)` — and they agree vector for vector, right for right and up for up,
@@ -220,19 +198,15 @@ struct QuadFrame {
 };
 
 /// Columns `(-c, b, n)`: the axis is the quad's NORMAL, so the quad stands
-/// ACROSS its own direction. Modes 3, 4, 5 and 6.
+/// ACROSS its own direction — `Particle_SelectOrientationAxis`'s column order,
+/// with the selected axis in column 2 rather than column 0. Modes 3, 4, 5 and
+/// 6; G-D3P-11 replays it through `BuildQuadFrame` to the bit.
 inline bool FrameAcrossAxis(const Vector3f& n, QuadFrame& out) {
-    const Vector3f c0 = FrameCross(n, kWorldUp);
-    const f32 cl = FrameLength(c0);
-    if (cl <= kFrameEpsilon)
+    TwoCrossFrame f;
+    if (!TwoCross(n, kWorldUp, n, true, f))
         return false;
-    const Vector3f c = FrameNormalise(c0, cl);
-    Vector3f b = FrameCross(c, n);
-    const f32 bl = FrameLength(b);
-    if (bl > kFrameEpsilon)
-        b = FrameNormalise(b, bl);
-    out.right = {-c.x, -c.y, -c.z};
-    out.up = b;
+    out.right = {-f.c.x, -f.c.y, -f.c.z};
+    out.up = f.d;
     return true;
 }
 
@@ -257,9 +231,14 @@ inline bool FrameAlongAxis(const Vector3f& n, const Vector3f& about, bool negate
     return true;
 }
 
-/// Mode 13, `OrientFlattened` read out: up is world Z and the quad yaws to face
-/// the camera. The vertical billboard a bolt, a beam or a column of flame wants —
-/// and the mode this build used to draw flat on the ground.
+/// Mode 13 read out: up is world Z and the quad yaws to face the camera. The
+/// vertical billboard a bolt, a beam or a column of flame wants — and the mode
+/// this build used to draw flat on the ground.
+///
+/// The engine flattens the negated camera direction onto XY, normalises it
+/// (`FlattenedCameraAxis`) and crosses it with world up, the gate bit permuting
+/// the columns: `(c, b, u)` ungated. This is that frame without the second
+/// normalise, so G-D3P-11 holds it to 1e-5 rather than to the bit.
 inline bool FrameVertical(const Vector3f& camForward, QuadFrame& out) {
     const f32 length = std::sqrt((camForward.x * camForward.x + camForward.y * camForward.y) + 0.0f);
     if (length <= kFrameEpsilon)
@@ -378,16 +357,26 @@ inline bool BuildQuadFrame(PrtRenderMode renderMode, const FrameInput& in, QuadF
 /// (`SelectFrameAxis` normalises); mode 0 hands it a view direction, which
 /// already is one.
 inline bool GatedFrame(const Vector3f& n, Quaternion& out) {
-    const Vector3f c0 = FrameCross(kWorldUp, n);
-    const f32 cl = FrameLength(c0);
-    if (cl <= kFrameEpsilon)
+    TwoCrossFrame f;
+    if (!TwoCross(kWorldUp, n, n, false, f))
         return false;
-    const Vector3f c = FrameNormalise(c0, cl);
-    Vector3f b = FrameCross(n, c);
-    const f32 bl = FrameLength(b);
-    if (bl > kFrameEpsilon)
-        b = FrameNormalise(b, bl);
-    out = QuatFromBasis(n, c, b);
+    out = QuatFromBasis(n, f.c, f.d);
+    return true;
+}
+
+/// The gated arm of the across-axis modes 3, 4, 5 and 6, which is NOT the
+/// cyclic shift the others take.
+///
+/// Columns `((up x n) x n, up x n, n)`: the selected axis stays in column 2, as
+/// it does ungated, and the first cross runs from up rather than into it — a
+/// quarter turn about @p n against the ungated `(-c, b, n)`. G-D3P-11 pins it
+/// to the bit on every gated case of the four modes; `GatedFrame` put the axis
+/// in column 0 and matched none of them (F17).
+inline bool GatedFrameAcross(const Vector3f& n, Quaternion& out) {
+    TwoCrossFrame f;
+    if (!TwoCross(kWorldUp, n, n, true, f))
+        return false;
+    out = QuatFromBasis(f.d, f.c, n);
     return true;
 }
 
@@ -418,10 +407,9 @@ inline bool FlattenedCameraAxis(const Vector3f& camForward, Vector3f& out) {
 /// quaternion, which @0x71000B1EC0 copies from `sys+0x64` into the scratch
 /// particle before the switch runs.
 ///
-/// The cyclic shift holds only where both arms are built the same way -- the
-/// `Particle_SelectOrientationAxis` family and mode 13. Mode 12's ungated arm
-/// is a construction of its own and its gated frame is a quarter turn about
-/// the shared normal, and modes 2 and 11 lose the camera outright.
+/// The cyclic shift holds for mode 13 and for the along-axis modes 2, 11 and
+/// 12, which lose the camera outright. The across-axis modes 3 to 6 keep their
+/// axis in column 2 instead — `GatedFrameAcross`.
 ///
 /// Of the 4,795 shipped child-actor systems: mode 7 takes 2,143 and mode 1
 /// 1,116, so 68% want the emitter quaternion and nothing else. The rest are
@@ -433,27 +421,29 @@ inline bool BuildChildOrientation(PrtRenderMode renderMode, const FrameInput& in
     using enum PrtRenderMode;
     switch (renderMode) {
     case CameraGated:
-        // The one mode with no ungated arm at all. `OrientBillboard` is this
-        // same construction with the negation folded in; it keeps its own copy
-        // because G-D3P-11 pins that one bit for bit.
+        // The one mode with no ungated arm at all. `OrientBillboard` is the
+        // gated construction with the negation folded in, and the axis crossed
+        // on the other side.
         return OrientBillboard(in.camForward, out);
     case AxisStreak:
-    case AcrossAxis:
     case AxisUpright:
         return GatedFrame(SelectFrameAxis(in.axis, in.axisUnit), out);
-    case AcrossSystemXY:
-        return GatedFrame(SelectFrameAxis({in.fromSystem.x, in.fromSystem.y, 0.0f}, in.axisUnit),
-                          out);
-    case AcrossSystem:
     case SystemStreak:
         // Modes 2 and 11 lose the camera here: `Particle_OrientationBasisHelper`
         // @0x71000BBF10 opens with `if (gated) { Particle_QuaternionFromAxes(...);
         // return; }` and never reaches the cross with the view direction that
         // gives the ungated arm its billboard.
         return GatedFrame(SelectFrameAxis(in.fromSystem, in.axisUnit), out);
+    case AcrossAxis:
+        return GatedFrameAcross(SelectFrameAxis(in.axis, in.axisUnit), out);
+    case AcrossSystemXY:
+        return GatedFrameAcross(
+            SelectFrameAxis({in.fromSystem.x, in.fromSystem.y, 0.0f}, in.axisUnit), out);
+    case AcrossSystem:
+        return GatedFrameAcross(SelectFrameAxis(in.fromSystem, in.axisUnit), out);
     case AcrossCameraXY:
-        return GatedFrame(SelectFrameAxis({-in.camForward.x, -in.camForward.y, 0.0f}, in.axisUnit),
-                          out);
+        return GatedFrameAcross(
+            SelectFrameAxis({-in.camForward.x, -in.camForward.y, 0.0f}, in.axisUnit), out);
     case EmitterFrame:
         out = in.emitterQuat;
         return true;
