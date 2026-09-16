@@ -252,6 +252,14 @@ public:
         if (hasTangents)
             cmd->BindVertexBuffer(1, geo.tangentVb, sizeof(Vector4f));
 
+        // The second unwrap, at a fixed slot so it doesn't shuffle the tangent
+        // and bone slots below. `hd_ps` reads baked ambient occlusion (ORM.x)
+        // through it; without the stream the VS duplicates UV0 into uv.zw and
+        // the AO_MAP permutation has to stay off.
+        const bool hasUv1 = (geo.uv1Vb != gfx::BufferHandle::Invalid);
+        if (hasUv1)
+            cmd->BindVertexBuffer(3, geo.uv1Vb, sizeof(Vector2f));
+
         // Bone palette CB: prefer the per-actor handle (Path A) when
         // the actor's SkinningSystem owns it; otherwise fall back to
         // the per-geoset CB (Path B). The vertex buffer's boneIdx
@@ -351,7 +359,10 @@ public:
                 rs.shaderId = job.programShaderId;
                 rs.alphaMode = static_cast<u8>(matParams.alpha);
                 rs.numColors = 0;
-                rs.numTexCoords = 1;
+                rs.numTexCoords = hasUv1 ? 2 : 1;
+                // AO_MAP samples ORM.x at UV1. Both halves have to be there:
+                // the stream, and an ORM to read the channel out of.
+                rs.aoMap = hasUv1 && layer.ormMapId >= 0;
                 rs.numTangents = hasTangents ? 1 : 0;
                 rs.numWeights = hasBones ? 4 : 0;
                 rs.boneBuffer = boneBuffer;
@@ -375,11 +386,21 @@ public:
                 req.material = matParams;
 
                 if (hasBones) {
-                    req.layout = hasTangents ? bls::VertexLayoutKind::MeshHDSkinned
-                                             : bls::VertexLayoutKind::MeshHDSkinnedNoTangent;
+                    if (hasUv1)
+                        req.layout = hasTangents
+                                         ? bls::VertexLayoutKind::MeshHDSkinnedUv1
+                                         : bls::VertexLayoutKind::MeshHDSkinnedNoTangentUv1;
+                    else
+                        req.layout = hasTangents
+                                         ? bls::VertexLayoutKind::MeshHDSkinned
+                                         : bls::VertexLayoutKind::MeshHDSkinnedNoTangent;
                 } else {
-                    req.layout = hasTangents ? bls::VertexLayoutKind::MeshHDTangent
-                                             : bls::VertexLayoutKind::ParticleSD;
+                    if (hasUv1)
+                        req.layout = hasTangents ? bls::VertexLayoutKind::MeshHDTangentUv1
+                                                 : bls::VertexLayoutKind::MeshHDPlainUv1;
+                    else
+                        req.layout = hasTangents ? bls::VertexLayoutKind::MeshHDTangent
+                                                 : bls::VertexLayoutKind::ParticleSD;
                 }
                 req.topology = gfx::PrimitiveTopology::TriangleList;
                 req.rtvFormat = RenderPipeline::kHdrSceneFormat;

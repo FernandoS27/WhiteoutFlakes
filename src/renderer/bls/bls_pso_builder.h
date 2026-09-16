@@ -31,6 +31,17 @@ enum class VertexLayoutKind : u8 {
     // permute. CornEffectsVertex (corn_effects_vertex.h) is the host-side struct
     // with the same field offsets so VB writes are trivially memcpy-able.
     CornFx = 8,
+
+    // HD variants that additionally bind the standalone TEXCOORD1 stream
+    // (GPUGeoset::uv1Vb) at slot 3 — the second unwrap Reforged bakes ambient
+    // occlusion into. Slot 3 is fixed rather than packed after whatever else
+    // the draw binds, so adding UV1 doubles the HD layout set instead of
+    // multiplying it. `MeshHDPlainUv1` is the rigid/untangented case that
+    // otherwise borrows `ParticleSD`.
+    MeshHDPlainUv1 = 9,
+    MeshHDTangentUv1 = 10,
+    MeshHDSkinnedUv1 = 11,
+    MeshHDSkinnedNoTangentUv1 = 12,
 };
 
 // `api` selects the input layout: D3D12 binds the full ATTR0..7 set to match

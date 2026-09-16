@@ -1154,6 +1154,8 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         }
         if ((i32)mesh.tangents.size() == vc)
             sg.tangents = mesh.tangents;
+        if ((i32)mesh.uvs1.size() == vc)
+            sg.uv1 = mesh.uvs1;
         sg.indices = mesh.indices;
     }
 
@@ -2346,6 +2348,19 @@ void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
             vertices.data());
 
         const bool hasUv1Data = (i32)mesh.uvs1.size() == sg.vertexCount && sg.vertexCount > 0;
+        // Standalone TEXCOORD1 stream. Unconditional where the data exists,
+        // unlike `unskinnedVb1` below: that one is an alternative slot-0 copy
+        // for a layer whose coordId names set 1, while this one rides
+        // alongside set 0 so `hd_ps` can read baked AO through the second
+        // unwrap in the same draw.
+        if (hasUv1Data) {
+            sg.uv1Vb = rs_.Pipeline().Gfx()->CreateBuffer(
+                {
+                    .size = (u32)(sizeof(Vector2f) * sg.vertexCount),
+                    .usage = gfx::BufferUsage::Vertex,
+                },
+                mesh.uvs1.data());
+        }
         bool wantsUv1 = false;
         if (hasUv1Data && mesh.materialId >= 0) {
             for (const auto& mat : tmpl.materials) {
@@ -2438,6 +2453,7 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                 gg.unskinnedVb = shared.unskinnedVb;
                 gg.unskinnedVb1 = shared.unskinnedVb1;
                 gg.tangentVb = shared.tangentVb;
+                gg.uv1Vb = shared.uv1Vb;
                 gg.boneVb = shared.boneVb;
                 gg.indexCount = shared.indexCount;
                 gg.vertexCount = shared.vertexCount;
@@ -2519,6 +2535,15 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                         .usage = gfx::BufferUsage::Vertex,
                     },
                     sg.tangents.data());
+            }
+
+            if ((i32)sg.uv1.size() == gg.vertexCount && gg.vertexCount > 0) {
+                gg.uv1Vb = rs_.Pipeline().Gfx()->CreateBuffer(
+                    {
+                        .size = (u32)(sizeof(Vector2f) * sg.uv1.size()),
+                        .usage = gfx::BufferUsage::Vertex,
+                    },
+                    sg.uv1.data());
             }
 
             if (skinInfo && (i32)skinInfo->vertices.size() == gg.vertexCount) {

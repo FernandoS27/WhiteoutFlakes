@@ -24,6 +24,7 @@ void ModelTemplate::ReleaseGPU(gfx::IGFXDevice& gfx) {
         gfx.Destroy(g.unskinnedVb);
         gfx.Destroy(g.unskinnedVb1);
         gfx.Destroy(g.tangentVb);
+        gfx.Destroy(g.uv1Vb);
         gfx.Destroy(g.boneVb);
     }
     sharedGeosets.clear();

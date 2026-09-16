@@ -30,6 +30,8 @@ struct ModelTemplate {
 
         gfx::BufferHandle unskinnedVb1 = gfx::BufferHandle::Invalid;
         gfx::BufferHandle tangentVb = gfx::BufferHandle::Invalid;
+        /// Standalone TEXCOORD1 stream — see GPUGeoset::uv1Vb.
+        gfx::BufferHandle uv1Vb = gfx::BufferHandle::Invalid;
         gfx::BufferHandle boneVb = gfx::BufferHandle::Invalid;
         i32 indexCount = 0;
         i32 vertexCount = 0;

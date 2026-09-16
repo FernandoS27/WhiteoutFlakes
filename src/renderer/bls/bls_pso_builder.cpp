@@ -201,6 +201,95 @@ constexpr gfx::InputElement kParticleSDSkinnedFull[] = {
     {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
 };
 
+// ---- HD + standalone TEXCOORD1 (slot 3) ----
+// The second unwrap rides in its own tightly-packed Vector2f buffer, so every
+// one of these is its non-UV1 twin plus one element. Slot 3 is always free:
+// the HD draws use slot 1 for tangents, slot 2 for bones.
+constexpr gfx::InputElement kMeshHDPlainUv1[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+};
+
+constexpr gfx::InputElement kMeshHDTangentUv1[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+};
+
+constexpr gfx::InputElement kMeshHDSkinnedUv1[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 2},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 2},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+};
+
+constexpr gfx::InputElement kMeshHDSkinnedNoTangentUv1[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+};
+
+// D3D12 full-signature twins. ATTR4 is the one element that stops being
+// aliased — it now names the real UV1 buffer — and the rest of the signature
+// is filled exactly as the non-UV1 layouts fill it.
+constexpr gfx::InputElement kMeshHDPlainUv1Full[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
+constexpr gfx::InputElement kMeshHDTangentUv1Full[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 0}, // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 0, 0},  // aliased
+};
+
+constexpr gfx::InputElement kMeshHDSkinnedUv1Full[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 2},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 2},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+};
+
+constexpr gfx::InputElement kMeshHDSkinnedNoTangentUv1Full[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 3},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
 } // namespace
 
 std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k, gfx::GfxApi api) {
@@ -236,6 +325,20 @@ std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k, gfx::GfxApi api
                     : std::span{kMeshHDSkinnedNoTangent, std::size(kMeshHDSkinnedNoTangent)};
     case VertexLayoutKind::CornFx:
         return {kCornFx, std::size(kCornFx)};
+    case VertexLayoutKind::MeshHDPlainUv1:
+        return full ? std::span{kMeshHDPlainUv1Full, std::size(kMeshHDPlainUv1Full)}
+                    : std::span{kMeshHDPlainUv1, std::size(kMeshHDPlainUv1)};
+    case VertexLayoutKind::MeshHDTangentUv1:
+        return full ? std::span{kMeshHDTangentUv1Full, std::size(kMeshHDTangentUv1Full)}
+                    : std::span{kMeshHDTangentUv1, std::size(kMeshHDTangentUv1)};
+    case VertexLayoutKind::MeshHDSkinnedUv1:
+        return full ? std::span{kMeshHDSkinnedUv1Full, std::size(kMeshHDSkinnedUv1Full)}
+                    : std::span{kMeshHDSkinnedUv1, std::size(kMeshHDSkinnedUv1)};
+    case VertexLayoutKind::MeshHDSkinnedNoTangentUv1:
+        return full
+                   ? std::span{kMeshHDSkinnedNoTangentUv1Full,
+                               std::size(kMeshHDSkinnedNoTangentUv1Full)}
+                   : std::span{kMeshHDSkinnedNoTangentUv1, std::size(kMeshHDSkinnedNoTangentUv1)};
     }
     return {kMeshSD, std::size(kMeshSD)};
 }

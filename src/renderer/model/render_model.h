@@ -46,6 +46,13 @@ struct StagedGeoset {
     std::vector<u32> indices;
 
     std::vector<Vector4f> tangents;
+    /// @brief Second UV set, as a standalone stream (TEXCOORD1).
+    ///
+    /// Reforged HD geosets unwrap twice: set 0 is the texture atlas, set 1 a
+    /// non-overlapping bake unwrap that `hd_ps` samples the occlusion channel
+    /// (ORM.x) through. Kept beside `vertices` rather than inside it so the
+    /// 48-byte interleaved vertex every other path shares does not grow.
+    std::vector<Vector2f> uv1;
     i32 materialId = -1;
     u32 lod = 0;
 
@@ -77,6 +84,11 @@ struct GPUGeoset {
     gfx::BufferHandle unskinnedVb1 = gfx::BufferHandle::Invalid;
 
     gfx::BufferHandle tangentVb = gfx::BufferHandle::Invalid;
+
+    /// @brief Standalone TEXCOORD1 stream (`Vector2f` per vertex), or Invalid.
+    ///        Present whenever the source geoset carried a second UV set; the
+    ///        HD pass binds it and turns the AO_MAP permutation on.
+    gfx::BufferHandle uv1Vb = gfx::BufferHandle::Invalid;
 
     gfx::BufferHandle boneVb = gfx::BufferHandle::Invalid;
 
@@ -121,8 +133,10 @@ struct GPUGeoset {
             return tangentVb;
         case core::StreamId::Bone:
             return boneVb;
+        case core::StreamId::Uv:
+            return uv1Vb;
         default:
-            // Uv / Colors are standalone streams no WC3 geoset uploads.
+            // Colors is a standalone stream no WC3 geoset uploads.
             return gfx::BufferHandle::Invalid;
         }
     }
@@ -152,6 +166,7 @@ struct GPUGeoset {
             gfx.Destroy(unskinnedVb);
             gfx.Destroy(unskinnedVb1);
             gfx.Destroy(tangentVb);
+            gfx.Destroy(uv1Vb);
             gfx.Destroy(boneVb);
         }
         gfx.Destroy(bonePaletteCb);
@@ -164,6 +179,7 @@ struct GPUGeoset {
         unskinnedVb = gfx::BufferHandle::Invalid;
         unskinnedVb1 = gfx::BufferHandle::Invalid;
         tangentVb = gfx::BufferHandle::Invalid;
+        uv1Vb = gfx::BufferHandle::Invalid;
         boneVb = gfx::BufferHandle::Invalid;
         bonePaletteCb = gfx::BufferHandle::Invalid;
         indexCount = 0;
