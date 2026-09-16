@@ -87,7 +87,7 @@ struct DebugViewItem {
     const char* pbrLabel;
     const char* legacyLabel;
 };
-constexpr std::array<DebugViewItem, 20> kDebugViews = {{
+constexpr std::array<DebugViewItem, 23> kDebugViews = {{
     {DebugView::Off, "Off", "Off"},
     {DebugView::Albedo, "Albedo", "Diffuse"},
     {DebugView::Normal, "World Normal", "Normal (with normal map)"},
@@ -108,6 +108,11 @@ constexpr std::array<DebugViewItem, 20> kDebugViews = {{
     {DebugView::SpecularOnly, "Specular Only (black albedo)", "Specular Only (black albedo)"},
     {DebugView::NoOrm, "No ORM", "No ORM"},
     {DebugView::AoOnly, "AO Only", "AO Only"},
+    // Geometry, for both families. The menu puts a separator before these.
+    {DebugView::Wireframe, "Wireframe", "Wireframe"},
+    {DebugView::WireframeVertices, "Unshaded + Wireframe + Vertices",
+     "Unshaded + Wireframe + Vertices"},
+    {DebugView::WireframeTeamColor, "Team Color + Wireframe", "Team Color + Wireframe"},
 }};
 
 constexpr std::array<const char*, 5> kLodLabels = {
@@ -208,6 +213,8 @@ void MaxPluginUI::BuildMenuBar() {
                 for (const auto& item : kDebugViews) {
                     if (!DebugViewInFamily(item.view, family))
                         continue;
+                    if (item.view == DebugView::Wireframe)
+                        ImGui::Separator();
                     const char* label =
                         family == DebugViewFamily::Pbr ? item.pbrLabel : item.legacyLabel;
                     if (ImGui::MenuItem(label, nullptr, item.view == cur)) {

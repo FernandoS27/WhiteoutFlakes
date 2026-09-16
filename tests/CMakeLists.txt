@@ -308,6 +308,7 @@ wdx_add_test(draw_trace_test        draw_trace_test.cpp)
 wdx_add_test(render_profile_test    render_profile_test.cpp)
 # Debug views: the frame policy, the menus' families and the shaders' CB layout.
 wdx_add_test(debug_view_test        debug_view_test.cpp)
+wdx_add_test(mesh_overlay_test      mesh_overlay_test.cpp)
 wdx_add_test(wc3_classify_test      wc3_classify_test.cpp)
 # The 3.0.0 BLS permuters against the shader repo's own permutation labels
 # (generated/wc3_perm_labels.inc, from tools/gen_wc3_perm_labels.py).

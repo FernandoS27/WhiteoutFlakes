@@ -10,6 +10,7 @@
 #include "shading/shading_registry.h"
 #include "shading/unlit_shading.h"
 #include "profiles/wc3/wc3_debug_programs.h"
+#include "renderer/mesh_overlay/mesh_overlay_renderer.h"
 #if WDX_ENABLE_M2
 #include "renderer/profiles/wow/m2_shading.h"
 #endif
@@ -92,6 +93,7 @@ struct RenderPipeline::Impl {
     core::DebugTargetInfo frameDebugTarget_;
     // The WC3 debug pixel programs; created lazily on the first debug draw.
     std::unique_ptr<profiles::wc3::Wc3DebugPrograms> wc3DebugPrograms_;
+    std::unique_ptr<mesh_overlay::MeshOverlayRenderer> meshOverlay_;
 
     // Shading models, long-lived so they can hold per-model caches and so
     // P8/P9/P10 have somewhere to register their ids. Held by base pointer to

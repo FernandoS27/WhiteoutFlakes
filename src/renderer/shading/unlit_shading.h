@@ -153,6 +153,9 @@ private:
     gfx::ShaderHandle vsSkinnedLit_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psLambert_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psBlinnPhong_ = gfx::ShaderHandle::Invalid;
+    // The mesh overlay's vertex stages (shaders/unlit_overlay.slang).
+    gfx::ShaderHandle vsOverlay_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsOverlaySkinned_ = gfx::ShaderHandle::Invalid;
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle lightCb_ = gfx::BufferHandle::Invalid;
     std::vector<PsoEntry> psos_;

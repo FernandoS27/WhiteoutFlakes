@@ -589,7 +589,7 @@ static int RunDrawTrace(
     whiteout::flakes::ProductId traceGame = whiteout::flakes::ProductId::Neutral,
     bool noDistortion = false, bool distortionBuffer = false,
     whiteout::models::wem::ProfileId wemProfile = whiteout::models::wem::ProfileId::Count,
-    f32 cameraYaw = 0.7f, bool shadows = false, i32 fogMode = 0) {
+    f32 cameraYaw = 0.7f, bool shadows = false, i32 fogMode = 0, i32 selectStride = 0) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -927,6 +927,35 @@ static int RunDrawTrace(
     std::cout << "[dtrace] " << mdxPath.filename().string() << ": settled in " << iters
               << " iteration(s), " << (hdMode ? "HD" : "SD") << ", " << frames << " frames"
               << std::endl;
+
+    // The mesh overlay's selection arm: every Nth vertex and triangle of every
+    // spawned geoset selected, and the one after each hovered, so a wireframe
+    // view shows all three states. After the settle, when the geosets exist.
+    if (selectStride > 0) {
+        namespace core = wf::renderer::core;
+        for (auto* a : spawned) {
+            for (const auto& geo : a->render.gpuGeosets) {
+                if (!geo.overlaySource)
+                    continue;
+                const auto& src = *geo.overlaySource;
+                auto mark = [&](core::MeshElementKind kind, wf::u32 count) {
+                    std::vector<wf::u32> selected, hovered;
+                    for (wf::u32 i = 0; i < count; i += static_cast<wf::u32>(selectStride)) {
+                        selected.push_back(i);
+                        hovered.push_back(i + 1);
+                    }
+                    renderer.SetMeshElementFlags(a->handle, geo.geosetId, kind, selected,
+                                                 core::kMeshElementSelected,
+                                                 core::kMeshElementSelected);
+                    renderer.SetMeshElementFlags(a->handle, geo.geosetId, kind, hovered,
+                                                 core::kMeshElementHovered,
+                                                 core::kMeshElementHovered);
+                };
+                mark(core::MeshElementKind::Vertex, static_cast<wf::u32>(src.positions.size()));
+                mark(core::MeshElementKind::Face, static_cast<wf::u32>(src.indices.size() / 3));
+            }
+        }
+    }
 
     // ---- G5: scripted animation scenario ----------------------------------
     // After the settle, not at spawn: the animation source arrives with the
@@ -1826,6 +1855,7 @@ int main(int argc, char* argv[]) {
     bool drawTraceSdHdr = false;
     // A DebugView value (include/whiteout/flakes/enums.h); -1 leaves it off.
     i32 drawTraceDebugView = -1;
+    i32 drawTraceSelect = 0;
     bool drawTraceUnlit = false;
     bool noClothDeform = false;
     bool drawTraceNoRefraction = false;
@@ -2199,6 +2229,8 @@ int main(int argc, char* argv[]) {
             drawTraceSdHdr = true;
         } else if (std::strcmp(a, "--draw-trace-debug-view") == 0 && i + 1 < argc) {
             drawTraceDebugView = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-select") == 0 && i + 1 < argc) {
+            drawTraceSelect = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
         } else if (std::strcmp(a, "--no-cloth-deform") == 0) {
@@ -2592,7 +2624,7 @@ int main(int argc, char* argv[]) {
                             drawTraceAnim, attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
                             drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId,
                             drawTraceNoDistortion, drawTraceDistortionBuffer, wemProfile,
-                            drawTraceCameraYaw, drawTraceShadows, drawTraceFog);
+                            drawTraceCameraYaw, drawTraceShadows, drawTraceFog, drawTraceSelect);
 
     // Export/attach/list runs load the model, do their work over a fixed tick
     // count and exit — they still need the full app (device, asset managers,

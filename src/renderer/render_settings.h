@@ -348,7 +348,7 @@ public:
         return static_cast<i32>(debugView_.load());
     }
     void SetHdDebugMode(i32 m) {
-        const bool known = m >= 0 && m <= 19;
+        const bool known = m >= 0 && m <= static_cast<i32>(DebugView::WireframeTeamColor);
         debugView_.store(known ? static_cast<DebugView>(m) : DebugView::Off);
     }
 

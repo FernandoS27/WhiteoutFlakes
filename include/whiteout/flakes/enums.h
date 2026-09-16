@@ -81,9 +81,10 @@ enum class IblMode : u8 {
 ///
 /// Two families share one value space: 1–14 are the PBR views (0–9 are the
 /// values the old `HdDebugMode` integer used, unchanged), 15–19 the legacy
-/// ones, and 1–7 and 13 serve both. Contiguous on purpose: the generated C
-/// enum numbers its constants by position. A view a surface cannot answer
-/// draws a hatch rather than black. See @ref DebugViewInFamily for the menus.
+/// ones, and 1–7, 13 and the wireframe views 20–22 serve both. Contiguous on
+/// purpose: the generated C enum numbers its constants by position. A view a
+/// surface cannot answer draws a hatch rather than black. See
+/// @ref DebugViewInFamily for the menus.
 /// @bind
 enum class DebugView : u8 {
     Off = 0,
@@ -106,6 +107,9 @@ enum class DebugView : u8 {
     Gloss = 17,        ///< Legacy: specular exponent, normalised.
     VertexColor = 18,  ///< Legacy
     Opacity = 19,      ///< Legacy: material alpha.
+    Wireframe = 20,          ///< Every edge, nothing else, nothing hidden.
+    WireframeVertices = 21,  ///< Unshaded surfaces with their edges and vertices.
+    WireframeTeamColor = 22, ///< Flat team-colour faces with their edges.
 };
 
 /// @brief Which debug views describe a model's materials.
@@ -119,6 +123,9 @@ enum class DebugViewFamily : u8 {
 inline constexpr bool DebugViewInFamily(DebugView view, DebugViewFamily family) {
     const auto v = static_cast<u8>(view);
     if (v == 0)
+        return true;
+    // The wireframe views read geometry, not materials.
+    if (v >= 20 && v <= 22)
         return true;
     if (family == DebugViewFamily::Pbr)
         return v <= 14;

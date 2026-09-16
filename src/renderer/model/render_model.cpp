@@ -148,4 +148,39 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
     activeLights = state.lights;
 }
 
+std::shared_ptr<const MeshOverlaySource> MakeMeshOverlaySource(const MeshData& mesh) {
+    auto src = std::make_shared<MeshOverlaySource>();
+    src->positions = mesh.positions;
+    src->indices = mesh.indices;
+
+    // `.m3` carries its weights inside the record, so no bone stream will be
+    // built for the overlay to re-pack from. Only the byte formats the adapters
+    // write are read; anything else leaves the overlay rigid.
+    if (!mesh.baked.Valid())
+        return src;
+    const VertexAttribute* weights = nullptr;
+    const VertexAttribute* indices = nullptr;
+    for (const auto& a : mesh.baked.attributes) {
+        if (a.semantic == VertexSemantic::BoneWeights && a.semanticIndex == 0)
+            weights = &a;
+        else if (a.semantic == VertexSemantic::BoneIndices && a.semanticIndex == 0)
+            indices = &a;
+    }
+    if (!weights || !indices || weights->format != gfx::Format::R8G8B8A8_UNORM ||
+        indices->format != gfx::Format::R8G8B8A8_UINT)
+        return src;
+    const u32 count = mesh.baked.VertexCount();
+    const u32 stride = mesh.baked.stride;
+    if (weights->offset + 4u > stride || indices->offset + 4u > stride)
+        return src;
+    src->boneWeights.resize(static_cast<usize>(count) * 4);
+    src->boneIndices.resize(static_cast<usize>(count) * 4);
+    for (u32 v = 0; v < count; ++v) {
+        const u8* record = mesh.baked.data.data() + static_cast<usize>(v) * stride;
+        std::copy_n(record + weights->offset, 4, src->boneWeights.data() + v * 4);
+        std::copy_n(record + indices->offset, 4, src->boneIndices.data() + v * 4);
+    }
+    return src;
+}
+
 } // namespace whiteout::flakes::renderer::model

@@ -66,6 +66,10 @@ export const DEBUG_VIEWS = [
     { value: 7,  pbr: 'Specular Only (black albedo)',  legacy: 'Specular Only (black albedo)' },
     { value: 8,  pbr: 'No ORM',                        legacy: null },
     { value: 9,  pbr: 'AO Only',                       legacy: null },
+    // Geometry, for both families.
+    { value: 20, pbr: 'Wireframe',                       legacy: 'Wireframe' },
+    { value: 21, pbr: 'Unshaded + Wireframe + Vertices', legacy: 'Unshaded + Wireframe + Vertices' },
+    { value: 22, pbr: 'Team Color + Wireframe',          legacy: 'Team Color + Wireframe' },
 ];
 
 // The views `family` ('pbr' or 'legacy') lists, as { value, label }.

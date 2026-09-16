@@ -6,6 +6,7 @@
 //
 // Device-free on purpose — the whole table is a G0 test.
 
+#include "core/mesh_overlay.h"
 #include "whiteout/flakes/enums.h"
 #include "whiteout/flakes/types.h"
 
@@ -22,6 +23,9 @@ enum class DebugViewKind : u8 {
     Lighting = 2,
     // The real shaders, with GTAO writing its factor over the result.
     AmbientOcclusion = 3,
+    // Geometry: the mesh overlay's edges, vertices and flat faces, over the
+    // unshaded surfaces or instead of them. Nothing after may touch the colour.
+    Wireframe = 4,
 };
 
 inline constexpr DebugViewKind KindOf(DebugView v) {
@@ -35,15 +39,27 @@ inline constexpr DebugViewKind KindOf(DebugView v) {
         return DebugViewKind::Lighting;
     case DebugView::AoOnly:
         return DebugViewKind::AmbientOcclusion;
+    case DebugView::Wireframe:
+    case DebugView::WireframeVertices:
+    case DebugView::WireframeTeamColor:
+        return DebugViewKind::Wireframe;
     default:
         return DebugViewKind::Channel;
     }
 }
 
 struct DebugFrame {
+    // The view the host picked.
     DebugView view = DebugView::Off;
+    // The channel a debug pixel shader shows: `view`, except that a wireframe
+    // view over unshaded surfaces shows Albedo.
+    DebugView surfaceView = DebugView::Off;
     // Surfaces bind their debug pixel shader rather than the real one.
     bool debugSurfaces = false;
+    // False: a model still binds each surface's state and emits its overlay,
+    // but draws no triangles of its own.
+    bool drawSurfaces = true;
+    MeshOverlayStyle overlay;
     // Run the GTAO pass at all; its own enable still decides the rest.
     bool gtao = true;
     bool gtaoAoOnly = false;
@@ -66,6 +82,7 @@ struct DebugFrame {
 inline constexpr DebugFrame ResolveDebugFrame(DebugView v) {
     DebugFrame f;
     f.view = v;
+    f.surfaceView = v;
     const DebugViewKind kind = KindOf(v);
     if (kind == DebugViewKind::Off)
         return f;
@@ -90,6 +107,17 @@ inline constexpr DebugFrame ResolveDebugFrame(DebugView v) {
         break;
     case DebugViewKind::AmbientOcclusion:
         f.gtaoAoOnly = true;
+        f.deferredLights = false;
+        f.tonemap = false;
+        break;
+    case DebugViewKind::Wireframe:
+        f.overlay = MeshOverlayStyleFor(v);
+        // The unshaded surfaces are the Albedo channel view, drawn as that
+        // view draws them; the other two leave the surfaces to the overlay.
+        f.drawSurfaces = v == DebugView::WireframeVertices;
+        f.debugSurfaces = f.drawSurfaces;
+        f.surfaceView = f.drawSurfaces ? DebugView::Albedo : v;
+        f.gtao = false;
         f.deferredLights = false;
         f.tonemap = false;
         break;
@@ -124,7 +152,7 @@ inline DebugViewCbData MakeDebugViewCb(const DebugFrame& frame, const DebugTarge
                                        u32 lightCount, u32 productFlags,
                                        f32 lightCountRedAt = 8.0f) {
     DebugViewCbData d;
-    d.view = static_cast<u32>(frame.view);
+    d.view = static_cast<u32>(frame.surfaceView);
     d.targetFlags = (target.colorSamplesLinear ? 1u : 0u) | (target.targetEncodesSrgb ? 2u : 0u);
     d.lightCount = lightCount;
     d.productFlags = productFlags;

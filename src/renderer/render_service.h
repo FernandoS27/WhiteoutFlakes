@@ -327,6 +327,15 @@ public:
     // everything else. Hosts pick the debug menu with it.
     DebugViewFamily DebugFamilyOf(u32 actor) const;
 
+    // What the wireframe views mark on one geoset (DEBUG_VIEW_DESIGN.md §9):
+    // `ids` are the geoset's own vertex or triangle numbers, and `flags` land
+    // under `mask` (core::MeshElementFlag). False when the actor has no such
+    // uploaded geoset. The seam a model editor's selection writes through.
+    bool SetMeshElementFlags(u32 actor, i32 geosetId, core::MeshElementKind kind,
+                             std::span<const u32> ids, u8 mask, u8 flags);
+    // Clears `mask` from every element of every geoset of the actor.
+    void ClearMeshElementFlags(u32 actor, u8 mask);
+
     // ---- App-tunable knobs ----
     RenderSettings& Settings();
     const RenderSettings& Settings() const;

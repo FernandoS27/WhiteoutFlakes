@@ -33,6 +33,7 @@ void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& 
     view.texAnimPalette = &mi.render.texAnimPalette;
     view.layerMapAlphaPalette = &mi.render.layerMapAlphaPalette;
     view.surfaceAnim = &mi.render.surfaceAnim;
+    view.model = &mi.render;
     // Scaled, not raw: `worldTransform` is the host's, in game units. Returns
     // the same object for WC3, whose scale is 1.
     view.worldTransform = mi.ScaledWorldTransform();

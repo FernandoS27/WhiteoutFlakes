@@ -330,19 +330,24 @@ void UnpackColorPair(float4 packed, out float4 primary, out float4 aux)
 // Model space to animated model space, m2_combiners' M2Skin with the tangent
 // along for the ride. Weights are normalised at pack time; unused lanes carry
 // weight 0 and index 0, so every read is in range.
-void D3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
+//
+// Plain values rather than VSInput, and D3ClipPosition beside it, because the
+// mesh overlay (d3_overlay.slang) positions through the same two — see
+// m3_standard.slang's M3SkinBasis for why.
+void D3SkinBasis(float3 position, float3 normal, float3 tangent, float4 boneWeights,
+                 uint4 boneIndices, out float3 pos, out float3 nrm, out float3 tan)
 {
     pos = float3(0.0, 0.0, 0.0);
     nrm = float3(0.0, 0.0, 0.0);
     tan = float3(0.0, 0.0, 0.0);
-    let p = float4(input.position, 1.0);
-    let n = float4(input.normal, 0.0);
-    let t = float4(input.tangent.xyz, 0.0);
+    let p = float4(position, 1.0);
+    let n = float4(normal, 0.0);
+    let t = float4(tangent, 0.0);
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
-        let w = input.boneWeights[i];
-        let b = input.boneIndices[i] * 3;
+        let w = boneWeights[i];
+        let b = boneIndices[i] * 3;
         let r0 = bones.rows[b + 0];
         let r1 = bones.rows[b + 1];
         let r2 = bones.rows[b + 2];
@@ -352,15 +357,28 @@ void D3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
     }
 }
 
+void D3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
+{
+    D3SkinBasis(input.position, input.normal, input.tangent.xyz, input.boneWeights,
+                input.boneIndices, pos, nrm, tan);
+}
+
+float4 D3ClipPosition(float3 pos, out float4 worldPos, out float4 viewPos)
+{
+    worldPos = mul(float4(pos, 1.0), draw.world);
+    viewPos = mul(worldPos, pass.view);
+    var clip = mul(viewPos, pass.projection);
+    // D3DRS_DEPTHBIAS adds a constant to the depth the rasteriser writes, which
+    // is z/w -- so biasing z by bias*w before the divide is the same number.
+    clip.z += draw.params2.x * clip.w;
+    return clip;
+}
+
 PSInput D3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 uvs, float4 packedCol)
 {
     PSInput o;
-    let worldPos = mul(float4(pos, 1.0), draw.world);
-    let viewPos = mul(worldPos, pass.view);
-    o.position = mul(viewPos, pass.projection);
-    // D3DRS_DEPTHBIAS adds a constant to the depth the rasteriser writes, which
-    // is z/w -- so biasing z by bias*w before the divide is the same number.
-    o.position.z += draw.params2.x * o.position.w;
+    float4 worldPos, viewPos;
+    o.position = D3ClipPosition(pos, worldPos, viewPos);
     o.worldPos = float4(worldPos.xyz, viewPos.z);
     // Uniform scale only in the world transform, so no inverse transpose.
     o.normalWS = normalize(mul(float4(nrm, 0.0), draw.world).xyz);

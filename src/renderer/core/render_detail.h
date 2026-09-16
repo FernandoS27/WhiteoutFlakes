@@ -36,6 +36,9 @@ struct RenderableView {
     const std::vector<model::RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
     const std::vector<f32>* layerMapAlphaPalette = nullptr;
     const std::vector<model::RenderModel::SurfaceAnim>* surfaceAnim = nullptr;
+    // The mesh overlay's per-actor state, and the deform bytes it repacks
+    // positions from. Everything else a draw reads is in the fields above.
+    model::RenderModel* model = nullptr;
     Matrix44f worldTransform = Matrix44f::identity();
     // Game units per renderer unit, from Actor::worldScale — 1 for Warcraft III
     // and 100 for World of Warcraft. `worldTransform` already folds it in; this

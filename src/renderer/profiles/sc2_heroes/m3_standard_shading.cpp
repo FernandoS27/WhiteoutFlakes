@@ -9,6 +9,7 @@
 #include "renderer/bls/bls_frame.h"
 #include "renderer/camera.h"
 #include "renderer/debug/draw_trace_hooks.h"
+#include "renderer/mesh_overlay/mesh_overlay_renderer.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
@@ -204,6 +205,8 @@ void M3StandardShading::Init() {
     psDebug_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardDebugPS));
     psDebugMrt_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardDebugMrtPS));
     vsWorld_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3RibbonVS));
+    vsOverlay_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3OverlayVS));
+    vsOverlaySkinned_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3OverlaySkinnedVS));
 #undef WDX_M3_BLOB
 
     // One map per draw → the Vulkan CB ring needs room for a busy frame.
@@ -509,7 +512,7 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     // sidecar: the deferred lights read it, and the channel views skip them.
     key.debug = passDebug_.debugSurfaces && psDebug_ != gfx::ShaderHandle::Invalid &&
                 psDebugMrt_ != gfx::ShaderHandle::Invalid;
-    if (key.debug && core::KindOf(passDebug_.view) != core::DebugViewKind::Lighting)
+    if (key.debug && core::KindOf(passDebug_.surfaceView) != core::DebugViewKind::Lighting)
         key.mrt = false;
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
@@ -635,6 +638,35 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, debugCb_);
     }
 
+    if (passDebug_.drawSurfaces)
+        DrawSurface(item, ctx, *surf, geo, key);
+    EmitOverlay(item, ctx, key);
+}
+
+void M3StandardShading::EmitOverlay(const render_detail::DrawItem& item,
+                                    const core::PassContext& ctx, const PsoKey& key) {
+    auto& overlay = rs_.Pipeline().MeshOverlay();
+    if (!overlay.Wants(ctx.pass))
+        return;
+    mesh_overlay::OverlayDraw d;
+    d.view = item.view;
+    d.geoIdx = item.geoIdx;
+    d.vs = key.skinned ? vsOverlaySkinned_ : vsOverlay_;
+    d.cbSlot = 3;
+    d.target.rtv = key.rtv;
+    d.target.extra[0] = key.extra0;
+    d.target.extra[1] = key.extra1;
+    d.target.extra[2] = key.extra2;
+    d.target.extraCount = key.extraRtvCount;
+    d.target.dsv = key.dsv;
+    overlay.Emit(rs_.Pipeline().Gfx()->GetImmediateContext(), d);
+}
+
+void M3StandardShading::DrawSurface(const render_detail::DrawItem& item,
+                                    const core::PassContext& ctx, const M3Surface& surface,
+                                    const GPUGeoset& geo, const PsoKey& key) {
+    const M3Surface* surf = &surface;
+    auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
     // Every texture slot, every draw — which of them survive into the
     // compiled PS is Slang's dead-code decision, and binding fewer than it
     // kept is a descriptor the runtime never writes (m2_shading.cpp's

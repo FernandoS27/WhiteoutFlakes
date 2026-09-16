@@ -5,6 +5,7 @@
 #include "renderer/core/render_detail.h"
 #include "renderer/core/render_profile.h"
 #include "renderer/debug/draw_trace_hooks.h"
+#include "renderer/mesh_overlay/mesh_overlay_renderer.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -172,6 +173,7 @@ void M2CombinerShading::Init() {
         mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Opaque_Mod2xNA_Alpha_Alpha));
     ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Mod_Mod_Depth));
     psDebug_ = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Debug));
+    vsOverlay_ = mk(gfx::ShaderStage::Vertex, WDX_M2_BLOB(M2OverlayVS));
 #undef WDX_M2_BLOB
 
     // One map per draw, so the Vulkan CB ring needs room for a busy frame —
@@ -524,6 +526,30 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, drawCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, drawCb_);
 
+    // The mesh overlay goes after the surface, from the colour half of a twin
+    // pair: the colour draw would paint over it at the depth the twin laid.
+    auto emitOverlay = [&] {
+        auto& overlay = rs_.Pipeline().MeshOverlay();
+        if (depthTwin || !overlay.Wants(ctx.pass))
+            return;
+        mesh_overlay::OverlayDraw d;
+        d.view = item.view;
+        d.geoIdx = item.geoIdx;
+        d.vs = vsOverlay_;
+        d.cbSlot = 3;
+        d.target.rtv = key.rtv;
+        d.target.extra[0] = key.extra0;
+        d.target.extra[1] = key.extra1;
+        d.target.extra[2] = key.extra2;
+        d.target.extraCount = key.extraRtvCount;
+        d.target.dsv = key.dsv;
+        overlay.Emit(cmd, d);
+    };
+    if (!passDebug_.drawSurfaces) {
+        emitOverlay();
+        return;
+    }
+
     // All four units, every draw — not just the ones this combiner samples.
     // Which of tex0..tex3 survive into a given pixel shader is Slang's dead-code
     // decision, and binding fewer than it kept is a descriptor the runtime never
@@ -571,6 +597,7 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     }
 
     cmd->DrawIndexed(geo.indexCount);
+    emitOverlay();
 }
 
 core::SurfaceClass M2CombinerShading::Classify(const render_detail::RenderableView& view,

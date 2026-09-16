@@ -94,6 +94,9 @@ typedef enum {
     whiteout_flakes_DebugView_Gloss,
     whiteout_flakes_DebugView_VertexColor,
     whiteout_flakes_DebugView_Opacity,
+    whiteout_flakes_DebugView_Wireframe,
+    whiteout_flakes_DebugView_WireframeVertices,
+    whiteout_flakes_DebugView_WireframeTeamColor,
 } whiteout_flakes_DebugView;
 
 typedef enum {

@@ -427,12 +427,37 @@ set(SHADER_ENTRIES
     "wc3_debug.slang|vsWc3SdDebug|vertex|kWc3SdDebugVS|wc3"
     "wc3_debug.slang|vsWc3SdDebugSkinned|vertex|kWc3SdDebugSkinnedVS|wc3"
     "wc3_debug.slang|psWc3SdDebugNormal|fragment|kWc3SdDebugNormalPS|wc3"
+    # Mesh overlay (DEBUG_VIEW_DESIGN.md §9): one pixel entry, and per product a
+    # vertex entry per skinning path that imports the product's own vertex code.
+    # The `overlay` set silences the constant-buffer overlap the entries take on
+    # purpose (the debug view's b3) and tracks the imported product files.
+    "mesh_overlay.slang|psMeshOverlay|fragment|kMeshOverlayPS|overlay"
+    "m2_overlay.slang|vsM2Overlay|vertex|kM2OverlayVS|overlay"
+    "m3_overlay.slang|vsM3Overlay|vertex|kM3OverlayVS|overlay"
+    "m3_overlay.slang|vsM3OverlaySkinned|vertex|kM3OverlaySkinnedVS|overlay"
+    "d3_overlay.slang|vsD3Overlay|vertex|kD3OverlayVS|overlay"
+    "d3_overlay.slang|vsD3OverlaySkinned|vertex|kD3OverlaySkinnedVS|overlay"
+    "unlit_overlay.slang|vsUnlitOverlay|vertex|kUnlitOverlayVS|overlay"
+    "unlit_overlay.slang|vsUnlitOverlaySkinned|vertex|kUnlitOverlaySkinnedVS|overlay"
+    "wc3_overlay.slang|vsWc3HdOverlay|vertex|kWc3HdOverlayVS|wc3"
+    "wc3_overlay.slang|vsWc3HdOverlayPalette|vertex|kWc3HdOverlayPaletteVS|wc3"
+    "wc3_overlay.slang|vsWc3HdOverlayBoneBuffer|vertex|kWc3HdOverlayBoneBufferVS|wc3"
+    "wc3_overlay.slang|vsWc3SdOverlay|vertex|kWc3SdOverlayVS|wc3"
+    "wc3_overlay.slang|vsWc3SdOverlaySkinned|vertex|kWc3SdOverlaySkinnedVS|wc3"
     # NOTE: depth of field has no custom shader entry — DofService runs the
     # shipped WC3 depthoffield.bls (GxShaderID DepthOfField) through the BLS
     # shader cache, and reuses the embedded blit (kBlit*) for the round-trip.
 )
 
+# The WC3 debug pixel programs that pair with a RETAIL vertex program. On D3D12
+# that program is DXIL (shaders/d3d12/), and the runtime will not link SM 6
+# with SM 5, so these also build as DXIL. Through the same slangc that builds
+# the d3d12 bundles, so both stages spell their semantics the same way.
+set(WC3_DXIL_ENTRIES kWc3HdDebugPS kWc3HdDebugCsmPS kWc3HdDebugCubePS kWc3HdDebugCsmCubePS
+    kWc3SdDebugPS)
+
 set(SHADER_DXBC_FILES "")
+set(SHADER_DXIL_FILES "")
 set(SHADER_SPV_FILES  "")
 set(SHADER_WGSL_FILES "")
 set(SHADER_MTL_FILES  "")
@@ -455,7 +480,13 @@ foreach(entry IN LISTS SHADER_ENTRIES)
                 -warnings-disable 39001,15205,30056,41016)
             set(entry_spv_flags -fvk-use-dx-layout)
             list(APPEND entry_deps
-                "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders/wc3_shaders/wc3_shaders.slang")
+                "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders/wc3_shaders/wc3_shaders.slang"
+                "${SHADER_SRC_DIR}/mesh_overlay.slang")
+        elseif(flag_set STREQUAL "overlay")
+            set(entry_flags -warnings-disable 39001)
+            list(APPEND entry_deps "${SHADER_SRC_DIR}/mesh_overlay.slang"
+                "${SHADER_SRC_DIR}/m2_combiners.slang" "${SHADER_SRC_DIR}/m3_standard.slang"
+                "${SHADER_SRC_DIR}/d3_standard.slang" "${SHADER_SRC_DIR}/unlit.slang")
         endif()
     endif()
 
@@ -482,6 +513,23 @@ foreach(entry IN LISTS SHADER_ENTRIES)
             VERBATIM
         )
         list(APPEND SHADER_DXBC_FILES "${dxbc_path}")
+
+        if(var_name IN_LIST WC3_DXIL_ENTRIES)
+            set(dxil_path "${SHADER_OUT_DIR}/${var_name}.dxil")
+            add_custom_command(
+                OUTPUT  "${dxil_path}"
+                COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
+                        ${SLANG_COMMON_FLAGS} ${entry_flags}
+                        -entry ${entry_name} -stage ${stage}
+                        -target dxil -profile sm_6_0
+                        -o "${dxil_path}"
+                DEPENDS "${SHADER_SRC_DIR}/${src_file}"
+                        ${entry_deps}
+                COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.dxil"
+                VERBATIM
+            )
+            list(APPEND SHADER_DXIL_FILES "${dxil_path}")
+        endif()
     endif()
 
     # SPIR-V variant for the Vulkan backend. The embed script picks these
@@ -576,7 +624,7 @@ add_custom_command(
             "-DOUTPUT=${COMPILED_SHADERS_H}"
             "-DEMBED_SPV=${_wf_embed_spv}"
             -P "${SHADER_SRC_DIR}/embed_shaders.cmake"
-    DEPENDS ${SHADER_DXBC_FILES} ${SHADER_SPV_FILES} ${SHADER_WGSL_FILES}
+    DEPENDS ${SHADER_DXBC_FILES} ${SHADER_DXIL_FILES} ${SHADER_SPV_FILES} ${SHADER_WGSL_FILES}
             ${SHADER_MTL_FILES}
             "${SHADER_SRC_DIR}/embed_shaders.cmake"
     COMMENT "Embedding compiled shaders into compiled_shaders.h"
@@ -1346,6 +1394,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/profiles/wc3/wc3_classify.cpp
     src/renderer/profiles/wc3/wc3_lighting_frame.cpp
     src/renderer/profiles/wc3/wc3_debug_programs.cpp
+    src/renderer/core/mesh_overlay.cpp
+    src/renderer/mesh_overlay/mesh_overlay_renderer.cpp
     src/renderer/shading/surface_pass.cpp
     src/renderer/shading/unlit_shading.cpp
     src/renderer/render_target.cpp

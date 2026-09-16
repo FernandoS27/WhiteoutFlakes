@@ -161,6 +161,10 @@ param(
     # The byte-identical claim — nothing moves with the view off — is the
     # plain arms, not this one.
     [int]$DebugView = -1,
+    # The mesh overlay's selection arm (DEBUG_VIEW_DESIGN.md §9): every Nth
+    # vertex and triangle selected, the one after each hovered. Only visible
+    # under a wireframe -DebugView.
+    [int]$Select = 0,
     [int]$Frames = 30,
     [int]$Perturb = 0,
     [int]$CameraDistance = 350,
@@ -316,6 +320,7 @@ if ($Sc2Mat) {
 }
 
 if ($DebugView -ge 0) { $mode += "_dbg$DebugView" }
+if ($Select -gt 0) { $mode += "_sel$Select" }
 
 # One entry per corpus line. The animation corpus adds whitespace-separated
 # `key=value` scenario tokens after the path; every other corpus is a bare path
@@ -475,6 +480,7 @@ foreach ($entry in $entries) {
     if ($DebugLight) { $argv += '--draw-trace-debug-light' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
     if ($DebugView -ge 0) { $argv += @('--draw-trace-debug-view', $DebugView) }
+    if ($Select -gt 0) { $argv += @('--draw-trace-select', $Select) }
     if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }
     if ($Listfile) { $argv += @('--listfile', $Listfile, '--content-root', $CorpusRoot) }
     if ($Perturb -gt 0) { $argv += @('--draw-trace-perturb', $Perturb) }

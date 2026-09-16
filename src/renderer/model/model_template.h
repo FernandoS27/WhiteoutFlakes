@@ -21,6 +21,8 @@ struct SkinningData;
 
 namespace whiteout::flakes::renderer::model {
 
+struct MeshOverlaySource; // render_model.h
+
 struct ModelTemplate {
 
     struct SharedGeoset {
@@ -38,6 +40,7 @@ struct ModelTemplate {
         i32 materialId = -1;
         u32 lod = 0;
         Vector3f localCentroid = {0, 0, 0}; // local bounds center (transparent sort)
+        std::shared_ptr<const MeshOverlaySource> overlaySource;
     };
 
     // The source this template was built from, kept alive so per-frame

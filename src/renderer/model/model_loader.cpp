@@ -1127,6 +1127,7 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         sg.materialId = mesh.materialId;
         sg.lod = mesh.lod;
         sg.deformable = mesh.deformable;
+        sg.overlaySource = MakeMeshOverlaySource(mesh);
         i32 vc = (i32)mesh.positions.size();
         // The sort centroid comes off `positions` either way — it is the CPU
         // copy, and the baked path deliberately never decodes its own blob.
@@ -2331,6 +2332,7 @@ void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
         sg.indexCount = (i32)mesh.indices.size();
         sg.localCentroid =
             GeosetBoundsCenter(sg.vertexCount, [&](i32 i) { return mesh.positions[i]; });
+        sg.overlaySource = MakeMeshOverlaySource(mesh);
 
         std::vector<Vertex> vertices(sg.vertexCount);
         for (i32 i = 0; i < sg.vertexCount; i++) {
@@ -2458,6 +2460,7 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                 gg.indexCount = shared.indexCount;
                 gg.vertexCount = shared.vertexCount;
                 gg.localCentroid = shared.localCentroid;
+                gg.overlaySource = shared.overlaySource;
                 gg.hasSkinning = true;
                 if (auto* t = Wc3TableFor(mi.render))
                     if (const auto* m = t->Material(shared.materialId))
@@ -2484,6 +2487,7 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
             gg.indexCount = (i32)sg.indices.size();
             gg.vertexCount = baked ? sg.bakedVertexCount : (i32)sg.vertices.size();
             gg.localCentroid = sg.centroid;
+            gg.overlaySource = std::move(sg.overlaySource);
             gg.surfaceBegin = sg.surfaceBegin;
             gg.surfaceCount = sg.surfaceCount;
             gg.hasSkinning = true;

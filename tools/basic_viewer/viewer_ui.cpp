@@ -213,7 +213,7 @@ struct DebugViewItem {
     const char* pbrKey;
     const char* legacyKey;
 };
-constexpr std::array<DebugViewItem, 20> kDebugViews = {{
+constexpr std::array<DebugViewItem, 23> kDebugViews = {{
     {DebugView::Off, "debugvis.off", "debugvis.off"},
     {DebugView::Albedo, "debugvis.albedo", "debugvis.diffuse"},
     {DebugView::Normal, "debugvis.world_normal", "debugvis.normal_mapped"},
@@ -234,6 +234,11 @@ constexpr std::array<DebugViewItem, 20> kDebugViews = {{
     {DebugView::SpecularOnly, "debugvis.specular_only", "debugvis.specular_only"},
     {DebugView::NoOrm, "debugvis.no_orm", "debugvis.no_orm"},
     {DebugView::AoOnly, "debugvis.ao_only", "debugvis.ao_only"},
+    // Geometry, for both families. The menu puts a separator before these.
+    {DebugView::Wireframe, "debugvis.wireframe", "debugvis.wireframe"},
+    {DebugView::WireframeVertices, "debugvis.wireframe_vertices", "debugvis.wireframe_vertices"},
+    {DebugView::WireframeTeamColor, "debugvis.wireframe_team_color",
+     "debugvis.wireframe_team_color"},
 }};
 constexpr std::array<const char*, 5> kLodKeys = {
     "lod.auto", "lod.0", "lod.1", "lod.2", "lod.3",
@@ -1551,6 +1556,8 @@ void ViewerUI::BuildMenuBar() {
                 for (const auto& item : kDebugViews) {
                     if (!DebugViewInFamily(item.view, family))
                         continue;
+                    if (item.view == DebugView::Wireframe)
+                        ImGui::Separator();
                     const char* key =
                         family == DebugViewFamily::Pbr ? item.pbrKey : item.legacyKey;
                     if (ImGui::MenuItem(i18n::tr(key), nullptr, item.view == cur)) {

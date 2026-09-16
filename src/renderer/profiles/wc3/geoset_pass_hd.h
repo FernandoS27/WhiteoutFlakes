@@ -288,6 +288,13 @@ public:
                 cmd->BindShaderResource(gfx::ShaderStage::Vertex, 16, view_.skinning->BoneBuffer());
         }
 
+        // A wireframe view that replaces the surfaces keeps the binds above
+        // for the overlay and issues no layer at all.
+        if (!debug_.drawSurfaces) {
+            EmitOverlayHd(view_, geo, frame, cmd, hasBones, boneBuffer, boneBufferBase);
+            return;
+        }
+
         struct LayerJob {
             UnpackedLayer layer;
             bls::MatParams mp;
@@ -422,9 +429,10 @@ public:
                 const bool debugDraw = debug_.debugSurfaces && !rs.depthPrepass;
                 if (debugDraw) {
                     const bool lightingView =
-                        core::KindOf(debug_.view) == core::DebugViewKind::Lighting;
-                    req.psOverride = DebugPrograms().Hd(lightingView && rs.shadowCascade,
-                                                        lightingView && rs.pointShadows);
+                        core::KindOf(debug_.surfaceView) == core::DebugViewKind::Lighting;
+                    req.psOverride = DebugPrograms().Hd(
+                        lightingView && rs.shadowCascade, lightingView && rs.pointShadows,
+                        profiles::wc3::Wc3DebugPrograms::IsDxil(job.program));
                     req.extraColorWrite = false;
                 }
                 auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(req);
@@ -529,6 +537,36 @@ public:
                 continue;
             issueHdDraw(jobs[li], jobs[li].mp, li, false);
         }
+        EmitOverlayHd(view_, geo, frame, cmd, hasBones, boneBuffer, boneBufferBase);
+    }
+
+    // The mesh overlay (DEBUG_VIEW_DESIGN.md §9). Streams and palette are the
+    // geoset's, already bound; the per-draw bank is written again because a
+    // geoset whose layers all faded out bound none.
+    void EmitOverlayHd(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                       bls::FrameInputs& frame, gfx::IGFXCommandList* cmd, bool hasBones,
+                       bool boneBuffer, i32 boneBufferBase) {
+        auto& overlay = MeshOverlay();
+        if (!overlay.Wants(passSlot_))
+            return;
+        auto* impl = rs_.Pipeline().impl_.get();
+        frame.world = view_.worldTransform;
+        frame.boneBufferBase = boneBuffer ? boneBufferBase : 0;
+        if (auto vs = bls::ScopedCb<bls::HdVsCb>(rs_.Pipeline().Gfx(), impl->blsHdVsCb_))
+            bls::BuildHdVsCb(*vs, frame, bls::MatParams{});
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, impl->blsHdVsCb_);
+
+        mesh_overlay::OverlayDraw d;
+        d.view = &view_;
+        d.geoIdx = static_cast<i32>(&geo - view_.geosets->data());
+        d.vs = DebugPrograms().HdOverlay(hasBones, boneBuffer);
+        d.cbSlot = 0;
+        d.target.rtv = RenderPipeline::kHdrSceneFormat;
+        d.target.extra[0] = RenderPipeline::kLinearDepthFormat;
+        d.target.extra[1] = RenderPipeline::kNormalBufferFormat;
+        d.target.extraCount = 2;
+        d.target.dsv = impl->depthStencilFormat_;
+        overlay.Emit(cmd, d);
     }
 
     template <class Job>

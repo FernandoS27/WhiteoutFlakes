@@ -620,7 +620,7 @@ void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureH
 }
 
 // Structured buffers land on the storage bindings of set 1 (kStorageBindings).
-static_assert(kStorageBindingCount == 5, "resize VulkanCommandList::pendingStorage_");
+static_assert(kStorageBindingCount == 6, "resize VulkanCommandList::pendingStorage_");
 void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHandle handle) {
     const u32 binding = StorageBindingFor(stage, slot);
     for (u32 i = 0; i < kStorageBindingCount; ++i) {

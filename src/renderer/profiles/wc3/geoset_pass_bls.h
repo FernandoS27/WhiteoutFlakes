@@ -122,10 +122,14 @@ public:
         const auto layout =
             hasBones ? bls::VertexLayoutKind::ParticleSDSkinned : bls::VertexLayoutKind::ParticleSD;
 
-        const i32 lightCount = owner_->SelectLights(
-            frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
+        // A wireframe view that replaces the surfaces keeps the geometry binds
+        // for the overlay and issues no layer at all.
+        const i32 lightCount = debug_.drawSurfaces ? owner_->SelectLights(
+                                                         frame, lighting, viewMat,
+                                                         render_detail::GeosetCentroidWS(view_, geo))
+                                                   : 0;
 
-        for (i32 li = 0; li < numLayers; ++li) {
+        for (i32 li = 0; li < numLayers && debug_.drawSurfaces; ++li) {
             const UnpackedLayer layer = Wc3SurfaceTable::Layer(mat, li);
             const f32 combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f)
@@ -147,6 +151,35 @@ public:
             DrawLayer(view_, geo, layer, li, combinedAlpha, mp, activeN, unlit, hasBones, layout,
                       frame, cmd);
         }
+        // Not from a depth-only twin: the colour draw after it would paint
+        // over the overlay at the same depth.
+        if (depthFill != bls::DepthFill::Depth)
+            EmitOverlaySd(view_, geo, frame, cmd, hasBones);
+    }
+
+    // The mesh overlay (DEBUG_VIEW_DESIGN.md §9). The geometry and palette are
+    // bound; the per-draw bank the retail vertex stage positions with is
+    // written again because a geoset whose layers all faded out bound none.
+    void EmitOverlaySd(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                       bls::FrameInputs& frame, gfx::IGFXCommandList* cmd, bool hasBones) {
+        auto& overlay = MeshOverlay();
+        if (!overlay.Wants(passSlot_))
+            return;
+        auto* impl = rs_.Pipeline().impl_.get();
+        frame.world = view_.worldTransform;
+        if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.Pipeline().Gfx(), impl->blsSdVsCb_))
+            bls::BuildSdVsCbA(*vs, frame, bls::MatParams{});
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl->blsSdVsCb_);
+
+        mesh_overlay::OverlayDraw d;
+        d.view = &view_;
+        d.geoIdx = static_cast<i32>(&geo - view_.geosets->data());
+        d.vs = DebugPrograms().SdOverlay(hasBones);
+        d.cbSlot = 1;
+        d.target.rtv = rs_.Pipeline().SceneTargetFormat();
+        d.target.extraCount = rs_.Pipeline().SceneExtraRtvFormats(d.target.extra);
+        d.target.dsv = impl->depthStencilFormat_;
+        overlay.Emit(cmd, d);
     }
 
     void DrawLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
@@ -170,10 +203,11 @@ public:
         reqLocal.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(reqLocal.extraRtvFormats);
         reqLocal.dsvFormat = impl->depthStencilFormat_;
         const bool debugDraw = debug_.debugSurfaces && matParams.ColorWriteEnabled();
-        const bool debugNormal = debugDraw && (debug_.view == DebugView::Normal ||
-                                               debug_.view == DebugView::VertexNormal);
+        const bool debugNormal = debugDraw && (debug_.surfaceView == DebugView::Normal ||
+                                               debug_.surfaceView == DebugView::VertexNormal);
         if (debugDraw)
-            reqLocal.psOverride = DebugPrograms().Sd();
+            reqLocal.psOverride =
+                DebugPrograms().Sd(profiles::wc3::Wc3DebugPrograms::IsDxil(impl->blsSdProgram_));
         auto pso = debugNormal ? DebugPrograms().SdNormalPso(reqLocal, hasBones)
                                : impl->blsPsoBuilder_->GetOrBuild(reqLocal);
         if (pso == gfx::PipelineHandle::Invalid)

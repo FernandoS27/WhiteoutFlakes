@@ -250,19 +250,25 @@ float M3Handedness(float4 normal)
 // Model space to animated model space, m2_combiners' M2Skin with the tangent
 // along for the ride. Weights are normalised at pack time; unused lanes carry
 // weight 0 and index 0, so every read is in range.
-void M3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
+//
+// Plain values rather than VSInput, and M3ClipPosition beside it, because the
+// mesh overlay (m3_overlay.slang) positions through the same two: a function
+// outside a stage that takes or returns a semantic-carrying struct makes the
+// SDK slangc emit WGSL with `@location(0)` on every field.
+void M3SkinBasis(float3 position, float3 normal, float3 tangent, float4 boneWeights,
+                 uint4 boneIndices, out float3 pos, out float3 nrm, out float3 tan)
 {
     pos = float3(0.0, 0.0, 0.0);
     nrm = float3(0.0, 0.0, 0.0);
     tan = float3(0.0, 0.0, 0.0);
-    let p = float4(input.position, 1.0);
-    let n = float4(M3DecodeBasis(input.normal.xyz), 0.0);
-    let t = float4(M3DecodeBasis(input.tangent.xyz), 0.0);
+    let p = float4(position, 1.0);
+    let n = float4(normal, 0.0);
+    let t = float4(tangent, 0.0);
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
-        let w = input.boneWeights[i];
-        let b = input.boneIndices[i] * 3;
+        let w = boneWeights[i];
+        let b = boneIndices[i] * 3;
         let r0 = bones.rows[b + 0];
         let r1 = bones.rows[b + 1];
         let r2 = bones.rows[b + 2];
@@ -272,12 +278,24 @@ void M3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
     }
 }
 
+void M3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
+{
+    M3SkinBasis(input.position, M3DecodeBasis(input.normal.xyz), M3DecodeBasis(input.tangent.xyz),
+                input.boneWeights, input.boneIndices, pos, nrm, tan);
+}
+
+float4 M3ClipPosition(float3 pos, out float4 worldPos, out float4 viewPos)
+{
+    worldPos = mul(float4(pos, 1.0), draw.world);
+    viewPos = mul(worldPos, pass.view);
+    return mul(viewPos, pass.projection);
+}
+
 PSInput M3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 rawUvs)
 {
     PSInput o;
-    let worldPos = mul(float4(pos, 1.0), draw.world);
-    let viewPos = mul(worldPos, pass.view);
-    o.position = mul(viewPos, pass.projection);
+    float4 worldPos, viewPos;
+    o.position = M3ClipPosition(pos, worldPos, viewPos);
     o.worldPos = float4(worldPos.xyz, viewPos.z);
     // Uniform scale only in the world transform, so no inverse transpose.
     //

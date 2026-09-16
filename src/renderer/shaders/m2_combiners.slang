@@ -181,12 +181,17 @@ float2 M2Coord(int src, VSInput input, float3 posVS, float3 nrmVS)
 // Weights are normalised at pack time (they quantise to 255 summing to 255), so
 // there is nothing to divide by here. A geoset whose vertices are all unweighted
 // still binds a palette; its lanes just sum to zero and the point stays put.
-void M2Skin(VSInput input, out float3 pos, out float3 nrm)
+//
+// Plain values rather than VSInput, and M2ClipPosition beside it, because the
+// mesh overlay (m2_overlay.slang) positions through the same two — see
+// m3_standard.slang's M3SkinBasis for why.
+void M2SkinBasis(float3 position, float3 normal, float4 boneWeights, uint4 boneIndices,
+                 out float3 pos, out float3 nrm)
 {
     pos = float3(0.0, 0.0, 0.0);
     nrm = float3(0.0, 0.0, 0.0);
-    let p = float4(input.position, 1.0);
-    let n = float4(input.normal, 0.0);
+    let p = float4(position, 1.0);
+    let n = float4(normal, 0.0);
     // No early-out on a zero weight: `continue` inside an unrolled loop is what
     // fxc refuses to unroll ("loop does not appear to terminate in a timely
     // manner"), and a zero-weight lane costs one madd it then multiplies away.
@@ -196,14 +201,26 @@ void M2Skin(VSInput input, out float3 pos, out float3 nrm)
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
-        let w = input.boneWeights[i];
-        let b = input.boneIndices[i] * 3;
+        let w = boneWeights[i];
+        let b = boneIndices[i] * 3;
         let r0 = bones.rows[b + 0];
         let r1 = bones.rows[b + 1];
         let r2 = bones.rows[b + 2];
         pos += w * float3(dot(p, r0), dot(p, r1), dot(p, r2));
         nrm += w * float3(dot(n, r0), dot(n, r1), dot(n, r2));
     }
+}
+
+void M2Skin(VSInput input, out float3 pos, out float3 nrm)
+{
+    M2SkinBasis(input.position, input.normal, input.boneWeights, input.boneIndices, pos, nrm);
+}
+
+float4 M2ClipPosition(float3 skinPos, out float4 worldPos, out float4 viewPos)
+{
+    worldPos = mul(float4(skinPos, 1.0), draw.world);
+    viewPos = mul(worldPos, pass.view);
+    return mul(viewPos, pass.projection);
 }
 
 // The whole vertex stage. Every named entry point below is this with four
@@ -215,9 +232,8 @@ PSInput M2Vertex(VSInput input, int s0, int s1, int s2, int s3)
     float3 skinPos, skinNrm;
     M2Skin(input, skinPos, skinNrm);
 
-    let worldPos = mul(float4(skinPos, 1.0), draw.world);
-    let viewPos  = mul(worldPos, pass.view);
-    o.position = mul(viewPos, pass.projection);
+    float4 worldPos, viewPos;
+    o.position = M2ClipPosition(skinPos, worldPos, viewPos);
     o.worldPos = worldPos.xyz;
 
     // Uniform scale only (the actor world transform is rotation + translation +

@@ -194,6 +194,35 @@ foreach(name IN LISTS stub_names)
     endif()
 endforeach()
 
+# DXIL blobs (D3D12, SM 6.0): emitted as `<varname>Dxil`. Only the few programs
+# that must link against a retail DXIL stage have one (WC3_DXIL_ENTRIES in
+# CMakeLists.txt); every other name gets a one-byte stub, which a consumer
+# tells apart by its size.
+file(GLOB dxil_files "${SHADER_DIR}/*.dxil")
+list(SORT dxil_files)
+set(real_dxil_names "")
+foreach(binpath IN LISTS dxil_files)
+    get_filename_component(varname "${binpath}" NAME_WE)
+    list(APPEND real_dxil_names "${varname}")
+
+    file(READ "${binpath}" hex HEX)
+    file(SIZE "${binpath}" bytesize)
+
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
+    string(REGEX REPLACE ", $" "" hex "${hex}")
+
+    string(APPEND header "// ${varname}Dxil — ${bytesize} bytes (DXIL sm_6_0)\n")
+    string(APPEND header "inline constexpr uint8_t ${varname}Dxil[] = {\n    ${hex}\n};\n\n")
+endforeach()
+foreach(name IN LISTS stub_names)
+    list(FIND real_dxil_names "${name}" found_idx)
+    if(found_idx EQUAL -1)
+        string(APPEND header
+            "// ${name}Dxil — stub (no DXIL twin)\n"
+            "inline constexpr uint8_t ${name}Dxil[] = { 0x00 };\n\n")
+    endif()
+endforeach()
+
 string(APPEND header "} // namespace whiteout::flakes::Shaders\n")
 
 file(WRITE "${OUTPUT}" "${header}")

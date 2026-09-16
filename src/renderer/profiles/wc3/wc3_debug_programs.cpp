@@ -1,5 +1,7 @@
 #include "profiles/wc3/wc3_debug_programs.h"
 
+#include "renderer/bls/bls_program.h"
+#include "renderer/bls/bls_shader_cache.h"
 #include "renderer/types.h" // Vertex, BoneVertex
 
 #include "compiled_shaders.h"
@@ -41,7 +43,23 @@ void Wc3DebugPrograms::Init() {
     sdNormalVs_ = make(vs, WDX_DEBUG_BLOB(Wc3SdDebugVS));
     sdNormalVsSkinned_ = make(vs, WDX_DEBUG_BLOB(Wc3SdDebugSkinnedVS));
     sdNormalPs_ = make(ps, WDX_DEBUG_BLOB(Wc3SdDebugNormalPS));
+    hdOverlay_[0] = make(vs, WDX_DEBUG_BLOB(Wc3HdOverlayVS));
+    hdOverlay_[1] = make(vs, WDX_DEBUG_BLOB(Wc3HdOverlayPaletteVS));
+    hdOverlay_[2] = make(vs, WDX_DEBUG_BLOB(Wc3HdOverlayBoneBufferVS));
+    sdOverlay_[0] = make(vs, WDX_DEBUG_BLOB(Wc3SdOverlayVS));
+    sdOverlay_[1] = make(vs, WDX_DEBUG_BLOB(Wc3SdOverlaySkinnedVS));
 #undef WDX_DEBUG_BLOB
+    if (api == gfx::GfxApi::D3D12) {
+        // A one-byte blob is the embed script's stub: no dxc at build time.
+        auto dxil = [&](const u8* bytes, usize size) {
+            return size > 1 ? gfx_->CreateShader(ps, bytes, size) : gfx::ShaderHandle::Invalid;
+        };
+        hdDxil_[0] = dxil(kWc3HdDebugPSDxil, sizeof(kWc3HdDebugPSDxil));
+        hdDxil_[1] = dxil(kWc3HdDebugCsmPSDxil, sizeof(kWc3HdDebugCsmPSDxil));
+        hdDxil_[2] = dxil(kWc3HdDebugCubePSDxil, sizeof(kWc3HdDebugCubePSDxil));
+        hdDxil_[3] = dxil(kWc3HdDebugCsmCubePSDxil, sizeof(kWc3HdDebugCsmCubePSDxil));
+        sdDxil_ = dxil(kWc3SdDebugPSDxil, sizeof(kWc3SdDebugPSDxil));
+    }
 
     // Written per draw, like the BLS per-draw banks it sits beside.
     constexpr u32 kCbRingSlots = 4096;
@@ -70,6 +88,24 @@ void Wc3DebugPrograms::Release() {
             gfx_->Destroy(h);
         h = gfx::ShaderHandle::Invalid;
     }
+    for (auto& h : hdDxil_) {
+        if (h != gfx::ShaderHandle::Invalid)
+            gfx_->Destroy(h);
+        h = gfx::ShaderHandle::Invalid;
+    }
+    if (sdDxil_ != gfx::ShaderHandle::Invalid)
+        gfx_->Destroy(sdDxil_);
+    sdDxil_ = gfx::ShaderHandle::Invalid;
+    for (auto& h : hdOverlay_) {
+        if (h != gfx::ShaderHandle::Invalid)
+            gfx_->Destroy(h);
+        h = gfx::ShaderHandle::Invalid;
+    }
+    for (auto& h : sdOverlay_) {
+        if (h != gfx::ShaderHandle::Invalid)
+            gfx_->Destroy(h);
+        h = gfx::ShaderHandle::Invalid;
+    }
     if (sd_ != gfx::ShaderHandle::Invalid)
         gfx_->Destroy(sd_);
     if (cb_ != gfx::BufferHandle::Invalid)
@@ -79,14 +115,30 @@ void Wc3DebugPrograms::Release() {
     initTried_ = false;
 }
 
-gfx::ShaderHandle Wc3DebugPrograms::Hd(bool cascades, bool pointShadows) {
+gfx::ShaderHandle Wc3DebugPrograms::Hd(bool cascades, bool pointShadows, bool dxil) {
     Init();
-    return hd_[(cascades ? 1u : 0u) | (pointShadows ? 2u : 0u)];
+    const u32 i = (cascades ? 1u : 0u) | (pointShadows ? 2u : 0u);
+    return dxil ? hdDxil_[i] : hd_[i];
 }
 
-gfx::ShaderHandle Wc3DebugPrograms::Sd() {
+gfx::ShaderHandle Wc3DebugPrograms::Sd(bool dxil) {
     Init();
-    return sd_;
+    return dxil ? sdDxil_ : sd_;
+}
+
+bool Wc3DebugPrograms::IsDxil(const bls::BlsProgram* program) {
+    return program && program->vs &&
+           program->vs->container.PlatformTag() == bls::kPlatformTag_DX6;
+}
+
+gfx::ShaderHandle Wc3DebugPrograms::HdOverlay(bool skinned, bool boneBuffer) {
+    Init();
+    return hdOverlay_[skinned ? (boneBuffer ? 2 : 1) : 0];
+}
+
+gfx::ShaderHandle Wc3DebugPrograms::SdOverlay(bool skinned) {
+    Init();
+    return sdOverlay_[skinned ? 1 : 0];
 }
 
 gfx::PipelineHandle Wc3DebugPrograms::SdNormalPso(const bls::PsoRequest& req, bool skinned) {

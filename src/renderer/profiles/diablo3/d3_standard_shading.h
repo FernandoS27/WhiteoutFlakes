@@ -258,6 +258,9 @@ private:
     gfx::ShaderHandle vsSkinned_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psDebug_ = gfx::ShaderHandle::Invalid;
+    // The mesh overlay's vertex stages (shaders/d3_overlay.slang).
+    gfx::ShaderHandle vsOverlay_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsOverlaySkinned_ = gfx::ShaderHandle::Invalid;
     /// DebugViewData at b3, written per draw only while a debug view is on.
     gfx::BufferHandle debugCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle passCb_ = gfx::BufferHandle::Invalid;

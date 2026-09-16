@@ -82,7 +82,7 @@ private:
     std::array<PendingSrv, 32> pendingSRVs_{};
     std::array<PendingSmp, 32> pendingSamplers_{};
     // Indexed like kStorageBindings; offset captured at Bind like the CBs.
-    std::array<PendingCb, 5> pendingStorage_{};
+    std::array<PendingCb, 6> pendingStorage_{};
     bool cbSetDirty_ = false;
     bool srvSetDirty_ = false;
     bool samplerSetDirty_ = false;

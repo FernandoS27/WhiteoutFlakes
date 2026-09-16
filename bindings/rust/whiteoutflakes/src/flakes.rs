@@ -181,7 +181,7 @@ impl TryFrom<i32> for IblMode {
 
 /// Surface debug visualisation.
 ///
-/// Two families share one value space: 1–14 are the PBR views (0–9 are the values the old `HdDebugMode` integer used, unchanged), 15–19 the legacy ones, and 1–7 and 13 serve both. Contiguous on purpose: the generated C enum numbers its constants by position. A view a surface cannot answer draws a hatch rather than black. See @ref DebugViewInFamily for the menus.
+/// Two families share one value space: 1–14 are the PBR views (0–9 are the values the old `HdDebugMode` integer used, unchanged), 15–19 the legacy ones, and 1–7, 13 and the wireframe views 20–22 serve both. Contiguous on purpose: the generated C enum numbers its constants by position. A view a surface cannot answer draws a hatch rather than black. See @ref DebugViewInFamily for the menus.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DebugView {
@@ -223,6 +223,12 @@ pub enum DebugView {
     VertexColor = 18,
     /// Legacy: material alpha.
     Opacity = 19,
+    /// Every edge, nothing else, nothing hidden.
+    Wireframe = 20,
+    /// Unshaded surfaces with their edges and vertices.
+    WireframeVertices = 21,
+    /// Flat team-colour faces with their edges.
+    WireframeTeamColor = 22,
 }
 
 impl TryFrom<i32> for DebugView {
@@ -249,6 +255,9 @@ impl TryFrom<i32> for DebugView {
             17 => Ok(DebugView::Gloss),
             18 => Ok(DebugView::VertexColor),
             19 => Ok(DebugView::Opacity),
+            20 => Ok(DebugView::Wireframe),
+            21 => Ok(DebugView::WireframeVertices),
+            22 => Ok(DebugView::WireframeTeamColor),
             other => Err(crate::Error::UnknownEnum {
                 name: "DebugView",
                 value: other,

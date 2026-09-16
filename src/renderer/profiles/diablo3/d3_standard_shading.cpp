@@ -11,6 +11,7 @@
 #include "renderer/camera.h"
 #include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/distortion/distortion_service.h"
+#include "renderer/mesh_overlay/mesh_overlay_renderer.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -163,6 +164,8 @@ void D3StandardShading::Init() {
     vsSkinned_ = mk(gfx::ShaderStage::Vertex, WDX_D3_BLOB(D3StandardSkinnedVS));
     ps_ = mk(gfx::ShaderStage::Pixel, WDX_D3_BLOB(D3StandardPS));
     psDebug_ = mk(gfx::ShaderStage::Pixel, WDX_D3_BLOB(D3StandardDebugPS));
+    vsOverlay_ = mk(gfx::ShaderStage::Vertex, WDX_D3_BLOB(D3OverlayVS));
+    vsOverlaySkinned_ = mk(gfx::ShaderStage::Vertex, WDX_D3_BLOB(D3OverlaySkinnedVS));
 #undef WDX_D3_BLOB
 
     // One map per draw -> the Vulkan CB ring needs room for a busy frame.
@@ -660,6 +663,29 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, debugCb_);
     }
 
+    // After the surface, against the streams, palette and constants above.
+    auto emitOverlay = [&] {
+        auto& overlay = rs_.Pipeline().MeshOverlay();
+        if (!overlay.Wants(ctx.pass))
+            return;
+        mesh_overlay::OverlayDraw d;
+        d.view = item.view;
+        d.geoIdx = item.geoIdx;
+        d.vs = key.skinned ? vsOverlaySkinned_ : vsOverlay_;
+        d.cbSlot = 3;
+        d.target.rtv = key.rtv;
+        d.target.extra[0] = key.extra0;
+        d.target.extra[1] = key.extra1;
+        d.target.extra[2] = key.extra2;
+        d.target.extraCount = key.extraRtvCount;
+        d.target.dsv = key.dsv;
+        overlay.Emit(cmd, d);
+    };
+    if (!passDebug_.drawSurfaces) {
+        emitOverlay();
+        return;
+    }
+
     // Every slot, every draw — which of them survive into the compiled PS is
     // Slang's dead-code decision, and binding fewer than it kept is a
     // descriptor the runtime never writes (m2_shading.cpp's lesson).
@@ -708,6 +734,7 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     }
 
     cmd->DrawIndexed(geo.indexCount);
+    emitOverlay();
 }
 
 core::SurfaceClass D3StandardShading::Classify(const render_detail::RenderableView& view,

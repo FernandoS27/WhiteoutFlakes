@@ -42,6 +42,7 @@ public:
 
     void Draw(const render_detail::DrawItem& item, const core::PassContext& ctx) override {
         auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
+        pass_.SetPassSlot(ctx.pass);
         // The opaque and transparent entry points differ only in the depth-fill
         // mode they pass down; the pass slot is what selects between them.
         if (ctx.pass == core::PassSlot::OpaqueColor)

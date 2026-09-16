@@ -318,6 +318,7 @@ struct Actor {
         for (auto& g : render.gpuGeosets)
             g.Release(gfx, freeShared);
         render.gpuGeosets.clear();
+        render.overlay.Release(gfx);
         if (render.textures)
             render.textures->Clear();
         render.surfaceTable.reset();

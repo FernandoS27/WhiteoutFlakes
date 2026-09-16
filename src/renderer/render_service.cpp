@@ -486,6 +486,42 @@ DebugViewFamily RenderService::DebugFamilyOf(u32 actor) const {
     return DebugViewFamily::Legacy;
 }
 
+bool RenderService::SetMeshElementFlags(u32 actor, i32 geosetId, core::MeshElementKind kind,
+                                        std::span<const u32> ids, u8 mask, u8 flags) {
+    model::Actor* a = Scene().Actors().Find(actor);
+    if (!a)
+        return false;
+    for (const auto& geo : a->render.gpuGeosets) {
+        if (geo.geosetId != geosetId || !geo.overlaySource)
+            continue;
+        const auto& src = *geo.overlaySource;
+        const u32 count = static_cast<u32>(kind == core::MeshElementKind::Vertex
+                                               ? src.positions.size()
+                                               : src.indices.size() / 3);
+        auto& overlay = a->render.overlay;
+        if (core::SetMeshElementFlags(overlay.states[geosetId], kind, count, ids, mask, flags))
+            ++overlay.revision;
+        return true;
+    }
+    return false;
+}
+
+void RenderService::ClearMeshElementFlags(u32 actor, u8 mask) {
+    model::Actor* a = Scene().Actors().Find(actor);
+    if (!a)
+        return;
+    bool changed = false;
+    for (auto& [id, states] : a->render.overlay.states) {
+        for (auto* v : {&states.vertices, &states.faces})
+            for (u8& s : *v) {
+                changed |= (s & mask) != 0;
+                s = static_cast<u8>(s & ~mask);
+            }
+    }
+    if (changed)
+        ++a->render.overlay.revision;
+}
+
 SpnSpawner& RenderService::Spn() {
     return *impl_->activeServices_->spn;
 }

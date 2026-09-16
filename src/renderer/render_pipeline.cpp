@@ -166,6 +166,12 @@ profiles::wc3::Wc3DebugPrograms& RenderPipeline::Wc3DebugPrograms() {
     return *impl_->wc3DebugPrograms_;
 }
 
+mesh_overlay::MeshOverlayRenderer& RenderPipeline::MeshOverlay() {
+    if (!impl_->meshOverlay_)
+        impl_->meshOverlay_ = std::make_unique<mesh_overlay::MeshOverlayRenderer>(rs_);
+    return *impl_->meshOverlay_;
+}
+
 gfx::Format RenderPipeline::CompositeColorFormat() {
     return LoadTimeProfile().SceneColorFormat() == kHdrSceneFormat
                ? gfx::Format::R8G8B8A8_UNORM_SRGB
@@ -1811,6 +1817,8 @@ void RenderPipeline::CleanupGFX() {
             impl_->unlitShading_->ReleaseGpu();
         if (impl_->wc3DebugPrograms_)
             impl_->wc3DebugPrograms_->Release();
+        if (impl_->meshOverlay_)
+            impl_->meshOverlay_->Release();
 #if WDX_ENABLE_M2
         if (impl_->m2Shading_)
             impl_->m2Shading_->ReleaseGpu();
@@ -2172,6 +2180,12 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         impl_->frameDebugTarget_.colorSamplesLinear = sceneToHdr;
         impl_->frameDebugTarget_.targetEncodesSrgb =
             sceneToHdr && outFmt != gfx::Format::Unknown && StripSrgb(outFmt) != outFmt;
+    }
+    if (dbg.overlay.Any() || impl_->meshOverlay_) {
+        const f32 aspect = Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f;
+        MeshOverlay().BeginFrame(dbg, impl_->frameDebugTarget_, Width(), Height(),
+                                 FrameCamera().ProjectionRH(aspect),
+                                 rs_.Settings().BackgroundColorRaw());
     }
 
     // A profile change invalidates this target's GTAO history. Per target, not

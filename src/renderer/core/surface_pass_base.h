@@ -77,6 +77,11 @@ public:
         debug_ = frame;
         debugTarget_ = target;
     }
+    // The slot being drawn, per draw: the transparent queue re-enters a pass
+    // under another slot without reopening it.
+    void SetPassSlot(core::PassSlot slot) {
+        passSlot_ = slot;
+    }
 
 protected:
     RenderService& rs_;
@@ -85,9 +90,13 @@ protected:
     shading::IShadingModel* owner_ = nullptr;
     core::DebugFrame debug_;
     core::DebugTargetInfo debugTarget_;
+    core::PassSlot passSlot_ = core::PassSlot::OpaqueColor;
 
     profiles::wc3::Wc3DebugPrograms& DebugPrograms() {
         return rs_.Pipeline().Wc3DebugPrograms();
+    }
+    mesh_overlay::MeshOverlayRenderer& MeshOverlay() {
+        return rs_.Pipeline().MeshOverlay();
     }
 
     Derived& self() {

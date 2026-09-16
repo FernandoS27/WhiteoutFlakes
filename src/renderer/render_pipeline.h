@@ -40,6 +40,9 @@ class IShadingModel;
 namespace profiles::wc3 {
 class Wc3DebugPrograms;
 }
+namespace mesh_overlay {
+class MeshOverlayRenderer;
+}
 namespace core {
 class IRenderProfile;
 class VertexLayoutCache;
@@ -256,6 +259,9 @@ public:
     i32 ComputeSelectedLod() const;
     // The WC3 debug pixel programs, created on first ask (debug views only).
     profiles::wc3::Wc3DebugPrograms& Wc3DebugPrograms();
+    // The wireframe views' edges, vertices and flat faces. Shading models emit
+    // into it from their draws; it allocates nothing until one does.
+    mesh_overlay::MeshOverlayRenderer& MeshOverlay();
 
     // ---- Shadow PSO/CB handles read by shadow::ShadowPass.
     //      Bundled rather than friended so the pass class doesn't need

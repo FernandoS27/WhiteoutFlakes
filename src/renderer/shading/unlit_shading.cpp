@@ -4,6 +4,7 @@
 #include "renderer/core/render_detail.h"
 #include "renderer/core/render_profile.h"
 #include "renderer/debug/draw_trace_hooks.h"
+#include "renderer/mesh_overlay/mesh_overlay_renderer.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -92,6 +93,8 @@ void UnlitShading::Init() {
     vsLit_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitLitVS));
     psLambert_ = make(gfx::ShaderStage::Pixel, WDX_UNLIT_BLOB(UnlitLambertPS));
     psBlinnPhong_ = make(gfx::ShaderStage::Pixel, WDX_UNLIT_BLOB(UnlitBlinnPhongPS));
+    vsOverlay_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitOverlayVS));
+    vsOverlaySkinned_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitOverlaySkinnedVS));
     vsSkinned_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitSkinnedVS));
     vsSkinnedLit_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitSkinnedLitVS));
 #undef WDX_UNLIT_BLOB
@@ -406,6 +409,29 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, geo.bonePaletteCb);
     }
 
+    // After the surface, against the streams, palette and constants above.
+    auto emitOverlay = [&] {
+        auto& overlay = rs_.Pipeline().MeshOverlay();
+        if (!overlay.Wants(ctx.pass))
+            return;
+        mesh_overlay::OverlayDraw o;
+        o.view = item.view;
+        o.geoIdx = item.geoIdx;
+        o.vs = key.skinned ? vsOverlaySkinned_ : vsOverlay_;
+        o.cbSlot = 3;
+        o.target.rtv = key.rtv;
+        o.target.extra[0] = key.extra0;
+        o.target.extra[1] = key.extra1;
+        o.target.extra[2] = key.extra2;
+        o.target.extraCount = key.extraRtvCount;
+        o.target.dsv = key.dsv;
+        overlay.Emit(cmd, o);
+    };
+    if (!ctx.debug.drawSurfaces) {
+        emitOverlay();
+        return;
+    }
+
     // G1 hook, after the PSO resolved and the CB was written, so the record
     // covers exactly the draws that were submitted.
     if (debug::DrawTraceEnabled()) {
@@ -443,6 +469,7 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
     }
 
     cmd->DrawIndexed(geo.indexCount);
+    emitOverlay();
 }
 
 core::SurfaceClass UnlitShading::Classify(const render_detail::RenderableView& view,

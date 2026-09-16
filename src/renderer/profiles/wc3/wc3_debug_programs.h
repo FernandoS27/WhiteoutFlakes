@@ -1,8 +1,9 @@
 #pragma once
 
-// The Warcraft III debug pixel programs (shaders/wc3_debug.slang) and the
-// constant buffer they read at PS b3. Created on first use, so a session that
-// never opens a debug view creates nothing and draws exactly as before.
+// The Warcraft III debug pixel programs (shaders/wc3_debug.slang), the
+// constant buffer they read at PS b3, and the mesh overlay's vertex stages
+// (shaders/wc3_overlay.slang). Created on first use, so a session that never
+// opens a debug view creates nothing and draws exactly as before.
 
 #include "bls/bls_pso_builder.h"
 #include "core/debug_view.h"
@@ -29,10 +30,20 @@ public:
     void Release();
 
     /// @brief The HD / Crystal / SD-on-HD program. A lighting view may only
-    ///        name the shadow maps this frame actually bound.
-    gfx::ShaderHandle Hd(bool cascades, bool pointShadows);
+    ///        name the shadow maps this frame actually bound. `dxil` asks for
+    ///        the SM 6 twin, which a retail vertex program loaded from the
+    ///        d3d12 bundle needs: D3D12 will not link it with SM 5.
+    gfx::ShaderHandle Hd(bool cascades, bool pointShadows, bool dxil = false);
     /// @brief The SD classic program.
-    gfx::ShaderHandle Sd();
+    gfx::ShaderHandle Sd(bool dxil = false);
+    /// @brief Whether a retail vertex program is DXIL (the d3d12 bundle).
+    static bool IsDxil(const bls::BlsProgram* program);
+
+    /// @brief The mesh overlay's vertex stage for an HD draw, skinned the way
+    ///        its retail permutation skins. Reads MeshOverlayData at VS b0.
+    gfx::ShaderHandle HdOverlay(bool skinned, bool boneBuffer);
+    /// @brief The same for an SD draw. Reads MeshOverlayData at VS b1.
+    gfx::ShaderHandle SdOverlay(bool skinned);
 
     /// @brief The SD normal views' pipeline. sd_highspec_vs hands the pixel
     ///        stage no normal, so these draw SD geometry through a vertex
@@ -52,9 +63,19 @@ private:
     std::array<gfx::ShaderHandle, 4> hd_{gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid,
                                          gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid};
     gfx::ShaderHandle sd_ = gfx::ShaderHandle::Invalid;
+    // The SM 6 twins, Invalid where no DXIL was built.
+    std::array<gfx::ShaderHandle, 4> hdDxil_{gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid,
+                                             gfx::ShaderHandle::Invalid,
+                                             gfx::ShaderHandle::Invalid};
+    gfx::ShaderHandle sdDxil_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle sdNormalVs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle sdNormalVsSkinned_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle sdNormalPs_ = gfx::ShaderHandle::Invalid;
+    // Rigid, constant palette, bone buffer.
+    std::array<gfx::ShaderHandle, 3> hdOverlay_{
+        gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid};
+    std::array<gfx::ShaderHandle, 2> sdOverlay_{gfx::ShaderHandle::Invalid,
+                                                gfx::ShaderHandle::Invalid};
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;
 
     struct SdNormalKey {

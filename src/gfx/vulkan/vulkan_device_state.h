@@ -114,9 +114,10 @@ inline constexpr u32 kSamplerBindingCount = 32;
 
 // Structured-buffer SRVs share set 1 with the textures, past both stages'
 // texture ranges: PS t16..t19 at 32..35 (the WC3 3.0.0 cluster buffers are
-// t16..t18), VS t16 (the >256-bone palette) at 48. cb_structs.slang declares
-// the same numbers.
-inline constexpr u32 kStorageBindings[] = {32, 33, 34, 35, 48};
+// t16..t18), VS t16 (the >256-bone palette) at 48, VS t17 (the mesh overlay's
+// elements) at 49. cb_structs.slang and mesh_overlay.slang declare the same
+// numbers.
+inline constexpr u32 kStorageBindings[] = {32, 33, 34, 35, 48, 49};
 inline constexpr u32 kStorageBindingCount = sizeof(kStorageBindings) / sizeof(kStorageBindings[0]);
 inline constexpr u32 StorageBindingFor(ShaderStage stage, u32 slot) {
     return stage == ShaderStage::Pixel ? kStageBindingShift + slot : 2 * kStageBindingShift + slot;

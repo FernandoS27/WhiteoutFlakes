@@ -3,6 +3,7 @@
 #include "../gfx/gfx.h"
 #include "animation/animation.h"
 #include "assets/texture_asset_manager.h"
+#include "core/mesh_overlay.h"
 #include "core/surface_table.h"
 #include "core/surface_vocabulary.h"
 #include "core/vertex_layout.h"
@@ -41,6 +42,63 @@ struct StagedMaterial {
     i32 sortOrder = 0;
 };
 
+/// @brief What the mesh overlay draws a geoset from: the positions and bone
+///        bytes its vertex buffers were built from, and its triangles.
+///
+/// Kept past upload because the staging it comes from is not: an overlay can
+/// be switched on long after the model loaded, and reading a vertex buffer back
+/// off the GPU is not an option every backend offers. Shared, like the buffers,
+/// by every actor on the same template.
+struct MeshOverlaySource {
+    std::vector<Vector3f> positions;
+    /// Four bytes per vertex when the weights ride inside the vertex record
+    /// (`.m3`); empty when a separate bone stream carries them, which the
+    /// overlay re-packs from the actor's SkinningSystem exactly as the upload did.
+    std::vector<u8> boneWeights;
+    std::vector<u8> boneIndices;
+    std::vector<u32> indices;
+
+    /// Built on first use.
+    const std::vector<core::MeshEdge>& Edges() const {
+        if (!edgesBuilt_) {
+            edges_ = core::BuildMeshEdges(indices, static_cast<u32>(positions.size()));
+            edgesBuilt_ = true;
+        }
+        return edges_;
+    }
+
+private:
+    mutable std::vector<core::MeshEdge> edges_;
+    mutable bool edgesBuilt_ = false;
+};
+
+/// @brief One actor's mesh overlay: the element states a host set, and the
+///        packed buffers the overlay draws (mesh_overlay/mesh_overlay_renderer.h).
+struct MeshOverlayActorState {
+    /// By geoset id — what an editor names a geoset by, and stable across a
+    /// re-upload that reorders the GPU geosets.
+    std::unordered_map<i32, core::MeshElementStates> states;
+    /// Bumped on every state change; a packed buffer older than it repacks.
+    u64 revision = 1;
+
+    struct Geoset {
+        const MeshOverlaySource* source = nullptr;
+        gfx::BufferHandle elements = gfx::BufferHandle::Invalid;
+        u32 capacity = 0; ///< float4 elements `elements` holds
+        u64 revision = 0;
+        core::MeshOverlayLayout layout;
+        bool markedFaces = false;
+    };
+    /// Parallel to RenderModel::gpuGeosets.
+    std::vector<Geoset> geosets;
+
+    void Release(gfx::IGFXDevice& gfx) {
+        for (auto& g : geosets)
+            gfx.Destroy(g.elements);
+        geosets.clear();
+    }
+};
+
 struct StagedGeoset {
     std::vector<Vertex> vertices;
     std::vector<u32> indices;
@@ -73,7 +131,14 @@ struct StagedGeoset {
 
     /// @brief `MeshData::deformable` — retain the bytes past upload.
     bool deformable = false;
+
+    /// @brief Moved to GPUGeoset::overlaySource at upload.
+    std::shared_ptr<const MeshOverlaySource> overlaySource;
 };
+
+/// @brief The mesh overlay's copy of one source mesh: its positions, its
+///        triangles, and the bone bytes when its baked record carries them.
+std::shared_ptr<const MeshOverlaySource> MakeMeshOverlaySource(const MeshData& mesh);
 
 struct GPUGeoset {
     i32 geosetId = -1;
@@ -140,6 +205,9 @@ struct GPUGeoset {
             return gfx::BufferHandle::Invalid;
         }
     }
+
+    /// What the mesh overlay draws this geoset from. Shared like the buffers.
+    std::shared_ptr<const MeshOverlaySource> overlaySource;
 
     f32 geosetAlpha = 1.0f;
     /// Not in the draw list at all this frame — see `FrameState::geosetHidden`.
@@ -309,6 +377,8 @@ struct RenderModel {
     std::vector<SurfaceAnim> surfaceAnim;
 
     std::vector<FrameState::LightState> activeLights;
+
+    MeshOverlayActorState overlay;
 
     bool hasLods = false;
 

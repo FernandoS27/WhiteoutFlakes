@@ -190,6 +190,14 @@ private:
 
     gfx::PipelineHandle GetOrBuildPso(const PsoKey& key);
 
+    /// The textures and the draw call, once Draw has bound the PSO, streams
+    /// and constants. Skipped by a wireframe view that replaces the surfaces.
+    void DrawSurface(const render_detail::DrawItem& item, const core::PassContext& ctx,
+                     const M3Surface& surface, const model::GPUGeoset& geo, const PsoKey& key);
+    /// The mesh overlay for the item's geoset, against the binds Draw made.
+    void EmitOverlay(const render_detail::DrawItem& item, const core::PassContext& ctx,
+                     const PsoKey& key);
+
     /// Fill a pass CB (view/proj/camera + the key/fill/back rig + ambient +
     /// team params) the one way, so the ribbon's own CB carries the SAME
     /// lighting a geoset gets — otherwise a lit ribbon shades against zero
@@ -230,6 +238,9 @@ private:
     gfx::ShaderHandle psMrt_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psDebug_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psDebugMrt_ = gfx::ShaderHandle::Invalid;
+    // The mesh overlay's vertex stages (shaders/m3_overlay.slang).
+    gfx::ShaderHandle vsOverlay_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsOverlaySkinned_ = gfx::ShaderHandle::Invalid;
     /// DebugViewData at b3, written per draw only while a debug view is on.
     gfx::BufferHandle debugCb_ = gfx::BufferHandle::Invalid;
     /// `vsM3Ribbon`. Named for the shader entry, which keeps the ribbon name
