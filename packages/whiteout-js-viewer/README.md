@@ -95,7 +95,7 @@ array of candidates, tried in order until one answers.
 
 **Viewer** — `init` · `load` · `loadModel` · `setPathSolver` · `setBackground` ·
 `setHdMode` / `setForceHd` · `setLightingMode` · `setShowGrid` ·
-`setShadowsEnabled` · `setBloomEnabled` · `setHdDebugMode` · `setTimeOfDay` ·
+`setShadowsEnabled` · `setBloomEnabled` · `setDebugView` · `setTimeOfDay` ·
 `setDayNightAnimate` · `setIblMode` · `resetCamera` · `zoomBy` · `zoomScale` ·
 `clearSplats` · `retryUnloadedAssets` · `getFps` · `toBlob` · `dispose`
 
@@ -106,7 +106,7 @@ array of candidates, tried in order until one answers.
 `activateCameraPreset` · `show` · `hide` · `detach`
 
 Also exported: `Model`, `Scene`, `TEAM_COLORS`, `TEAM_COLOR_NAMES`,
-`HD_DEBUG_MODES`, `MODEL_EXTENSIONS` / `isModelPath`, `EFFECT_EXTENSIONS` /
+`DEBUG_VIEWS` / `debugViewsFor` (with `Instance.debugFamily()`), `MODEL_EXTENSIONS` / `isModelPath`, `EFFECT_EXTENSIONS` /
 `isEffectPath`, `WebAudioBridge`, the load-table helpers, and the Hive URL
 helpers below.
 

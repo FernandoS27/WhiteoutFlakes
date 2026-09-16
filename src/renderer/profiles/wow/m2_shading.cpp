@@ -171,6 +171,7 @@ void M2CombinerShading::Init() {
     ps_[p++] =
         mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Opaque_Mod2xNA_Alpha_Alpha));
     ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Mod_Mod_Depth));
+    psDebug_ = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Debug));
 #undef WDX_M2_BLOB
 
     // One map per draw, so the Vulkan CB ring needs room for a busy frame —
@@ -178,6 +179,11 @@ void M2CombinerShading::Init() {
     constexpr u32 kCbRingSlots = 4096;
     drawCb_ = gfxDev->CreateBuffer({
         .size = sizeof(M2DrawCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kCbRingSlots,
+    });
+    debugCb_ = gfxDev->CreateBuffer({
+        .size = sizeof(core::DebugViewCbData),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = kCbRingSlots,
     });
@@ -202,6 +208,10 @@ void M2CombinerShading::ReleaseGpu() {
         gfxDev->Destroy(passCb_);
     if (drawCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(drawCb_);
+    if (debugCb_ != gfx::BufferHandle::Invalid)
+        gfxDev->Destroy(debugCb_);
+    debugCb_ = gfx::BufferHandle::Invalid;
+    psDebug_ = gfx::ShaderHandle::Invalid;
     passCb_ = gfx::BufferHandle::Invalid;
     drawCb_ = gfx::BufferHandle::Invalid;
     vs_.fill(gfx::ShaderHandle::Invalid);
@@ -286,7 +296,7 @@ gfx::PipelineHandle M2CombinerShading::GetOrBuildPso(const PsoKey& key) {
 
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = vs_[key.vsIndex];
-    desc.ps = ps_[key.psIndex];
+    desc.ps = key.debug ? psDebug_ : ps_[key.psIndex];
     desc.inputLayout = std::span<const gfx::InputElement>(elements);
     // The declared elements stop short of the record's end, so the true stride
     // has to be stated or the backends that bake it into the PSO walk the
@@ -318,6 +328,8 @@ bool M2CombinerShading::BeginPass(const core::PassContext& ctx,
     passView_ = ctx.view;
     passProj_ = ctx.projection;
     passCameraPos_ = ctx.cameraPos;
+    passDebug_ = ctx.debug;
+    passDebugTarget_ = ctx.debugTarget;
     passLights_ = &lists.sceneLights;
     // A new pass may hand a different light pool, and the views themselves are
     // rebuilt each frame; anything cached against the old one is stale.
@@ -420,6 +432,9 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     key.blend = static_cast<u8>(depthTwin ? M2Blend::Opaque : surf->blend);
     key.materialFlags = surf->materialFlags;
     key.mirrored = item.view->mirrored;
+    // A debug view swaps the combiner for the entry that runs it at fixed
+    // light; the depth half of a twin pair writes no colour and keeps its own.
+    key.debug = passDebug_.debugSurfaces && !depthTwin && psDebug_ != gfx::ShaderHandle::Invalid;
 
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
@@ -498,6 +513,14 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     // either is a validation error rather than a harmless omission.
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, passCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, passCb_);
+    if (key.debug) {
+        if (auto* c = static_cast<core::DebugViewCbData*>(gfxDev->MapBuffer(debugCb_))) {
+            *c = core::MakeDebugViewCb(passDebug_, passDebugTarget_, 0, key.psIndex, 4.0f);
+            gfxDev->UnmapBuffer(debugCb_);
+        }
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, debugCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, debugCb_);
+    }
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, drawCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, drawCb_);
 

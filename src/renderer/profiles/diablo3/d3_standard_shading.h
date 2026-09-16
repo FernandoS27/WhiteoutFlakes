@@ -226,6 +226,8 @@ private:
         bool alphaWrite = true;
         /// 0 solid, 1 wireframe. See D3PassState::fillMode.
         u32 fillMode = 0;
+        /// The debug entry in place of the material's.
+        bool debug = false;
 
         auto operator<=>(const PsoKey&) const = default;
     };
@@ -255,6 +257,9 @@ private:
     gfx::ShaderHandle vs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle vsSkinned_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle psDebug_ = gfx::ShaderHandle::Invalid;
+    /// DebugViewData at b3, written per draw only while a debug view is on.
+    gfx::BufferHandle debugCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle passCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle drawCb_ = gfx::BufferHandle::Invalid;
     std::map<PsoKey, gfx::PipelineHandle> psos_;
@@ -263,6 +268,8 @@ private:
     Matrix44f passView_ = Matrix44f::identity();
     Matrix44f passProj_ = Matrix44f::identity();
     Vector3f passCameraPos_ = {0.0f, 0.0f, 0.0f};
+    core::DebugFrame passDebug_;
+    core::DebugTargetInfo passDebugTarget_;
 };
 
 } // namespace whiteout::flakes::renderer::profiles::diablo3

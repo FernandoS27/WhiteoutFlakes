@@ -30,6 +30,8 @@
 // the shared layout, so a declared binding left unbound in either stage is a
 // validation error even when only one stage reads it.
 
+import debug_view;
+
 struct M2PassData
 {
     float4x4 view;
@@ -98,6 +100,8 @@ struct M2BoneData
 // Vertex stage only — the combiners never see a bone. Mirrors how the WC3
 // geoset passes bind their palette (vertex slot 3 there, b2 here).
 [[vk::binding(2, 0)]] ConstantBuffer<M2BoneData> bones : register(b2);
+// The debug entry only (DEBUG_VIEW_DESIGN.md); stripped from the others.
+[[vk::binding(3, 0)]] ConstantBuffer<DebugViewData> debugView : register(b3);
 
 // ---- Interstage signature --------------------------------------------------
 
@@ -332,6 +336,11 @@ float4 M2Finish(float3 rgb, float a, PSInput input)
     return float4(ApplyFog(out, input.worldPos, draw.params.y), a);
 }
 
+float4 M2Finish(float4 mixed, PSInput input)
+{
+    return M2Finish(mixed.rgb, mixed.a, input);
+}
+
 // The combiner table's `in`, lit — the client's own light model, resolved per
 // model on the CPU (m2_lighting.h) and evaluated here:
 //
@@ -362,10 +371,11 @@ float4 M2Finish(float3 rgb, float a, PSInput input)
 //   holes. Per *pixel* because the flip is a discontinuity — interpolating
 //   across it is what banded the wings. This is our one deliberate deviation:
 //   the client lights per vertex, in the sixteen vertex shaders.
-float4 M2In(PSInput i)
+// The light M2In multiplies the combiner input by, 1 on an unlit batch.
+float3 M2Light(PSInput i)
 {
     if (draw.params.z <= 0.5)
-        return i.color;
+        return float3(1.0, 1.0, 1.0);
 
     float3 n = normalize(i.normalWS);
     let toEye = normalize(pass.cameraPosWS.xyz - i.worldPos);
@@ -390,7 +400,14 @@ float4 M2In(PSInput i)
         acc += draw.pointColor[L].rgb * saturate(dot(n, d / dist)) * atten;
     }
 
-    return float4(i.color.rgb * saturate(acc), i.color.a);
+    return saturate(acc);
+}
+
+float4 M2In(PSInput i)
+{
+    if (draw.params.z <= 0.5)
+        return i.color;
+    return float4(i.color.rgb * M2Light(i), i.color.a);
 }
 
 float4 T0(PSInput i) { return tex0.Sample(samp0, i.uv01.xy); }
@@ -410,303 +427,498 @@ float4 T3(PSInput i) { return tex3.Sample(samp3, i.uv23.zw); }
 // model looks wrong.
 // ---------------------------------------------------------------------------
 
+float4 M2Mix_Combiners_Opaque(PSInput i, float4 c)
+{
+    let t0 = T0(i);
+    return float4(c.rgb * t0.rgb, c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i);
-    return M2Finish(c.rgb * t0.rgb, c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod(PSInput i, float4 c)
+{
+    let t0 = T0(i);
+    return float4(c.rgb * t0.rgb, c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i);
-    return M2Finish(c.rgb * t0.rgb, c.a * t0.a, i);
+    return M2Finish(M2Mix_Combiners_Mod(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Opaque_Mod(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb, c.a * t1.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_Mod(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb, c.a * t1.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_Mod(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Opaque_Mod2x(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb * 2.0, c.a * t1.a * 2.0);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_Mod2x(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb * 2.0, c.a * t1.a * 2.0, i);
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2x(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Opaque_Mod2xNA(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb * 2.0, c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb * 2.0, c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2xNA(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Opaque_Opaque(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb, c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_Opaque(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb, c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_Opaque(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod_Mod(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb, c.a * t0.a * t1.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Mod(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb, c.a * t0.a * t1.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Mod(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod_Mod2x(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb * 2.0, c.a * t0.a * t1.a * 2.0);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Mod2x(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb * 2.0, c.a * t0.a * t1.a * 2.0, i);
+    return M2Finish(M2Mix_Combiners_Mod_Mod2x(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod_Add(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb, c.a * t0.a + t1.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Add(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb, c.a * t0.a + t1.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Add(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod_Mod2xNA(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb * 2.0, c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Mod2xNA(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb * 2.0, c.a * t0.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Mod2xNA(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod_AddNA(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb, c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_AddNA(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb, c.a * t0.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_AddNA(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Mod_Opaque(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb, c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Opaque(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb, c.a * t0.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Opaque(i, M2In(i)), i);
 }
 
-[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Mod2xNA_Alpha(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = c.rgb * t0.rgb * lerp(t1.rgb * 2.0, float3(1.0, 1.0, 1.0), t0.a);
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2xNA_Alpha(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Opaque_AddAlpha(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb * t1.a, c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_AddAlpha(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb * t1.a, c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_AddAlpha(i, M2In(i)), i);
 }
 
+float4 M2Mix_Combiners_Opaque_AddAlpha_Alpha(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb * t1.a * t0.a, c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_AddAlpha_Alpha(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb * t1.a * t0.a, c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_AddAlpha_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED — Opaque_Mod2xNA_Alpha with a third unit added on top.
-[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_Add(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Add(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
     let rgb = c.rgb * t0.rgb * lerp(t1.rgb * 2.0, float3(1.0, 1.0, 1.0), t0.a) +
               t2.rgb * t2.a;
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_Add(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Add(i, M2In(i)), i);
 }
 
 // DERIVED
+float4 M2Mix_Combiners_Mod_AddAlpha(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb * t1.a, c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_AddAlpha(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb * t1.a, c.a * t0.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_AddAlpha(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Combiners_Mod_AddAlpha_Alpha(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Mod_AddAlpha_Alpha(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = c.rgb * t0.rgb + t1.rgb * t1.a * t0.a;
-    return M2Finish(rgb, c.a * (t0.a + t1.a * t1.a), i);
+    return float4(rgb, c.a * (t0.a + t1.a * t1.a));
+}
+[shader("fragment")] float4 psM2Combiners_Mod_AddAlpha_Alpha(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Mod_AddAlpha_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Combiners_Opaque_Alpha_Alpha(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Alpha_Alpha(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = lerp(lerp(c.rgb * t0.rgb, t1.rgb, t1.a), c.rgb * t0.rgb, t0.a);
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Alpha_Alpha(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Alpha_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED — the "3s" variant folds a third unit into the shine mask.
-[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_3s(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Mod2xNA_Alpha_3s(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
     let rgb = c.rgb * t0.rgb * lerp(t1.rgb * 2.0, t2.rgb, t0.a);
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_3s(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2xNA_Alpha_3s(i, M2In(i)), i);
 }
 
 // DERIVED — _Wgt scales the added unit by the batch's per-unit weight.
+float4 M2Mix_Combiners_Opaque_AddAlpha_Wgt(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb * t1.a * draw.unitWeights.y, c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_AddAlpha_Wgt(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb * t1.a * draw.unitWeights.y, c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_AddAlpha_Wgt(i, M2In(i)), i);
 }
 
 // DERIVED
+float4 M2Mix_Combiners_Mod_Add_Alpha(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb + t1.rgb, c.a * t0.a + t1.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Add_Alpha(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb + t1.rgb, c.a * t0.a + t1.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Add_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Combiners_Opaque_ModNA_Alpha(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_ModNA_Alpha(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = c.rgb * t0.rgb * lerp(t1.rgb, float3(1.0, 1.0, 1.0), t0.a);
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_ModNA_Alpha(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_ModNA_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Combiners_Mod_AddAlpha_Wgt(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Mod_AddAlpha_Wgt(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = c.rgb * t0.rgb + t1.rgb * t1.a * draw.unitWeights.y;
-    return M2Finish(rgb, c.a * t0.a, i);
+    return float4(rgb, c.a * t0.a);
+}
+[shader("fragment")] float4 psM2Combiners_Mod_AddAlpha_Wgt(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Mod_AddAlpha_Wgt(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Combiners_Opaque_Mod_Add_Wgt(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Mod_Add_Wgt(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = c.rgb * lerp(t0.rgb, t1.rgb, t1.a) + t0.rgb * draw.unitWeights.x;
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Mod_Add_Wgt(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Mod_Add_Wgt(i, M2In(i)), i);
 }
 
 // DERIVED — UnshAlpha keeps the *unshaded* colour out of the shine term.
-[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
     let glow = draw.unitWeights.z;
     let rgb = lerp(c.rgb * t0.rgb * lerp(t1.rgb * 2.0, float3(1.0, 1.0, 1.0), t0.a),
                    t0.rgb, glow * t2.a);
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha(i, M2In(i)), i);
 }
 
 // DERIVED — two diffuse maps crossfaded by the batch weight.
-[shader("fragment")] float4 psM2Combiners_Mod_Dual_Crossfade(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Mod_Dual_Crossfade(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
     let a = saturate(draw.unitWeights.y);
     let b = saturate(draw.unitWeights.z);
     let blended = lerp(lerp(t0, t1, a), t2, b);
-    return M2Finish(c.rgb * blended.rgb, c.a * blended.a, i);
+    return float4(c.rgb * blended.rgb, c.a * blended.a);
+}
+[shader("fragment")] float4 psM2Combiners_Mod_Dual_Crossfade(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Mod_Dual_Crossfade(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_Alpha(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Alpha(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
     let secondary = lerp(t1.rgb * 2.0, float3(1.0, 1.0, 1.0), t0.a);
     let rgb = lerp(c.rgb * t0.rgb * secondary, t2.rgb, t2.a);
-    return M2Finish(rgb, c.a, i);
+    return float4(rgb, c.a);
+}
+[shader("fragment")] float4 psM2Combiners_Opaque_Mod2xNA_Alpha_Alpha(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED — the crossfade above, masked by a fourth unit.
-[shader("fragment")] float4 psM2Combiners_Mod_Masked_Dual_Crossfade(PSInput i) : SV_Target
+float4 M2Mix_Combiners_Mod_Masked_Dual_Crossfade(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i); let t3 = T3(i);
     let a = saturate(draw.unitWeights.y);
     let b = saturate(draw.unitWeights.z);
     let blended = lerp(lerp(t0, t1, a), t2, b);
-    return M2Finish(c.rgb * blended.rgb, c.a * blended.a * t3.a, i);
+    return float4(c.rgb * blended.rgb, c.a * blended.a * t3.a);
+}
+[shader("fragment")] float4 psM2Combiners_Mod_Masked_Dual_Crossfade(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Combiners_Mod_Masked_Dual_Crossfade(i, M2In(i)), i);
 }
 
 // DERIVED
+float4 M2Mix_Combiners_Opaque_Alpha(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(lerp(c.rgb * t0.rgb, t1.rgb, t1.a), c.a);
+}
 [shader("fragment")] float4 psM2Combiners_Opaque_Alpha(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(lerp(c.rgb * t0.rgb, t1.rgb, t1.a), c.a, i);
+    return M2Finish(M2Mix_Combiners_Opaque_Alpha(i, M2In(i)), i);
 }
 
 // DERIVED — guild tabard compositing needs the emblem/border colour constants
 // the design defers; these draw the base layer so a tabard is not a hole.
+float4 M2Mix_Guild(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
+    let emblem = lerp(t1.rgb, t2.rgb, t2.a);
+    return float4(c.rgb * lerp(t0.rgb, emblem, t1.a), c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Guild(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
-    let emblem = lerp(t1.rgb, t2.rgb, t2.a);
-    return M2Finish(c.rgb * lerp(t0.rgb, emblem, t1.a), c.a * t0.a, i);
+    return M2Finish(M2Mix_Guild(i, M2In(i)), i);
 }
 
 // DERIVED
+float4 M2Mix_Guild_NoBorder(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * lerp(t0.rgb, t1.rgb, t1.a), c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Guild_NoBorder(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * lerp(t0.rgb, t1.rgb, t1.a), c.a * t0.a, i);
+    return M2Finish(M2Mix_Guild_NoBorder(i, M2In(i)), i);
 }
 
 // DERIVED
-[shader("fragment")] float4 psM2Guild_Opaque(PSInput i) : SV_Target
+float4 M2Mix_Guild_Opaque(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i); let t2 = T2(i);
     let emblem = lerp(t1.rgb, t2.rgb, t2.a);
-    return M2Finish(c.rgb * lerp(t0.rgb, emblem, t1.a), c.a, i);
+    return float4(c.rgb * lerp(t0.rgb, emblem, t1.a), c.a);
+}
+[shader("fragment")] float4 psM2Guild_Opaque(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Guild_Opaque(i, M2In(i)), i);
 }
 
 // DERIVED — the depth-fading twin of Combiners_Mod. Without the EDGF chunk the
 // fade term is 1, so this is Mod exactly.
+float4 M2Mix_Combiners_Mod_Depth(PSInput i, float4 c)
+{
+    let t0 = T0(i);
+    return float4(c.rgb * t0.rgb, c.a * t0.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Depth(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i);
-    return M2Finish(c.rgb * t0.rgb, c.a * t0.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Depth(i, M2In(i)), i);
 }
 
 // DERIVED — the two-texture twin of Combiners_Mod_Depth, and 12.1's pixel
 // shader 36 (row 35). Same standing as Mod_Depth: without the EDGF chunk the
 // fade term is 1, which leaves this exactly Mod_Mod.
+float4 M2Mix_Combiners_Mod_Mod_Depth(PSInput i, float4 c)
+{
+    let t0 = T0(i); let t1 = T1(i);
+    return float4(c.rgb * t0.rgb * t1.rgb, c.a * t0.a * t1.a);
+}
 [shader("fragment")] float4 psM2Combiners_Mod_Mod_Depth(PSInput i) : SV_Target
 {
-    let c = M2In(i);
-    let t0 = T0(i); let t1 = T1(i);
-    return M2Finish(c.rgb * t0.rgb * t1.rgb, c.a * t0.a * t1.a, i);
+    return M2Finish(M2Mix_Combiners_Mod_Mod_Depth(i, M2In(i)), i);
 }
 
 // DERIVED — self-illuminated: the second unit is an emissive mask added
 // unlit, which is what separates Illum from Opaque_Add.
-[shader("fragment")] float4 psM2Illum(PSInput i) : SV_Target
+float4 M2Mix_Illum(PSInput i, float4 c)
 {
-    let c = M2In(i);
     let t0 = T0(i); let t1 = T1(i);
     let rgb = c.rgb * t0.rgb + t0.rgb * t1.rgb * draw.unitWeights.y;
-    return M2Finish(rgb, c.a * t0.a, i);
+    return float4(rgb, c.a * t0.a);
+}
+[shader("fragment")] float4 psM2Illum(PSInput i) : SV_Target
+{
+    return M2Finish(M2Mix_Illum(i, M2In(i)), i);
+}
+
+// ---- Debug views (DEBUG_VIEW_DESIGN.md) ------------------------------------
+//
+// A combiner names no channels, so the debug entry runs the batch's own one at
+// fixed light: with none it shows what the surface emits, and what light adds
+// on top of that is its diffuse. The case order is M2PixelShader's — the index
+// the host keys its pixel shader array on, borrowed rows included.
+float4 M2MixById(uint id, PSInput i, float4 c)
+{
+    switch (id)
+    {
+    case 0u: return M2Mix_Combiners_Opaque(i, c);
+    case 1u: return M2Mix_Combiners_Mod(i, c);
+    case 2u: return M2Mix_Combiners_Opaque_Mod(i, c);
+    case 3u: return M2Mix_Combiners_Opaque_Mod2x(i, c);
+    case 4u: return M2Mix_Combiners_Opaque_Mod2xNA(i, c);
+    case 5u: return M2Mix_Combiners_Opaque_Opaque(i, c);
+    case 6u: return M2Mix_Combiners_Mod_Mod(i, c);
+    case 7u: return M2Mix_Combiners_Mod_Mod2x(i, c);
+    case 8u: return M2Mix_Combiners_Mod_Add(i, c);
+    case 9u: return M2Mix_Combiners_Mod_Mod2xNA(i, c);
+    case 10u: return M2Mix_Combiners_Mod_AddNA(i, c);
+    case 11u: return M2Mix_Combiners_Mod_Opaque(i, c);
+    case 12u: return M2Mix_Combiners_Opaque_Mod2xNA_Alpha(i, c);
+    case 13u: return M2Mix_Combiners_Opaque_AddAlpha(i, c);
+    case 14u: return M2Mix_Combiners_Opaque_AddAlpha_Alpha(i, c);
+    case 15u: return M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Add(i, c);
+    case 16u: return M2Mix_Combiners_Mod_AddAlpha(i, c);
+    case 17u: return M2Mix_Combiners_Mod_AddAlpha_Alpha(i, c);
+    case 18u: return M2Mix_Combiners_Opaque_Alpha_Alpha(i, c);
+    case 19u: return M2Mix_Combiners_Opaque_Mod2xNA_Alpha_3s(i, c);
+    case 20u: return M2Mix_Combiners_Opaque_AddAlpha_Wgt(i, c);
+    case 21u: return M2Mix_Combiners_Mod_Add_Alpha(i, c);
+    case 22u: return M2Mix_Combiners_Opaque_ModNA_Alpha(i, c);
+    case 23u: return M2Mix_Combiners_Mod_AddAlpha_Wgt(i, c);
+    case 24u: return M2Mix_Combiners_Opaque_Mod_Add_Wgt(i, c);
+    case 25u: return M2Mix_Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha(i, c);
+    case 26u: return M2Mix_Combiners_Mod_Dual_Crossfade(i, c);
+    case 27u: return M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Alpha(i, c);
+    case 28u: return M2Mix_Combiners_Mod_Masked_Dual_Crossfade(i, c);
+    case 29u: return M2Mix_Combiners_Opaque_Alpha(i, c);
+    case 30u: return M2Mix_Guild(i, c);
+    case 31u: return M2Mix_Guild_NoBorder(i, c);
+    case 32u: return M2Mix_Guild_Opaque(i, c);
+    case 33u: return M2Mix_Combiners_Mod_Depth(i, c);
+    case 34u: return M2Mix_Illum(i, c);
+    case 35u: return M2Mix_Combiners_Opaque_Mod2xNA_Alpha_Alpha(i, c);
+    case 36u: return M2Mix_Combiners_Mod_Mod_Depth(i, c);
+    default: return M2Mix_Combiners_Opaque(i, c);
+    }
+}
+
+[shader("fragment")] float4 psM2Debug(PSInput i) : SV_Target
+{
+    let d = debugView;
+    uint w, h;
+    tex0.GetDimensions(w, h);
+    DebugSurface s = DebugSurfaceInit();
+    s.mipLevel = DebugMipLevel(i.uv01.xy, float2(w, h));
+
+    let id = d.ctl.w;
+    let shaded = M2MixById(id, i, M2In(i));
+    if (shaded.a < draw.params.x)
+        discard;
+    let unlit = M2MixById(id, i, float4(0.0, 0.0, 0.0, i.color.a));
+    let full = M2MixById(id, i, i.color);
+
+    float3 n = normalize(i.normalWS);
+    n = (dot(n, pass.cameraPosWS.xyz - i.worldPos) < 0.0) ? -n : n;
+
+    s.albedo = full.rgb - unlit.rgb;
+    s.emissive = unlit.rgb;
+    s.normalWS = n;
+    s.vertexNormalWS = n;
+    s.opacity = shaded.a;
+    float lights = any(draw.lightDiffuse.rgb > 0.0) ? 1.0 : 0.0;
+    for (int L = 0; L < kM2PointLights; ++L)
+        lights += any(draw.pointColor[L].rgb > 0.0) ? 1.0 : 0.0;
+    s.lightCount = lights;
+    // No specular term exists in this light model, so Specular Only is black.
+    let lighting = DebugLightingOverride(d);
+    s.lit = (lighting == 3u) ? float3(0.0, 0.0, 0.0)
+                             : DebugOverrideAlbedo(d, float3(1.0, 1.0, 1.0)) * M2Light(i);
+    s.present = kDbgHasMip | kDbgHasAlbedo | kDbgHasEmissive | kDbgHasNormal |
+                kDbgHasVertexNormal | kDbgHasLightCount | kDbgHasLit;
+    return DebugLegacy(s, d, i.position.xy);
 }

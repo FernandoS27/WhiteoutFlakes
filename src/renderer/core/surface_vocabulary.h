@@ -13,6 +13,7 @@
 // ============================================================================
 
 #include "bls/layer_material.h" // bls::DepthFill
+#include "core/debug_view.h"
 #include "whiteout/flakes/types.h"
 
 namespace whiteout::flakes::renderer::core {
@@ -301,6 +302,10 @@ struct PassContext {
     // not something a shading model should reach back through the pipeline
     // to rediscover. Null in a pass built without one.
     const IRenderProfile* profile = nullptr;
+    // The frame's debug view. A model draws its real shaders unless
+    // `debug.debugSurfaces` asks for its debug pixel shader.
+    DebugFrame debug;
+    DebugTargetInfo debugTarget;
 };
 
 } // namespace whiteout::flakes::renderer::core

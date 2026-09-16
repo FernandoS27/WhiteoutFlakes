@@ -201,6 +201,8 @@ void M3StandardShading::Init() {
     vsSkinned_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3StandardSkinnedVS));
     ps_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardPS));
     psMrt_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardMrtPS));
+    psDebug_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardDebugPS));
+    psDebugMrt_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardDebugMrtPS));
     vsWorld_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3RibbonVS));
 #undef WDX_M3_BLOB
 
@@ -208,6 +210,11 @@ void M3StandardShading::Init() {
     constexpr u32 kCbRingSlots = 4096;
     drawCb_ = gfxDev->CreateBuffer({
         .size = sizeof(M3DrawCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kCbRingSlots,
+    });
+    debugCb_ = gfxDev->CreateBuffer({
+        .size = sizeof(core::DebugViewCbData),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = kCbRingSlots,
     });
@@ -245,6 +252,11 @@ void M3StandardShading::ReleaseGpu() {
         gfxDev->Destroy(passCb_);
     if (worldPassCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(worldPassCb_);
+    if (debugCb_ != gfx::BufferHandle::Invalid)
+        gfxDev->Destroy(debugCb_);
+    debugCb_ = gfx::BufferHandle::Invalid;
+    psDebug_ = gfx::ShaderHandle::Invalid;
+    psDebugMrt_ = gfx::ShaderHandle::Invalid;
     drawCb_ = gfx::BufferHandle::Invalid;
     passCb_ = gfx::BufferHandle::Invalid;
     worldPassCb_ = gfx::BufferHandle::Invalid;
@@ -321,7 +333,7 @@ gfx::PipelineHandle M3StandardShading::GetOrBuildPso(const PsoKey& key) {
 
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = key.skinned ? vsSkinned_ : vs_;
-    desc.ps = key.mrt ? psMrt_ : ps_;
+    desc.ps = key.debug ? (key.mrt ? psDebugMrt_ : psDebug_) : (key.mrt ? psMrt_ : ps_);
     desc.inputLayout = std::span<const gfx::InputElement>(elements);
     desc.inputSlotStrides[0] = key.stride;
     desc.topology = gfx::PrimitiveTopology::TriangleList;
@@ -377,6 +389,8 @@ bool M3StandardShading::BeginPass(const core::PassContext& ctx,
     passProj_ = ctx.projection;
     passCameraPos_ = ctx.cameraPos;
     passSlot_ = ctx.pass;
+    passDebug_ = ctx.debug;
+    passDebugTarget_ = ctx.debugTarget;
 
     auto* gfxDev = rs_.Pipeline().Gfx();
     if (auto* c = static_cast<M3PassCb*>(gfxDev->MapBuffer(passCb_))) {
@@ -491,6 +505,12 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     // no other frame binds the fourth attachment. A transparent draw in the
     // same pass stays on the forward entry and writes SV_Target0 alone.
     key.mrt = key.extraRtvCount == 3 && M3BlendWritesDepth(key.blend);
+    // A debug view swaps the pixel entry. Only the lighting views keep the
+    // sidecar: the deferred lights read it, and the channel views skip them.
+    key.debug = passDebug_.debugSurfaces && psDebug_ != gfx::ShaderHandle::Invalid &&
+                psDebugMrt_ != gfx::ShaderHandle::Invalid;
+    if (key.debug && core::KindOf(passDebug_.view) != core::DebugViewKind::Lighting)
+        key.mrt = false;
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
         return;
@@ -606,6 +626,14 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, drawCb_);
     if (key.skinned)
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, geo.bonePaletteCb);
+    if (key.debug) {
+        if (auto* c = static_cast<core::DebugViewCbData*>(gfxDev->MapBuffer(debugCb_))) {
+            *c = core::MakeDebugViewCb(passDebug_, passDebugTarget_, 0, 0, 3.0f);
+            gfxDev->UnmapBuffer(debugCb_);
+        }
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, debugCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, debugCb_);
+    }
 
     // Every texture slot, every draw — which of them survive into the
     // compiled PS is Slang's dead-code decision, and binding fewer than it

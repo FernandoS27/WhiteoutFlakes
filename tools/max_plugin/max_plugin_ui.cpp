@@ -80,17 +80,35 @@ std::string PickFolderWin32(HWND parent) {
     return result;
 }
 
-constexpr std::array<const char*, 9> kDebugVisLabels = {
-    "Off",
-    "Albedo",
-    "World Normal",
-    "LOD Heatmap",
-    "Light Count",
-    "Shading Only (white albedo)",
-    "Shading Only (grey albedo)",
-    "Specular Only (black albedo)",
-    "No ORM",
+// Every debug view in menu order, with its PBR and legacy label. Which family
+// the model gets is DebugFamilyOf; which views it lists, DebugViewInFamily.
+struct DebugViewItem {
+    DebugView view;
+    const char* pbrLabel;
+    const char* legacyLabel;
 };
+constexpr std::array<DebugViewItem, 20> kDebugViews = {{
+    {DebugView::Off, "Off", "Off"},
+    {DebugView::Albedo, "Albedo", "Diffuse"},
+    {DebugView::Normal, "World Normal", "Normal (with normal map)"},
+    {DebugView::VertexNormal, "Vertex Normal", "Vertex Normal"},
+    {DebugView::Roughness, "Roughness", "Roughness"},
+    {DebugView::Metalness, "Metalness", "Metalness"},
+    {DebugView::MaterialAo, "Material AO", "Material AO"},
+    {DebugView::Specular, "Specular", "Specular"},
+    {DebugView::Gloss, "Gloss", "Gloss"},
+    {DebugView::Emissive, "Emissive", "Emissive"},
+    {DebugView::TeamMask, "Team Color Mask", "Team Color Mask"},
+    {DebugView::VertexColor, "Vertex Color", "Vertex Color"},
+    {DebugView::Opacity, "Opacity", "Opacity"},
+    {DebugView::TextureMip, "Texture Mip Level", "Texture Mip Level"},
+    {DebugView::LightCount, "Light Count", "Light Count"},
+    {DebugView::LightingWhite, "Shading Only (white albedo)", "Shading Only (white albedo)"},
+    {DebugView::LightingGrey, "Shading Only (grey albedo)", "Shading Only (grey albedo)"},
+    {DebugView::SpecularOnly, "Specular Only (black albedo)", "Specular Only (black albedo)"},
+    {DebugView::NoOrm, "No ORM", "No ORM"},
+    {DebugView::AoOnly, "AO Only", "AO Only"},
+}};
 
 constexpr std::array<const char*, 5> kLodLabels = {
     "Auto (screen size)", "Force LOD 0 (base)",   "Force LOD 1",
@@ -182,10 +200,18 @@ void MaxPluginUI::BuildMenuBar() {
             ImGui::Separator();
 
             if (ImGui::BeginMenu("Debug View")) {
-                const i32 cur = svc.Settings().HdDebugMode();
-                for (i32 i = 0; i < static_cast<i32>(kDebugVisLabels.size()); ++i) {
-                    if (ImGui::MenuItem(kDebugVisLabels[i], nullptr, i == cur)) {
-                        svc.Settings().SetHdDebugMode(i);
+                const DebugViewFamily family = svc.DebugFamilyOf(win_.FocusActor());
+                ImGui::TextDisabled(family == DebugViewFamily::Pbr ? "PBR materials"
+                                                                   : "Legacy materials");
+                ImGui::Separator();
+                const DebugView cur = svc.Settings().GetDebugView();
+                for (const auto& item : kDebugViews) {
+                    if (!DebugViewInFamily(item.view, family))
+                        continue;
+                    const char* label =
+                        family == DebugViewFamily::Pbr ? item.pbrLabel : item.legacyLabel;
+                    if (ImGui::MenuItem(label, nullptr, item.view == cur)) {
+                        svc.Settings().SetDebugView(item.view);
                         SaveIni(win_);
                     }
                 }

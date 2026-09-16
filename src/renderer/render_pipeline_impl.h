@@ -9,6 +9,7 @@
 #include "renderer/particle/particle_service.h"
 #include "shading/shading_registry.h"
 #include "shading/unlit_shading.h"
+#include "profiles/wc3/wc3_debug_programs.h"
 #if WDX_ENABLE_M2
 #include "renderer/profiles/wow/m2_shading.h"
 #endif
@@ -85,6 +86,12 @@ struct RenderPipeline::Impl {
     // before any frame (PSO warm-up) fall back to the mode, which is what they
     // read before this existed.
     const core::IRenderProfile* frameProfile_ = nullptr;
+    // The frame's debug view, latched beside the profile and handed to every
+    // model through PassContext.
+    core::DebugFrame frameDebug_;
+    core::DebugTargetInfo frameDebugTarget_;
+    // The WC3 debug pixel programs; created lazily on the first debug draw.
+    std::unique_ptr<profiles::wc3::Wc3DebugPrograms> wc3DebugPrograms_;
 
     // Shading models, long-lived so they can hold per-model caches and so
     // P8/P9/P10 have somewhere to register their ids. Held by base pointer to
@@ -168,6 +175,12 @@ struct RenderPipeline::Impl {
     // and destroying the PSO the previous viewport is still using is a
     // use-after-free the driver crashes on. Formats seen per run: two.
     std::vector<std::pair<gfx::Format, gfx::PipelineHandle>> tonemapPSOs_;
+    // What stands in for the tonemap under a debug channel view: a straight
+    // copy, so the channel reaches the screen as computed. Per format for the
+    // tonemap's reason.
+    gfx::ShaderHandle debugCopyVs_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle debugCopyPs_ = gfx::ShaderHandle::Invalid;
+    std::vector<std::pair<gfx::Format, gfx::PipelineHandle>> debugCopyPSOs_;
     gfx::BufferHandle cbPerFrame_ = gfx::BufferHandle::Invalid;
 
     // ---- Particle / splat VBs ----

@@ -465,6 +465,8 @@ u64 HashRequest(const PsoRequest& r) {
     if (r.extraColorWrite)
         mrtBits |= (1ull << 63);
     k ^= mrtBits * 0xCBF29CE484222325ull;
+    // Zero for every real permutation, so their keys are what they were.
+    k ^= u64(r.psOverride) * 0x2545F4914F6CDD1Dull;
     return k;
 }
 
@@ -503,7 +505,9 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
 
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = request.program->vs->permuteHandles[request.vsIndex];
-    desc.ps = request.program->ps->permuteHandles[request.psIndex];
+    desc.ps = (request.psOverride != gfx::ShaderHandle::Invalid)
+                  ? request.psOverride
+                  : request.program->ps->permuteHandles[request.psIndex];
     desc.inputLayout = LayoutFor(request.layout, device_->GetApi());
     desc.topology = request.topology;
     desc.blend = BlendFor(request.material.alpha);
@@ -527,7 +531,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
         // can pre-warm this same PSO before the first draw. Trace
         // dedupes against keys it already loaded from disk, so we don't
         // need to gate this beyond the cache miss above.
-        if (trace_)
+        if (trace_ && request.psOverride == gfx::ShaderHandle::Invalid)
             trace_->Record(request);
         if (inReplay_)
             ++stats_.replayCacheBuilds;

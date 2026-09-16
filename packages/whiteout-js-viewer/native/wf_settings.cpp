@@ -59,12 +59,18 @@ void wf_set_bloom_enabled(WfRenderer* h, int on) {
     h->renderer.Settings().SetBloomEnabled(on != 0);
 }
 
-// HD debug visualisation mode. 0=Off, 1=Albedo, 2=WorldNormal,
-// 3=LodHeatmap, 4=LightCount, 5=ShadingWhite, 6=ShadingGrey,
-// 7=SpecularOnly, 8=NoOrm. Matches basic_viewer's kDebugVisLabels.
+// The debug view before it had a name: the same integers as
+// wf_set_debug_view, kept for hosts built against it.
 void wf_set_hd_debug_mode(WfRenderer* h, int mode) {
     if (!h) return;
     h->renderer.Settings().SetHdDebugMode(mode);
+}
+
+// Surface debug view, a DebugView value (include/whiteout/flakes/enums.h).
+// One that is not a view turns it off.
+void wf_set_debug_view(WfRenderer* h, int view) {
+    if (!h) return;
+    h->renderer.Settings().SetHdDebugMode(view);
 }
 
 // Day-night-cycle time of day, in hours [0..24). DncService wraps out-of-range

@@ -2,7 +2,7 @@
 // WhiteoutViewer. Owns directory picking, sidebar population, and the
 // pathSolver chain (local index → Hive direct asset → /casc-contents/).
 
-import { WhiteoutViewer, TEAM_COLORS, HD_DEBUG_MODES,
+import { WhiteoutViewer, TEAM_COLORS, debugViewsFor,
          EFFECT_EXTENSIONS, MODEL_EXTENSIONS, isModelPath } from './wf-viewer.js';
 import { WebAudioBridge } from './web-audio.js';
 import { buildOverrideMap, tableModels, isAbsoluteUrl } from './load-table.js';
@@ -226,19 +226,14 @@ export class HiveApp {
             apply();
         }
         if (this.debugVisSel) {
-            // Populate from the HD_DEBUG_MODES list so the labels stay
-            // in sync with basic_viewer without hard-coding here.
-            this.debugVisSel.innerHTML = '';
-            for (const m of HD_DEBUG_MODES) {
-                const opt = document.createElement('option');
-                opt.value = String(m.value);
-                opt.textContent = m.label;
-                this.debugVisSel.appendChild(opt);
-            }
-            const apply = () =>
-                this.viewer.setHdDebugMode(Number(this.debugVisSel.value) | 0);
-            this.debugVisSel.addEventListener('change', apply);
-            apply();
+            // Filled per model — see _fillDebugViews — and refilled whenever
+            // the list is opened, since a model's material table lands a few
+            // frames after its spawn.
+            this._fillDebugViews();
+            this.debugVisSel.addEventListener('focus', () => this._fillDebugViews());
+            this.debugVisSel.addEventListener('mousedown', () => this._fillDebugViews());
+            this.debugVisSel.addEventListener('change', () =>
+                this.viewer.setDebugView(Number(this.debugVisSel.value) | 0));
         }
         if (this.gridToggle) {
             const apply = () => this.viewer.setShowGrid(this.gridToggle.checked);
@@ -501,6 +496,28 @@ export class HiveApp {
         this._renderModelList(list, '(no model files in directory)');
     }
 
+    // The debug views the current model's materials can answer. A view the
+    // new list lacks falls back to Shaded rather than lingering unlisted.
+    _fillDebugViews() {
+        const sel = this.debugVisSel;
+        if (!sel) return;
+        const family = this.currentInstance ? this.currentInstance.debugFamily() : 'legacy';
+        if (sel.dataset.family === family && sel.options.length) return;
+        const current = Number(sel.value) | 0;
+        const views = debugViewsFor(family);
+        sel.innerHTML = '';
+        for (const v of views) {
+            const opt = document.createElement('option');
+            opt.value = String(v.value);
+            opt.textContent = v.label;
+            sel.appendChild(opt);
+        }
+        sel.dataset.family = family;
+        const keep = views.some((v) => v.value === current);
+        sel.value = String(keep ? current : 0);
+        this.viewer.setDebugView(keep ? current : 0);
+    }
+
     async _selectModel(m, row) {
         // Remember the selection so the Reforged-Graphics toggle can reload it
         // under the new render mode / asset overlay.
@@ -528,6 +545,7 @@ export class HiveApp {
             const model = await this.viewer.load(src, solver);
             this.currentModel = model;
             this.currentInstance = model._instances[0];
+            this._fillDebugViews();
             this.currentInstance.setTeamColor(this.currentTeamColor);
             // mode 0 = SetIgnoreNonLooping(true) — preview ergonomics.
             this.currentInstance.setSequenceLoopMode(0);

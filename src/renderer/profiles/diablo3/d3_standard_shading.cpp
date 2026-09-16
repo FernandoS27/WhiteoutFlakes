@@ -162,12 +162,18 @@ void D3StandardShading::Init() {
     vs_ = mk(gfx::ShaderStage::Vertex, WDX_D3_BLOB(D3StandardVS));
     vsSkinned_ = mk(gfx::ShaderStage::Vertex, WDX_D3_BLOB(D3StandardSkinnedVS));
     ps_ = mk(gfx::ShaderStage::Pixel, WDX_D3_BLOB(D3StandardPS));
+    psDebug_ = mk(gfx::ShaderStage::Pixel, WDX_D3_BLOB(D3StandardDebugPS));
 #undef WDX_D3_BLOB
 
     // One map per draw -> the Vulkan CB ring needs room for a busy frame.
     constexpr u32 kCbRingSlots = 4096;
     drawCb_ = gfxDev->CreateBuffer({
         .size = sizeof(D3DrawCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kCbRingSlots,
+    });
+    debugCb_ = gfxDev->CreateBuffer({
+        .size = sizeof(core::DebugViewCbData),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = kCbRingSlots,
     });
@@ -191,6 +197,10 @@ void D3StandardShading::ReleaseGpu() {
         gfxDev->Destroy(drawCb_);
     if (passCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(passCb_);
+    if (debugCb_ != gfx::BufferHandle::Invalid)
+        gfxDev->Destroy(debugCb_);
+    debugCb_ = gfx::BufferHandle::Invalid;
+    psDebug_ = gfx::ShaderHandle::Invalid;
     drawCb_ = gfx::BufferHandle::Invalid;
     passCb_ = gfx::BufferHandle::Invalid;
     vs_ = gfx::ShaderHandle::Invalid;
@@ -265,7 +275,7 @@ gfx::PipelineHandle D3StandardShading::GetOrBuildPso(const PsoKey& key) {
 
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = key.skinned ? vsSkinned_ : vs_;
-    desc.ps = ps_;
+    desc.ps = key.debug ? psDebug_ : ps_;
     desc.inputLayout = std::span<const gfx::InputElement>(elements);
     // The declared elements stop short of the record's end, so the true stride
     // has to be stated or the backends that bake it into the PSO walk the
@@ -345,6 +355,8 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
     passView_ = ctx.view;
     passProj_ = ctx.projection;
     passCameraPos_ = ctx.cameraPos;
+    passDebug_ = ctx.debug;
+    passDebugTarget_ = ctx.debugTarget;
 
     auto* gfxDev = rs_.Pipeline().Gfx();
     if (auto* c = static_cast<D3PassCb*>(gfxDev->MapBuffer(passCb_))) {
@@ -531,6 +543,14 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     key.twoSided = surf->twoSided;
     gfx::BufferHandle paletteCb = gfx::BufferHandle::Invalid;
     key.skinned = ResolveSkinned(*item.view, geo, paletteCb);
+    // A debug view swaps the pixel entry, and shows its channel even on a pass
+    // that writes alpha alone or nothing — otherwise those read as holes.
+    key.debug = passDebug_.debugSurfaces && !distortionPass &&
+                psDebug_ != gfx::ShaderHandle::Invalid;
+    if (key.debug) {
+        key.colorWrite = true;
+        key.alphaWrite = true;
+    }
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
         return;
@@ -631,6 +651,14 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, passCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, drawCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, drawCb_);
+    if (key.debug) {
+        if (auto* c = static_cast<core::DebugViewCbData*>(gfxDev->MapBuffer(debugCb_))) {
+            *c = core::MakeDebugViewCb(passDebug_, passDebugTarget_, 0, 0, 5.0f);
+            gfxDev->UnmapBuffer(debugCb_);
+        }
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, debugCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, debugCb_);
+    }
 
     // Every slot, every draw — which of them survive into the compiled PS is
     // Slang's dead-code decision, and binding fewer than it kept is a

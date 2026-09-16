@@ -74,6 +74,34 @@ typedef enum {
 } whiteout_flakes_IblMode;
 
 typedef enum {
+    whiteout_flakes_DebugView_Off,
+    whiteout_flakes_DebugView_Albedo,
+    whiteout_flakes_DebugView_Normal,
+    whiteout_flakes_DebugView_TextureMip,
+    whiteout_flakes_DebugView_LightCount,
+    whiteout_flakes_DebugView_LightingWhite,
+    whiteout_flakes_DebugView_LightingGrey,
+    whiteout_flakes_DebugView_SpecularOnly,
+    whiteout_flakes_DebugView_NoOrm,
+    whiteout_flakes_DebugView_AoOnly,
+    whiteout_flakes_DebugView_Roughness,
+    whiteout_flakes_DebugView_Metalness,
+    whiteout_flakes_DebugView_MaterialAo,
+    whiteout_flakes_DebugView_Emissive,
+    whiteout_flakes_DebugView_TeamMask,
+    whiteout_flakes_DebugView_VertexNormal,
+    whiteout_flakes_DebugView_Specular,
+    whiteout_flakes_DebugView_Gloss,
+    whiteout_flakes_DebugView_VertexColor,
+    whiteout_flakes_DebugView_Opacity,
+} whiteout_flakes_DebugView;
+
+typedef enum {
+    whiteout_flakes_DebugViewFamily_Legacy,
+    whiteout_flakes_DebugViewFamily_Pbr,
+} whiteout_flakes_DebugViewFamily;
+
+typedef enum {
     whiteout_flakes_ActorRole_Unit,
     whiteout_flakes_ActorRole_External,
     whiteout_flakes_ActorRole_Attachment,
@@ -436,7 +464,10 @@ int32_t whiteout_flakes_FlakesSettingsView_BloomEnabled(const whiteout_FlakesSet
 void whiteout_flakes_FlakesSettingsView_SetBloomEnabled(whiteout_FlakesSettingsView* self, int32_t arg);
 int32_t whiteout_flakes_FlakesSettingsView_IblMode(const whiteout_FlakesSettingsView* self);
 void whiteout_flakes_FlakesSettingsView_SetIblMode(whiteout_FlakesSettingsView* self, int32_t arg);
-/* HD-shader debug mode (0 = off, 1..7 = visualisations). */
+/* Surface debug visualisation (see @ref DebugView). */
+int32_t whiteout_flakes_FlakesSettingsView_DebugView(const whiteout_FlakesSettingsView* self);
+void whiteout_flakes_FlakesSettingsView_SetDebugView(whiteout_FlakesSettingsView* self, int32_t arg);
+/* Deprecated integer form of @ref GetDebugView; 0–9 keep their old meaning. Unknown values turn the view off. */
 int32_t whiteout_flakes_FlakesSettingsView_HdDebugMode(const whiteout_FlakesSettingsView* self);
 void whiteout_flakes_FlakesSettingsView_SetHdDebugMode(whiteout_FlakesSettingsView* self, int32_t arg);
 /* GTAO quality preset (0 = Low, 1 = Medium, 2 = High). */
@@ -600,6 +631,8 @@ int32_t whiteout_flakes_FlakesActorView_IsValid(const whiteout_FlakesActorView* 
 uint32_t whiteout_flakes_FlakesActorView_Handle(const whiteout_FlakesActorView* self);
 /* Role assigned at spawn time (see @ref ActorRole). */
 int32_t whiteout_flakes_FlakesActorView_Role(const whiteout_FlakesActorView* self);
+/* Which debug views describe this actor's materials; hosts show that family's menu (see @ref DebugViewInFamily). */
+int32_t whiteout_flakes_FlakesActorView_DebugFamily(const whiteout_FlakesActorView* self);
 /* Animation playback rate (`1.0` = nominal). */
 float whiteout_flakes_FlakesActorView_PlaybackSpeed(const whiteout_FlakesActorView* self);
 void whiteout_flakes_FlakesActorView_SetPlaybackSpeed(whiteout_FlakesActorView* self, float arg);

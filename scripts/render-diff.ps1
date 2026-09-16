@@ -153,6 +153,14 @@ param(
     # SD is the default mode; -Hd records the HD profile's baselines instead.
     # A full gate run does both — they are different draw paths.
     [switch]$Hd,
+
+    # The debug-view arm (DEBUG_VIEW_DESIGN.md): a DebugView value, drawn by
+    # every product's debug programs. Combines with any product arm and keeps
+    # its own baselines (`_dbg<n>`). PROGRESSIVE: record one only once the
+    # view looks right, since a wrong channel records as stably as a right one.
+    # The byte-identical claim — nothing moves with the view off — is the
+    # plain arms, not this one.
+    [int]$DebugView = -1,
     [int]$Frames = 30,
     [int]$Perturb = 0,
     [int]$CameraDistance = 350,
@@ -306,6 +314,8 @@ if ($Sc2Mat) {
         $CorpusFile = "$PSScriptRoot/../tools/sc2_material_corpus.txt"
     }
 }
+
+if ($DebugView -ge 0) { $mode += "_dbg$DebugView" }
 
 # One entry per corpus line. The animation corpus adds whitespace-separated
 # `key=value` scenario tokens after the path; every other corpus is a bare path
@@ -464,6 +474,7 @@ foreach ($entry in $entries) {
     if ($Hd) { $argv += '--draw-trace-hd' }
     if ($DebugLight) { $argv += '--draw-trace-debug-light' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
+    if ($DebugView -ge 0) { $argv += @('--draw-trace-debug-view', $DebugView) }
     if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }
     if ($Listfile) { $argv += @('--listfile', $Listfile, '--content-root', $CorpusRoot) }
     if ($Perturb -gt 0) { $argv += @('--draw-trace-perturb', $Perturb) }

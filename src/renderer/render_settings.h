@@ -336,11 +336,20 @@ public:
         debugUnlitOddGeosets_.store(on);
     }
 
+    DebugView GetDebugView() const {
+        return debugView_.load();
+    }
+    void SetDebugView(DebugView v) {
+        debugView_.store(v);
+    }
+    // The integer the debug view used to be. 0-9 are the same values, so this
+    // is a cast; anything that is not a DebugView turns the view off.
     i32 HdDebugMode() const {
-        return hdDebugMode_.load();
+        return static_cast<i32>(debugView_.load());
     }
     void SetHdDebugMode(i32 m) {
-        hdDebugMode_.store(m);
+        const bool known = m >= 0 && m <= 19;
+        debugView_.store(known ? static_cast<DebugView>(m) : DebugView::Off);
     }
 
     i32 LodOverride() const {
@@ -734,7 +743,7 @@ private:
     std::atomic<bool> m2ModelLights_{true};
 
     // Debug + LOD.
-    std::atomic<i32> hdDebugMode_{0};
+    std::atomic<DebugView> debugView_{DebugView::Off};
     std::atomic<bool> debugUnlitOddGeosets_{false};
     std::atomic<i32> lodOverride_{0};
 

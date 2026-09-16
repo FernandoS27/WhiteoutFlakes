@@ -160,6 +160,12 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
     return kSdSceneFormat;
 }
 
+profiles::wc3::Wc3DebugPrograms& RenderPipeline::Wc3DebugPrograms() {
+    if (!impl_->wc3DebugPrograms_)
+        impl_->wc3DebugPrograms_ = std::make_unique<profiles::wc3::Wc3DebugPrograms>(Gfx());
+    return *impl_->wc3DebugPrograms_;
+}
+
 gfx::Format RenderPipeline::CompositeColorFormat() {
     return LoadTimeProfile().SceneColorFormat() == kHdrSceneFormat
                ? gfx::Format::R8G8B8A8_UNORM_SRGB
@@ -1753,6 +1759,13 @@ void RenderPipeline::CleanupGFX() {
         for (auto& [fmt, pso] : impl_->tonemapPSOs_)
             impl_->gfx_->Destroy(pso);
         impl_->tonemapPSOs_.clear();
+        for (auto& [fmt, pso] : impl_->debugCopyPSOs_)
+            impl_->gfx_->Destroy(pso);
+        impl_->debugCopyPSOs_.clear();
+        impl_->gfx_->Destroy(impl_->debugCopyVs_);
+        impl_->gfx_->Destroy(impl_->debugCopyPs_);
+        impl_->debugCopyVs_ = gfx::ShaderHandle::Invalid;
+        impl_->debugCopyPs_ = gfx::ShaderHandle::Invalid;
         impl_->gfx_->Destroy(impl_->tonemapVB_);
         impl_->gfx_->Destroy(impl_->tonemapPsCb_);
         impl_->gfx_->Destroy(impl_->tonemapSampler_);
@@ -1796,6 +1809,8 @@ void RenderPipeline::CleanupGFX() {
         // three above shipped with. Released here for the same reason.
         if (impl_->unlitShading_)
             impl_->unlitShading_->ReleaseGpu();
+        if (impl_->wc3DebugPrograms_)
+            impl_->wc3DebugPrograms_->Release();
 #if WDX_ENABLE_M2
         if (impl_->m2Shading_)
             impl_->m2Shading_->ReleaseGpu();
@@ -2143,6 +2158,22 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     const bool useHdr = profile.LinearShading();
     const bool sceneToHdr = profile.SceneColorFormat() == kHdrSceneFormat;
 
+    // The debug view is decided once per frame (core/debug_view.h). The target
+    // half says whether a colour texture sampled linear — the asset policy
+    // gives float scenes sRGB views — and whether the RTV that finally takes
+    // the frame encodes: the swap chain's sRGB view after the HD copy, never
+    // a gamma frame's UNORM one or an offscreen target.
+    impl_->frameDebug_ = core::ResolveDebugFrame(rs_.Settings().GetDebugView());
+    const core::DebugFrame& dbg = impl_->frameDebug_;
+    {
+        const gfx::Format outFmt = (target.swap != gfx::SwapChainHandle::Invalid)
+                                       ? impl_->gfx_->GetSwapChainFormat(target.swap)
+                                       : target.colorFormat;
+        impl_->frameDebugTarget_.colorSamplesLinear = sceneToHdr;
+        impl_->frameDebugTarget_.targetEncodesSrgb =
+            sceneToHdr && outFmt != gfx::Format::Unknown && StripSrgb(outFmt) != outFmt;
+    }
+
     // A profile change invalidates this target's GTAO history. Per target, not
     // globally: a mixed multi-viewport host (an embedded HD thumbnail grid
     // rendering while the main document is SD) flips profiles twice per frame,
@@ -2195,7 +2226,8 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     impl_->refractionMirrorDst_ = gfx::TextureHandle::Invalid;
     impl_->refractionMirrorFmt_ = gfx::Format::Unknown;
     if (auto* rsvc = rs_.GetRefractionService();
-        rsvc && (sceneTarget == target.colorLinear || sceneTarget == target.color)) {
+        rsvc && dbg.refraction &&
+        (sceneTarget == target.colorLinear || sceneTarget == target.color)) {
         refraction::RefractionParams rp = rsvc->Params();
         rp.enabled = rs_.Settings().RefractionEnabled();
         rp.debugShowMask = rs_.Settings().RefractionDebugMask();
@@ -2225,7 +2257,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     impl_->distortionMirrorDst_ = gfx::TextureHandle::Invalid;
     impl_->distortionMirrorFmt_ = gfx::Format::Unknown;
     if (auto* dsvc = rs_.GetDistortionService();
-        dsvc && impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid &&
+        dsvc && dbg.distortion && impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid &&
         (sceneTarget == target.colorLinear || sceneTarget == target.color)) {
         distortion::DistortionParams dp = dsvc->Params();
         dp.enabled = rs_.Settings().D3DistortionEnabled();
@@ -2455,7 +2487,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         WDX_GPU_ZONE(cmd, "GeosetsOpaque");
         RenderGeosets(GeosetBucket::Opaque);
     }
-    if (rs_.Settings().ShowEvents()) {
+    if (rs_.Settings().ShowEvents() && dbg.effects) {
         WDX_CPU_ZONE("Splats");
         WDX_GPU_ZONE(cmd, "Splats");
         RenderSplatsBls();
@@ -2517,7 +2549,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             // — cheap atomic load + cheap setter, and keeps the service
             // state from drifting if the host flips the bool from
             // another thread (settings UI / .ini reload).
-            const bool aoOnly = (rs_.Settings().HdDebugMode() == 9);
+            const bool aoOnly = dbg.gtaoAoOnly;
             g->SetEnabled(rs_.Settings().AoEnabled() || aoOnly);
             g->SetDebugAoOnly(aoOnly);
             {
@@ -2895,7 +2927,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     auto runTonemapPass = [&] {
         WDX_CPU_ZONE("Tonemap");
         WDX_GPU_ZONE(cmd, "Tonemap");
-        RunTonemapPass(target, finalColor);
+        RunTonemapPass(target, finalColor, !dbg.tonemap);
     };
 
     // ---- The walk ---------------------------------------------------------
@@ -2955,23 +2987,34 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             // block deliberately left the UI out so it would not be refracted.
             runImGuiPass();
             break;
+        // A debug view keeps a pass only if it cannot repaint what the view
+        // shows (core::ResolveDebugFrame). The redirects above already stayed
+        // off for the two resolves, so nothing is left needing them to present.
         case core::PassSlot::Gtao:
-            runGtaoPass();
+            if (dbg.gtao)
+                runGtaoPass();
+            else
+                target.gtao.prevValid = false;
             break;
         case core::PassSlot::DeferredLights:
-            runDeferredLightsPass();
+            if (dbg.deferredLights)
+                runDeferredLightsPass();
             break;
         case core::PassSlot::Dof:
-            runDofPass();
+            if (dbg.dof)
+                runDofPass();
             break;
         case core::PassSlot::Refraction:
-            runRefractionPass();
+            if (dbg.refraction)
+                runRefractionPass();
             break;
         case core::PassSlot::Distortion:
-            runDistortionPass();
+            if (dbg.distortion)
+                runDistortionPass();
             break;
         case core::PassSlot::Bloom:
-            runBloomPass();
+            if (dbg.bloom)
+                runBloomPass();
             break;
         case core::PassSlot::Tonemap:
             runTonemapPass();
@@ -3001,7 +3044,8 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     }
 }
 
-void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor) {
+void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor,
+                                    bool copyOnly) {
     if (!impl_->blsSpriteVs_ || !impl_->blsTonemapPs_ ||
         impl_->blsSpriteVs_->permuteHandles.empty() ||
         impl_->blsTonemapPs_->permuteHandles.empty())
@@ -3020,11 +3064,58 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
             : (target.colorFormat != gfx::Format::Unknown ? target.colorFormat
                                                          : kSdSceneFormat);
     gfx::PipelineHandle pso = gfx::PipelineHandle::Invalid;
-    for (const auto& [fmt, cached] : impl_->tonemapPSOs_) {
+    auto& psoCache = copyOnly ? impl_->debugCopyPSOs_ : impl_->tonemapPSOs_;
+    for (const auto& [fmt, cached] : psoCache) {
         if (fmt == dstFormat) {
             pso = cached;
             break;
         }
+    }
+    if (pso == gfx::PipelineHandle::Invalid && copyOnly) {
+        if (impl_->debugCopyVs_ == gfx::ShaderHandle::Invalid) {
+            using namespace whiteout::flakes::Shaders;
+            switch (impl_->gfx_->GetApi()) {
+            case gfx::GfxApi::Vulkan:
+                impl_->debugCopyVs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex,
+                                                                kBlitVSSpv, sizeof(kBlitVSSpv));
+                impl_->debugCopyPs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel,
+                                                                kBlitPSSpv, sizeof(kBlitPSSpv));
+                break;
+            case gfx::GfxApi::WebGPU:
+                impl_->debugCopyVs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex,
+                                                                kBlitVSWgsl, sizeof(kBlitVSWgsl));
+                impl_->debugCopyPs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel,
+                                                                kBlitPSWgsl, sizeof(kBlitPSWgsl));
+                break;
+            case gfx::GfxApi::Metal:
+                impl_->debugCopyVs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex,
+                                                                kBlitVSMtl, sizeof(kBlitVSMtl));
+                impl_->debugCopyPs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel,
+                                                                kBlitPSMtl, sizeof(kBlitPSMtl));
+                break;
+            default:
+                impl_->debugCopyVs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, kBlitVS,
+                                                                sizeof(kBlitVS));
+                impl_->debugCopyPs_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel, kBlitPS,
+                                                                sizeof(kBlitPS));
+                break;
+            }
+        }
+        gfx::GraphicsPipelineDesc cp;
+        cp.vs = impl_->debugCopyVs_;
+        cp.ps = impl_->debugCopyPs_;
+        cp.topology = gfx::PrimitiveTopology::TriangleList;
+        cp.blend.enable = false;
+        cp.depthStencil.depthTest = false;
+        cp.depthStencil.depthWrite = false;
+        cp.rasterizer.cull = gfx::CullMode::None;
+        cp.rasterizer.frontCCW = true;
+        cp.rtvFormat = dstFormat;
+        cp.dsvFormat = impl_->depthStencilFormat_;
+        pso = impl_->gfx_->CreateGraphicsPipeline(cp);
+        if (pso == gfx::PipelineHandle::Invalid)
+            return;
+        psoCache.emplace_back(dstFormat, pso);
     }
     if (pso == gfx::PipelineHandle::Invalid) {
         const gfx::InputElement spriteInput[] = {
@@ -3046,7 +3137,7 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
         pso = impl_->gfx_->CreateGraphicsPipeline(tm);
         if (pso == gfx::PipelineHandle::Invalid)
             return;
-        impl_->tonemapPSOs_.emplace_back(dstFormat, pso);
+        psoCache.emplace_back(dstFormat, pso);
     }
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
@@ -3063,11 +3154,19 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
     }
 
     cmd->BindPipeline(pso);
-    cmd->BindVertexBuffer(0, impl_->tonemapVB_, sizeof(f32) * 5);
-    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, impl_->tonemapSampler_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, bls::kPostPassCbSlot, impl_->tonemapPsCb_);
-    cmd->Draw(3, 0);
+    if (copyOnly) {
+        // Full-screen triangle from the vertex id; no buffer, no exposure.
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, impl_->tonemapSampler_);
+        cmd->Draw(3, 0);
+    } else {
+        cmd->BindVertexBuffer(0, impl_->tonemapVB_, sizeof(f32) * 5);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, impl_->tonemapSampler_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, bls::kPostPassCbSlot,
+                                impl_->tonemapPsCb_);
+        cmd->Draw(3, 0);
+    }
 
     // Submit ImGui inside the same render pass so we don't have to open a
     // second pass with loadOp=Load. The RTV is the swap chain backbuffer
@@ -3346,6 +3445,8 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
     ctx.projection = FrameCamera().ProjectionRH(
         Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f);
     ctx.profile = &ActiveProfile();
+    ctx.debug = impl_->frameDebug_;
+    ctx.debugTarget = impl_->frameDebugTarget_;
 
     auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
     shading::SurfacePass pass(impl_->shadingModels_);
@@ -3411,6 +3512,8 @@ void RenderPipeline::RenderTransparentScene() {
     geoCtx.view = FrameCamera().GetViewMatrix();
     geoCtx.projection = FrameCamera().ProjectionRH(
         Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f);
+    geoCtx.debug = impl_->frameDebug_;
+    geoCtx.debugTarget = impl_->frameDebugTarget_;
     const bool haveGeo = active.IsAvailable() && !rs_.Scene().Actors().All().empty();
     if (haveGeo) {
         geo = render_detail::BuildDrawLists(rs_.Scene().Actors().All(), ComputeSelectedLod(),
@@ -3420,11 +3523,15 @@ void RenderPipeline::RenderTransparentScene() {
                                             rs_.Settings().M2DistanceSortGeometry());
     }
 
+    // A debug view shows surfaces only: particles, ribbons and corn have no
+    // material channels, and would paint over the ones being inspected.
+    const bool drawEffects = impl_->frameDebug_.effects;
+
     // --- PE2 particles: build geometry into the shared VB ---
     std::vector<particle::EmitterDrawList> partDraws;
     bls::FrameInputs partFrame;
     bool haveParticles = false;
-    if (rs_.Settings().ShowParticles() && rs_.Particles().EmitterCount() > 0) {
+    if (drawEffects && rs_.Settings().ShowParticles() && rs_.Particles().EmitterCount() > 0) {
         std::vector<Vertex> verts;
         const Matrix44f viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
         // A refraction emitter belongs to the Refraction pass, not to this one.
@@ -3531,12 +3638,12 @@ void RenderPipeline::RenderTransparentScene() {
     // --- Ribbons: build each actor's strips into its per-actor VB ---
     std::vector<RibbonDrawUnit> ribbonUnits;
     bls::FrameInputs ribbonFrame;
-    if (rs_.Settings().ShowRibbons())
+    if (drawEffects && rs_.Settings().ShowRibbons())
         PrepareRibbons(ribbonUnits, ribbonFrame);
 
     // --- Corn (PopcornFX): tick + consolidate into the shared buffers ---
     std::vector<corn_effects::CornDrawUnit> cornUnits;
-    if (rs_.Settings().ShowParticles()) {
+    if (drawEffects && rs_.Settings().ShowParticles()) {
         const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
         corn_effects::CornEffectsFrameInputs fi;
         fi.cmd = cmd;

@@ -49,6 +49,8 @@
 // fills ("Fill"/"Back"), and a flat ambient. lighting.fx applies the key's
 // specular ONLY — fill SpecularColor exists in the data and the shader never
 // reads it.
+import debug_view;
+
 struct M3PassData
 {
     float4x4 view;
@@ -166,6 +168,8 @@ static const int WF_PS_BIND_OFFSET = 16;
 // Vertex stage only; the rigid entry never references it and Slang strips it
 // from that entry's reflection.
 [[vk::binding(2, 0)]] ConstantBuffer<M3BoneData> bones : register(b2);
+// The debug entries only (DEBUG_VIEW_DESIGN.md); stripped from the others.
+[[vk::binding(3, 0)]] ConstantBuffer<DebugViewData> debugView : register(b3);
 
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D texDiffuse : register(t0);
 [[vk::binding(WF_PS_BIND_OFFSET + 1, 1)]] Texture2D texDecal : register(t1);
@@ -443,6 +447,15 @@ struct M3Shaded
     float3 albedo;      // what the sidecar's diffuse target carries
     float3 specColor;   // what the sidecar's specular target carries
     float specPower;
+    // The terms the colour is built from, for the debug entries. The sidecar
+    // fields above collapse to zero on an unshaded surface; these do not.
+    float3 diffuse;
+    float3 specular;
+    float3 nGeom;
+    float3 lightDiffuse;
+    float3 lightSpecular;
+    float3 emissiveAdd;
+    bool emissiveMultiplies; // an emissive layer folded into the lit colour
 };
 
 M3Shaded ShadeM3(PSInput input, bool isFront)
@@ -588,6 +601,8 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     if (draw.params0.y > 0.5)
     {
         color = albedo.rgb;
+        o.lightDiffuse = float3(0.0, 0.0, 0.0);
+        o.lightSpecular = float3(0.0, 0.0, 0.0);
         // The sidecar collapse: unshaded pixels survive the deferred pass
         // untouched because their albedo and specular read back as zero.
         o.albedo = float3(0.0, 0.0, 0.0);
@@ -631,6 +646,8 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         }
 
         color = albedo.rgb * lightDiffuse + specColor * lightSpecular;
+        o.lightDiffuse = lightDiffuse;
+        o.lightSpecular = lightSpecular;
         o.albedo = albedo.rgb;
         o.specColor = specColor;
         o.specPower = specPower;
@@ -674,6 +691,9 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
             addFamily = true;
         }
     }
+    o.emissiveAdd = addFamily ? cEmissive * (draw.uvTransform.z * pass.ambient.w)
+                              : float3(0.0, 0.0, 0.0);
+    o.emissiveMultiplies = (ctlEmis.z != 0u || ctlEmis2.z != 0u) && !addFamily;
     if (addFamily)
         color += cEmissive * (draw.uvTransform.z * pass.ambient.w);
 
@@ -744,6 +764,9 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     o.color = color;
     o.alpha = alpha;
     o.normalWS = n;
+    o.diffuse = albedo.rgb;
+    o.specular = specColor;
+    o.nGeom = nGeom;
     return o;
 }
 
@@ -785,6 +808,79 @@ MrtOut psM3StandardMrt(PSInput input, bool isFront : SV_IsFrontFace)
     o.normalSpec = float4(nVS * 0.5 + 0.5, sqrt(saturate(s.specPower / 512.0)));
     o.diffuseSpec =
         float4(s.albedo, dot(s.specColor, float3(0.299, 0.587, 0.114)));
+    return o;
+}
+
+// ---- Debug views (DEBUG_VIEW_DESIGN.md) ------------------------------------
+//
+// The same ShadeM3 the real entries run, so every channel is the value the
+// material actually shades with; its terms go out through DebugLegacy.
+
+DebugSurface M3DebugSurface(PSInput input, M3Shaded sh, float mipLevel)
+{
+    let d = debugView;
+    DebugSurface s = DebugSurfaceInit();
+    s.mipLevel = mipLevel;
+    s.albedo = sh.diffuse;
+    s.normalWS = sh.normalWS;
+    s.vertexNormalWS = sh.nGeom;
+    s.specular = sh.specular;
+    s.gloss = sqrt(saturate(sh.specPower / 512.0));
+    s.emissive = sh.emissiveAdd;
+    s.opacity = sh.alpha;
+    // The rig's three directionals; the local lights are the deferred pass's.
+    s.lightCount = (any(pass.keyLightDiffuse.rgb > 0.0) ? 1.0 : 0.0) +
+                   (any(pass.fillLightDiffuse.rgb > 0.0) ? 1.0 : 0.0) +
+                   (any(pass.backLightDiffuse.rgb > 0.0) ? 1.0 : 0.0);
+    s.present = kDbgHasAlbedo | kDbgHasNormal | kDbgHasVertexNormal | kDbgHasSpecular |
+                kDbgHasGloss | kDbgHasLightCount | kDbgHasMip | kDbgHasLit;
+    // A Mod-family emissive multiplies the lit colour and has no value alone.
+    if (!sh.emissiveMultiplies)
+        s.present |= kDbgHasEmissive;
+
+    let lighting = DebugLightingOverride(d);
+    if (lighting != 0u)
+    {
+        let unshaded = draw.params0.y > 0.5;
+        let base = DebugOverrideAlbedo(d, sh.diffuse);
+        s.lit = unshaded ? base : base * sh.lightDiffuse + sh.specular * sh.lightSpecular;
+    }
+    return s;
+}
+
+float M3DebugMip(PSInput input)
+{
+    uint w, h;
+    texDiffuse.GetDimensions(w, h);
+    return DebugMipLevel(M3LayerUV(kM3LayerDiffuse, input.uv01), float2(w, h));
+}
+
+[shader("pixel")]
+float4 psM3StandardDebug(PSInput input, bool isFront : SV_IsFrontFace) : SV_Target0
+{
+    let mip = M3DebugMip(input);
+    let sh = ShadeM3(input, isFront);
+    return DebugLegacy(M3DebugSurface(input, sh, mip), debugView, input.position.xy);
+}
+
+// The G-buffer twin, for the lighting views: the deferred local lights multiply
+// the sidecar albedo, so it has to carry the overridden one.
+[shader("pixel")]
+MrtOut psM3StandardDebugMrt(PSInput input, bool isFront : SV_IsFrontFace)
+{
+    let mip = M3DebugMip(input);
+    let sh = ShadeM3(input, isFront);
+    let surface = M3DebugSurface(input, sh, mip);
+
+    MrtOut o;
+    o.color = DebugLegacy(surface, debugView, input.position.xy);
+    o.linearDepth = input.worldPos.w;
+    let nVS0 = normalize(mul(float4(sh.normalWS, 0.0), pass.view).xyz);
+    let nVS = (nVS0.z > 0.0) ? -nVS0 : nVS0;
+    o.normalSpec = float4(nVS * 0.5 + 0.5, sqrt(saturate(sh.specPower / 512.0)));
+    let unshaded = draw.params0.y > 0.5;
+    let base = unshaded ? float3(0.0, 0.0, 0.0) : DebugOverrideAlbedo(debugView, sh.albedo);
+    o.diffuseSpec = float4(base, dot(sh.specColor, float3(0.299, 0.587, 0.114)));
     return o;
 }
 

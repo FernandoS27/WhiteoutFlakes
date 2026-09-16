@@ -315,7 +315,13 @@ public:
     IblMode GetIblMode() const;
     void SetIblMode(IblMode);
 
-    /// @brief HD-shader debug mode (0 = off, 1..7 = visualisations).
+    /// @brief Surface debug visualisation (see @ref DebugView).
+    /// @bind rename=DebugView
+    DebugView GetDebugView() const;
+    void SetDebugView(DebugView);
+
+    /// @brief Deprecated integer form of @ref GetDebugView; 0–9 keep their
+    ///        old meaning. Unknown values turn the view off.
     i32 HdDebugMode() const;
     void SetHdDebugMode(i32);
 

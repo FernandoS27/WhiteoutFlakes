@@ -33,9 +33,9 @@ public:
 
     bool BeginPass(const core::PassContext& ctx,
                    const render_detail::CollectedDrawLists& lists) override {
-        (void)ctx;
         if (!pass_.IsAvailable())
             return false;
+        pass_.SetDebug(ctx.debug, ctx.debugTarget);
         pass_.OpenPass(lists, frame_, view_, lighting_);
         return true;
     }

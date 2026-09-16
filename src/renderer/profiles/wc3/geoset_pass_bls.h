@@ -169,7 +169,13 @@ public:
         // the attachment count even though it only writes SV_Target0.
         reqLocal.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(reqLocal.extraRtvFormats);
         reqLocal.dsvFormat = impl->depthStencilFormat_;
-        auto pso = impl->blsPsoBuilder_->GetOrBuild(reqLocal);
+        const bool debugDraw = debug_.debugSurfaces && matParams.ColorWriteEnabled();
+        const bool debugNormal = debugDraw && (debug_.view == DebugView::Normal ||
+                                               debug_.view == DebugView::VertexNormal);
+        if (debugDraw)
+            reqLocal.psOverride = DebugPrograms().Sd();
+        auto pso = debugNormal ? DebugPrograms().SdNormalPso(reqLocal, hasBones)
+                               : impl->blsPsoBuilder_->GetOrBuild(reqLocal);
         if (pso == gfx::PipelineHandle::Invalid)
             return;
         cmd->BindPipeline(pso);
@@ -182,9 +188,24 @@ public:
             bls::BuildSdPsCbA(*ps, frame, matParams);
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl->blsSdVsCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, impl->blsSdPsCb_);
+        if (debugNormal) {
+            // The normal views' vertex stage reads the HD per-draw bank; the
+            // palette SD already bound at b3 is the one it skins with.
+            if (auto vs = bls::ScopedCb<bls::HdVsCb>(rs_.Pipeline().Gfx(), impl->blsHdVsCb_))
+                bls::BuildHdVsCb(*vs, frame, matParams);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, impl->blsHdVsCb_);
+        }
 
         render_detail::BindLayerAlbedo(cmd, view_.textures, layer.textureId,
                                        rs_.Textures().GetDefaults().White, rs_.Samplers());
+        if (debugDraw) {
+            // SelectPermutes' ALPHA_TEST axis; lights are chosen per draw here.
+            const u32 dbgFlags = (rsLocal.alphaMode != 0) ? profiles::wc3::kWc3DebugAlphaTest : 0u;
+            cmd->BindConstantBuffer(
+                gfx::ShaderStage::Pixel, 3,
+                DebugPrograms().Write(core::MakeDebugViewCb(debug_, debugTarget_,
+                                                            static_cast<u32>(activeN), dbgFlags)));
+        }
 
         // G1 hook. Placed after the PSO resolved and the CBs were written, so
         // the record covers exactly the draws that were submitted — an

@@ -15,6 +15,8 @@ class IRenderProfile;
 // so existing code that says `whiteout::flakes::renderer::Rect` /
 // `whiteout::flakes::renderer::RenderMode` / etc. keeps compiling. The
 // canonical definitions live in include/whiteout/flakes/{types,enums,display}.h.
+using ::whiteout::flakes::DebugView;
+using ::whiteout::flakes::DebugViewFamily;
 using ::whiteout::flakes::DisplayFlags;
 using ::whiteout::flakes::IblMode;
 using ::whiteout::flakes::LightingMode;

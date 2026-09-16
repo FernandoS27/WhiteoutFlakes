@@ -1824,6 +1824,8 @@ int main(int argc, char* argv[]) {
     bool drawTrace = false;
     bool drawTraceHd = false;
     bool drawTraceSdHdr = false;
+    // A DebugView value (include/whiteout/flakes/enums.h); -1 leaves it off.
+    i32 drawTraceDebugView = -1;
     bool drawTraceUnlit = false;
     bool noClothDeform = false;
     bool drawTraceNoRefraction = false;
@@ -2195,6 +2197,8 @@ int main(int argc, char* argv[]) {
             // glows otherwise clip to white. Off by default so the recorded
             // baselines keep their meaning.
             drawTraceSdHdr = true;
+        } else if (std::strcmp(a, "--draw-trace-debug-view") == 0 && i + 1 < argc) {
+            drawTraceDebugView = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
         } else if (std::strcmp(a, "--no-cloth-deform") == 0) {
@@ -2578,6 +2582,8 @@ int main(int argc, char* argv[]) {
 
     if (drawTraceSdHdr)
         renderer.Settings().SetSceneHdrInSd(true);
+    if (drawTraceDebugView >= 0)
+        renderer.Settings().SetHdDebugMode(drawTraceDebugView);
     if (drawTrace)
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,

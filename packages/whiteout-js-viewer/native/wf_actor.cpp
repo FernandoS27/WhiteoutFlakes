@@ -94,6 +94,16 @@ int wf_actor_preferred_render_mode(WfRenderer* h, uint32_t actor) {
     return av.PreferredRenderMode() == whiteout::flakes::RenderMode::HD ? 1 : 0;
 }
 
+// 0 = legacy, 1 = PBR: which debug views describe the actor's materials.
+// Asked per menu open rather than once at spawn — the WC3 material table is
+// drained after the spawn returns.
+int wf_actor_debug_family(WfRenderer* h, uint32_t actor) {
+    if (!h) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    return av.DebugFamily() == whiteout::flakes::DebugViewFamily::Pbr ? 1 : 0;
+}
+
 // mode 0 → ignoreNonLooping=true (clamp at last frame); 1/2 both loop.
 void wf_actor_set_loop_mode(WfRenderer* h, uint32_t actor, int mode) {
     if (!h) return;

@@ -41,8 +41,41 @@ const REQUESTED_FEATURES = [
 export { TEAM_COLORS, TEAM_COLOR_NAMES, Instance, Model, Scene,
          EFFECT_EXTENSIONS, isEffectPath, MODEL_EXTENSIONS, isModelPath };
 
-// HD debug-vis modes — keep ordering in sync with basic_viewer's
-// kDebugVisLabels (tools/basic_viewer/viewer_ui.cpp).
+// Surface debug views, in menu order. `value` is the DebugView enum
+// (include/whiteout/flakes/enums.h); a model shows the PBR menu when its
+// materials are Reforged HD ones (`Instance.debugFamily()`), the legacy one
+// otherwise, and each carries the label it wears there.
+export const DEBUG_VIEWS = [
+    { value: 0,  pbr: 'Shaded',                        legacy: 'Shaded' },
+    { value: 1,  pbr: 'Albedo',                        legacy: 'Diffuse' },
+    { value: 2,  pbr: 'World Normal',                  legacy: 'Normal (with normal map)' },
+    { value: 15, pbr: null,                            legacy: 'Vertex Normal' },
+    { value: 10, pbr: 'Roughness',                     legacy: null },
+    { value: 11, pbr: 'Metalness',                     legacy: null },
+    { value: 12, pbr: 'Material AO',                   legacy: null },
+    { value: 16, pbr: null,                            legacy: 'Specular' },
+    { value: 17, pbr: null,                            legacy: 'Gloss' },
+    { value: 13, pbr: 'Emissive',                      legacy: 'Emissive' },
+    { value: 14, pbr: 'Team Color Mask',               legacy: null },
+    { value: 18, pbr: null,                            legacy: 'Vertex Color' },
+    { value: 19, pbr: null,                            legacy: 'Opacity' },
+    { value: 3,  pbr: 'Texture Mip Level',             legacy: 'Texture Mip Level' },
+    { value: 4,  pbr: 'Light Count',                   legacy: 'Light Count' },
+    { value: 5,  pbr: 'Shading Only (white albedo)',   legacy: 'Shading Only (white albedo)' },
+    { value: 6,  pbr: 'Shading Only (grey albedo)',    legacy: 'Shading Only (grey albedo)' },
+    { value: 7,  pbr: 'Specular Only (black albedo)',  legacy: 'Specular Only (black albedo)' },
+    { value: 8,  pbr: 'No ORM',                        legacy: null },
+    { value: 9,  pbr: 'AO Only',                       legacy: null },
+];
+
+// The views `family` ('pbr' or 'legacy') lists, as { value, label }.
+export function debugViewsFor(family) {
+    const key = family === 'pbr' ? 'pbr' : 'legacy';
+    return DEBUG_VIEWS.filter((v) => v[key]).map((v) => ({ value: v.value, label: v[key] }));
+}
+
+// The first ten values under their original names. Kept for hosts that
+// predate DEBUG_VIEWS; setHdDebugMode takes the same integers.
 export const HD_DEBUG_MODES = [
     { value: 0, label: 'Shaded' },
     { value: 1, label: 'Albedo' },
@@ -359,9 +392,16 @@ export class WhiteoutViewer {
         if (this._handle) this._module._wf_set_bloom_enabled(this._handle, on ? 1 : 0);
     }
 
-    // HD debug-vis mode (see HD_DEBUG_MODES below).
+    // Surface debug view, a DEBUG_VIEWS value.
+    setDebugView(view) {
+        if (!this._handle) return;
+        const M = this._module;
+        if (M._wf_set_debug_view) M._wf_set_debug_view(this._handle, view | 0);
+        else M._wf_set_hd_debug_mode(this._handle, view | 0); // older wasm
+    }
+    // The same integers under their old name.
     setHdDebugMode(mode) {
-        if (this._handle) this._module._wf_set_hd_debug_mode(this._handle, mode | 0);
+        this.setDebugView(mode);
     }
 
     // ---- day-night cycle ----------------------------------------------

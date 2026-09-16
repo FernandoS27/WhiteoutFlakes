@@ -12,6 +12,8 @@ export { HiveApp } from './hive-app.js';
 
 export {
     WhiteoutViewer,
+    DEBUG_VIEWS,
+    debugViewsFor,
     HD_DEBUG_MODES,
     TEAM_COLORS,
     TEAM_COLOR_NAMES,

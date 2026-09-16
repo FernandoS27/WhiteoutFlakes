@@ -72,11 +72,23 @@ public:
         owner_ = owner;
     }
 
+    // The pass's debug view, from PassContext. Set before OpenPass.
+    void SetDebug(const core::DebugFrame& frame, const core::DebugTargetInfo& target) {
+        debug_ = frame;
+        debugTarget_ = target;
+    }
+
 protected:
     RenderService& rs_;
     // Which bucket to submit is SurfacePass's decision now, not the pass's —
     // it is a property of the pass slot, not of the shading model.
     shading::IShadingModel* owner_ = nullptr;
+    core::DebugFrame debug_;
+    core::DebugTargetInfo debugTarget_;
+
+    profiles::wc3::Wc3DebugPrograms& DebugPrograms() {
+        return rs_.Pipeline().Wc3DebugPrograms();
+    }
 
     Derived& self() {
         return *static_cast<Derived*>(this);

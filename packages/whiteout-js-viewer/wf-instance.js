@@ -175,6 +175,12 @@ export class Instance {
     shown()  { return this._visible; }
     hidden() { return !this._visible; }
 
+    // 'pbr' or 'legacy': which DEBUG_VIEWS menu describes this model.
+    debugFamily() {
+        if (!this._handle || !this._M._wf_actor_debug_family) return 'legacy';
+        return this._M._wf_actor_debug_family(this._vh, this._handle) === 1 ? 'pbr' : 'legacy';
+    }
+
     detach() {
         if (!this._handle) return;
         this._M._wf_actor_destroy(this._vh, this._handle);

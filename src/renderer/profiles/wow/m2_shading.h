@@ -120,6 +120,8 @@ private:
         u8 blend = 0;
         u16 materialFlags = 0;
         bool mirrored = false;
+        /// The debug entry in place of the combiner.
+        bool debug = false;
 
         auto operator<=>(const PsoKey&) const = default;
     };
@@ -144,6 +146,9 @@ private:
     std::array<gfx::ShaderHandle, static_cast<usize>(M2PixelShader::Count)> ps_{};
     gfx::BufferHandle passCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle drawCb_ = gfx::BufferHandle::Invalid;
+    gfx::ShaderHandle psDebug_ = gfx::ShaderHandle::Invalid;
+    /// DebugViewData at b3, written per draw only while a debug view is on.
+    gfx::BufferHandle debugCb_ = gfx::BufferHandle::Invalid;
 
     // Ordered rather than hashed: the key is comparable by construction and a
     // model's batch count keeps this in the low hundreds, where the log factor
@@ -153,6 +158,8 @@ private:
     Matrix44f passView_ = Matrix44f::identity();
     Matrix44f passProj_ = Matrix44f::identity();
     Vector3f passCameraPos_ = {0.0f, 0.0f, 0.0f};
+    core::DebugFrame passDebug_;
+    core::DebugTargetInfo passDebugTarget_;
 
     // Borrowed from the CollectedDrawLists BeginPass was handed, which outlives
     // the pass (shading_model.h states the contract).

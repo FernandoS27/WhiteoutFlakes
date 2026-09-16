@@ -77,6 +77,54 @@ enum class IblMode : u8 {
     Sunset = 3,
 };
 
+/// @brief Surface debug visualisation.
+///
+/// Two families share one value space: 1–14 are the PBR views (0–9 are the
+/// values the old `HdDebugMode` integer used, unchanged), 15–19 the legacy
+/// ones, and 1–7 and 13 serve both. Contiguous on purpose: the generated C
+/// enum numbers its constants by position. A view a surface cannot answer
+/// draws a hatch rather than black. See @ref DebugViewInFamily for the menus.
+/// @bind
+enum class DebugView : u8 {
+    Off = 0,
+    Albedo = 1,        ///< Base colour (PBR) / diffuse (legacy).
+    Normal = 2,        ///< Shading normal, normal map applied.
+    TextureMip = 3,    ///< Mip level sampled from the base colour texture.
+    LightCount = 4,    ///< Lights reaching the pixel (or the draw).
+    LightingWhite = 5, ///< Lit result with a white base colour.
+    LightingGrey = 6,  ///< Lit result with a 50% grey base colour.
+    SpecularOnly = 7,  ///< Lit result with a black base colour.
+    NoOrm = 8,         ///< PBR: lit with neutral roughness, metalness and AO.
+    AoOnly = 9,        ///< Screen-space ambient occlusion.
+    Roughness = 10,    ///< PBR: roughness as shaded.
+    Metalness = 11,    ///< PBR
+    MaterialAo = 12,   ///< PBR: baked occlusion map.
+    Emissive = 13,
+    TeamMask = 14,     ///< Where team colour replaces the base colour.
+    VertexNormal = 15, ///< Legacy: interpolated vertex normal.
+    Specular = 16,     ///< Legacy: specular colour times intensity.
+    Gloss = 17,        ///< Legacy: specular exponent, normalised.
+    VertexColor = 18,  ///< Legacy
+    Opacity = 19,      ///< Legacy: material alpha.
+};
+
+/// @brief Which debug views describe a model's materials.
+/// @bind
+enum class DebugViewFamily : u8 {
+    Legacy = 0, ///< Specular / gloss materials: WC3 SD, SC2, WoW, Diablo III.
+    Pbr = 1,    ///< Warcraft III Reforged HD materials drawn in HD.
+};
+
+/// @brief Whether @p view belongs in @p family's menu.
+inline constexpr bool DebugViewInFamily(DebugView view, DebugViewFamily family) {
+    const auto v = static_cast<u8>(view);
+    if (v == 0)
+        return true;
+    if (family == DebugViewFamily::Pbr)
+        return v <= 14;
+    return (v >= 1 && v <= 7) || v == 13 || (v >= 15 && v <= 19);
+}
+
 /// @brief Role of an actor within the scene.
 ///
 /// Exposed to host code (e.g. the Max plugin) so it can mark an actor as

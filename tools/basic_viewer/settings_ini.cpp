@@ -158,9 +158,11 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         if (ParseInt(*s, v) && v >= 0 && v <= 2)
             service.Settings().SetLightingMode(static_cast<LightingMode>(v));
     }
+    // The key predates DebugView and keeps its name: the values are the same
+    // integers, and one that is not a view turns the debug view off.
     if (auto* s = ini.Get(KeyOf("HdDebugMode"))) {
         i32 v = 0;
-        if (ParseInt(*s, v) && v >= 0 && v <= 7)
+        if (ParseInt(*s, v))
             service.Settings().SetHdDebugMode(v);
     }
     if (auto* s = ini.Get(KeyOf("LodOverride"))) {

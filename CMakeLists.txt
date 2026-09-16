@@ -384,6 +384,8 @@ set(SHADER_ENTRIES
     "m2_combiners.slang|psM2Combiners_Mod_Depth|fragment|kM2Ps_Combiners_Mod_Depth"
     "m2_combiners.slang|psM2Combiners_Mod_Mod_Depth|fragment|kM2Ps_Combiners_Mod_Mod_Depth"
     "m2_combiners.slang|psM2Illum|fragment|kM2Ps_Illum"
+    # Debug views: every combiner, by pixel-shader id, at fixed light.
+    "m2_combiners.slang|psM2Debug|fragment|kM2Ps_Debug"
     # M3 simple material (M3_SIMPLE_MATERIAL_DESIGN.md): forward and MRT pixel
     # entries share one shading function; the split exists because Vulkan
     # rejects a PS declaring outputs the pass never binds.
@@ -391,6 +393,10 @@ set(SHADER_ENTRIES
     "m3_standard.slang|vsM3StandardSkinned|vertex|kM3StandardSkinnedVS"
     "m3_standard.slang|psM3Standard|fragment|kM3StandardPS"
     "m3_standard.slang|psM3StandardMrt|fragment|kM3StandardMrtPS"
+    # Debug views: ShadeM3's terms through debug_view.slang. The MRT twin writes
+    # the overridden albedo so the deferred lights agree in the lighting views.
+    "m3_standard.slang|psM3StandardDebug|fragment|kM3StandardDebugPS"
+    "m3_standard.slang|psM3StandardDebugMrt|fragment|kM3StandardDebugMrtPS"
     # The ribbon strip VS: world-space CPU strip into the shared full material
     # PS (psM3Standard). No PS of its own — the ribbon runs the geoset shader.
     "m3_standard.slang|vsM3Ribbon|vertex|kM3RibbonVS"
@@ -399,6 +405,8 @@ set(SHADER_ENTRIES
     "d3_standard.slang|vsD3Standard|vertex|kD3StandardVS"
     "d3_standard.slang|vsD3StandardSkinned|vertex|kD3StandardSkinnedVS"
     "d3_standard.slang|psD3Standard|fragment|kD3StandardPS"
+    # Debug views: both material shapes' terms through debug_view.slang.
+    "d3_standard.slang|psD3StandardDebug|fragment|kD3StandardDebugPS"
     # D3 particles. `Billboard.fx` / `ps_legacy` is a four-stage fixed-function
     # chain with a UV transform per stage; the SD program has one texture and no
     # chain at all. See D3_PARTICLE_DESIGN.md §8.
@@ -406,6 +414,19 @@ set(SHADER_ENTRIES
     "d3_particle.slang|psD3Particle|fragment|kD3ParticlePS"
     "m3_deferred_light.slang|vsM3DeferredLight|vertex|kM3DeferredLightVS"
     "m3_deferred_light.slang|psM3DeferredLight|fragment|kM3DeferredLightPS"
+    # Debug views (DEBUG_VIEW_DESIGN.md). The WC3 programs pair with the retail
+    # HD / SD vertex permutations and import Wc3Shaders for every decode, so they
+    # take the `wc3` flag set: its include path and the DX constant-buffer layout
+    # the BLS build compiles the programs they stand in for with. The lighting
+    # variants exist per shadow map a frame may or may not have bound.
+    "wc3_debug.slang|psWc3HdDebug|fragment|kWc3HdDebugPS|wc3"
+    "wc3_debug.slang|psWc3HdDebugCsm|fragment|kWc3HdDebugCsmPS|wc3"
+    "wc3_debug.slang|psWc3HdDebugCube|fragment|kWc3HdDebugCubePS|wc3"
+    "wc3_debug.slang|psWc3HdDebugCsmCube|fragment|kWc3HdDebugCsmCubePS|wc3"
+    "wc3_debug.slang|psWc3SdDebug|fragment|kWc3SdDebugPS|wc3"
+    "wc3_debug.slang|vsWc3SdDebug|vertex|kWc3SdDebugVS|wc3"
+    "wc3_debug.slang|vsWc3SdDebugSkinned|vertex|kWc3SdDebugSkinnedVS|wc3"
+    "wc3_debug.slang|psWc3SdDebugNormal|fragment|kWc3SdDebugNormalPS|wc3"
     # NOTE: depth of field has no custom shader entry — DofService runs the
     # shipped WC3 depthoffield.bls (GxShaderID DepthOfField) through the BLS
     # shader cache, and reuses the embedded blit (kBlit*) for the round-trip.
@@ -422,6 +443,21 @@ foreach(entry IN LISTS SHADER_ENTRIES)
     list(GET parts 1 entry_name)
     list(GET parts 2 stage)
     list(GET parts 3 var_name)
+    # Optional fifth column: a named flag set.
+    set(entry_flags "")
+    set(entry_spv_flags "")
+    set(entry_deps "${SHADER_SRC_DIR}/common.slang" "${SHADER_SRC_DIR}/debug_view.slang")
+    list(LENGTH parts part_count)
+    if(part_count GREATER 4)
+        list(GET parts 4 flag_set)
+        if(flag_set STREQUAL "wc3")
+            set(entry_flags -I "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders/wc3_shaders"
+                -warnings-disable 39001,15205,30056,41016)
+            set(entry_spv_flags -fvk-use-dx-layout)
+            list(APPEND entry_deps
+                "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders/wc3_shaders/wc3_shaders.slang")
+        endif()
+    endif()
 
     set(dxbc_path "${SHADER_OUT_DIR}/${var_name}.dxbc")
     set(spv_path  "${SHADER_OUT_DIR}/${var_name}.spv")
@@ -436,12 +472,12 @@ foreach(entry IN LISTS SHADER_ENTRIES)
         add_custom_command(
             OUTPUT  "${dxbc_path}"
             COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
-                    ${SLANG_COMMON_FLAGS}
+                    ${SLANG_COMMON_FLAGS} ${entry_flags}
                     -entry ${entry_name} -stage ${stage}
                     -target dxbc -profile sm_5_0
                     -o "${dxbc_path}"
             DEPENDS "${SHADER_SRC_DIR}/${src_file}"
-                    "${SHADER_SRC_DIR}/common.slang"
+                    ${entry_deps}
             COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.dxbc"
             VERBATIM
         )
@@ -455,12 +491,12 @@ foreach(entry IN LISTS SHADER_ENTRIES)
     add_custom_command(
         OUTPUT  "${spv_path}"
         COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
-                ${SLANG_COMMON_FLAGS}
+                ${SLANG_COMMON_FLAGS} ${entry_flags} ${entry_spv_flags}
                 -entry ${entry_name} -stage ${stage}
                 -target spirv -profile glsl_450
                 -o "${spv_path}"
         DEPENDS "${SHADER_SRC_DIR}/${src_file}"
-                "${SHADER_SRC_DIR}/common.slang"
+                ${entry_deps}
         COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.spv"
         VERBATIM
     )
@@ -471,16 +507,23 @@ foreach(entry IN LISTS SHADER_ENTRIES)
     # type-checking without dragging the slangc invocation into every build.
     if(WDX_ENABLE_WEBGPU)
         set(wgsl_path "${SHADER_OUT_DIR}/${var_name}.wgsl")
+        set(wgsl_post "")
+        if(entry_spv_flags)
+            # The wc3 set: slangc types comparison-sampled textures as colour.
+            set(wgsl_post COMMAND "${CMAKE_COMMAND}" "-DWGSL=${wgsl_path}"
+                          -P "${SHADER_SRC_DIR}/wgsl_depth_textures.cmake")
+        endif()
         add_custom_command(
             OUTPUT  "${wgsl_path}"
             COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
-                    ${SLANG_COMMON_FLAGS}
+                    ${SLANG_COMMON_FLAGS} ${entry_flags}
                     -DWGSL_TARGET=1
                     -entry ${entry_name} -stage ${stage}
                     -target wgsl
                     -o "${wgsl_path}"
+            ${wgsl_post}
             DEPENDS "${SHADER_SRC_DIR}/${src_file}"
-                    "${SHADER_SRC_DIR}/common.slang"
+                    ${entry_deps}
             COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.wgsl"
             VERBATIM
         )
@@ -500,13 +543,13 @@ foreach(entry IN LISTS SHADER_ENTRIES)
         add_custom_command(
             OUTPUT  "${mtl_path}"
             COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
-                    ${SLANG_COMMON_FLAGS}
+                    ${SLANG_COMMON_FLAGS} ${entry_flags}
                     -DMETAL_TARGET=1
                     -entry ${entry_name} -stage ${stage}
                     -target metallib -profile sm_6_0
                     -o "${mtl_path}"
             DEPENDS "${SHADER_SRC_DIR}/${src_file}"
-                    "${SHADER_SRC_DIR}/common.slang"
+                    ${entry_deps}
             COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.metallib"
             VERBATIM
         )
@@ -1302,6 +1345,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/core/render_profile.cpp
     src/renderer/profiles/wc3/wc3_classify.cpp
     src/renderer/profiles/wc3/wc3_lighting_frame.cpp
+    src/renderer/profiles/wc3/wc3_debug_programs.cpp
     src/renderer/shading/surface_pass.cpp
     src/renderer/shading/unlit_shading.cpp
     src/renderer/render_target.cpp

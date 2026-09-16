@@ -182,6 +182,8 @@ private:
         /// m3::MaterialFlag::TwoSided — the only raster state that varies per
         /// surface, so it has to key the PSO rather than ride the draw CB.
         bool twoSided = false;
+        /// The debug entry (or its MRT twin) in place of the material's.
+        bool debug = false;
 
         auto operator<=>(const PsoKey&) const = default;
     };
@@ -226,6 +228,10 @@ private:
     gfx::ShaderHandle vsSkinned_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psMrt_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle psDebug_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle psDebugMrt_ = gfx::ShaderHandle::Invalid;
+    /// DebugViewData at b3, written per draw only while a debug view is on.
+    gfx::BufferHandle debugCb_ = gfx::BufferHandle::Invalid;
     /// `vsM3Ribbon`. Named for the shader entry, which keeps the ribbon name
     /// it was written under; the particle batch draws through it too.
     gfx::ShaderHandle vsWorld_ = gfx::ShaderHandle::Invalid;
@@ -244,6 +250,8 @@ private:
     Matrix44f passProj_ = Matrix44f::identity();
     Vector3f passCameraPos_ = {0.0f, 0.0f, 0.0f};
     core::PassSlot passSlot_ = core::PassSlot::OpaqueColor;
+    core::DebugFrame passDebug_;
+    core::DebugTargetInfo passDebugTarget_;
 };
 
 } // namespace whiteout::flakes::renderer::profiles::sc2_heroes

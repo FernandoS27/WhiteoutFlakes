@@ -322,6 +322,11 @@ public:
     // headers (the corn↔game scale and packet layout stay inside the renderer).
     bool ComputeEffectWorldBounds(u32 actor, i32 emitterId, Vector3f& outMin, Vector3f& outMax);
 
+    // Which debug-view family describes an actor's materials: PBR for a Warcraft
+    // III actor drawn in HD with a Reforged (HD or Crystal) layer, legacy for
+    // everything else. Hosts pick the debug menu with it.
+    DebugViewFamily DebugFamilyOf(u32 actor) const;
+
     // ---- App-tunable knobs ----
     RenderSettings& Settings();
     const RenderSettings& Settings() const;

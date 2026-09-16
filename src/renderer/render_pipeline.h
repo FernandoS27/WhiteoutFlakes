@@ -37,6 +37,9 @@ enum class GeosetBucket : u8;
 namespace shading {
 class IShadingModel;
 }
+namespace profiles::wc3 {
+class Wc3DebugPrograms;
+}
 namespace core {
 class IRenderProfile;
 class VertexLayoutCache;
@@ -251,6 +254,8 @@ public:
     gfx::BufferHandle CbPerFrame() const;
     RenderTarget* PrimaryTarget();
     i32 ComputeSelectedLod() const;
+    // The WC3 debug pixel programs, created on first ask (debug views only).
+    profiles::wc3::Wc3DebugPrograms& Wc3DebugPrograms();
 
     // ---- Shadow PSO/CB handles read by shadow::ShadowPass.
     //      Bundled rather than friended so the pass class doesn't need
@@ -319,7 +324,9 @@ private:
     bool CreatePipelines();
     bool CreateDefaultResources();
     void ReleaseModelGPU();
-    void RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor);
+    // `copyOnly` replaces the tonemap with a straight copy (debug channel views).
+    void RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor,
+                        bool copyOnly = false);
     bool InitBlsShaders(gfx::GfxApi api);
     void ShutdownBlsShaders();
     bool RenderSplatsBls();

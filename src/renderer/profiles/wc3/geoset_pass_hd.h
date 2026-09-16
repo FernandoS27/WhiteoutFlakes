@@ -416,6 +416,17 @@ public:
                 req.extraColorWrite = rs.mrt;
                 req.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
                 req.lhClipSpace = true;
+                // A debug view swaps the pixel program and nothing else, so the
+                // vertex permutation, streams and blend above are the real
+                // draw's. The fading-opaque depth twin keeps its own.
+                const bool debugDraw = debug_.debugSurfaces && !rs.depthPrepass;
+                if (debugDraw) {
+                    const bool lightingView =
+                        core::KindOf(debug_.view) == core::DebugViewKind::Lighting;
+                    req.psOverride = DebugPrograms().Hd(lightingView && rs.shadowCascade,
+                                                        lightingView && rs.pointShadows);
+                    req.extraColorWrite = false;
+                }
                 auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(req);
                 if (pso == gfx::PipelineHandle::Invalid)
                     return;
@@ -474,6 +485,24 @@ public:
                     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, defs.Black);
                 }
                 cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().WrapVariant(wrapFlags));
+
+                if (debugDraw) {
+                    u32 dbgFlags = 0;
+                    if (job.programShaderId != bls::GxShaderID::SD_on_HD)
+                        dbgFlags |= profiles::wc3::kWc3DebugPbr;
+                    if (rs.multiLayer)
+                        dbgFlags |= profiles::wc3::kWc3DebugTeamLayer;
+                    if (rs.aoMap)
+                        dbgFlags |= profiles::wc3::kWc3DebugAoMap;
+                    if (rs.lighting)
+                        dbgFlags |= profiles::wc3::kWc3DebugLit;
+                    // SelectPermutes' ALPHA_TEST axis.
+                    if (rs.alphaMode != 0)
+                        dbgFlags |= profiles::wc3::kWc3DebugAlphaTest;
+                    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3,
+                                            DebugPrograms().Write(core::MakeDebugViewCb(
+                                                debug_, debugTarget_, 0, dbgFlags)));
+                }
 
                 // G1 hook — see the SD path's TraceThisLayer for why this sits
                 // after the PSO resolved rather than at item level.

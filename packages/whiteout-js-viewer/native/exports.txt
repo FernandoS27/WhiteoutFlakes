@@ -13,6 +13,7 @@ _wf_set_show_grid
 _wf_set_shadows_enabled
 _wf_set_bloom_enabled
 _wf_set_hd_debug_mode
+_wf_set_debug_view
 _wf_set_time_of_day
 _wf_set_ibl_mode
 _wf_last_error
@@ -44,6 +45,7 @@ _wf_actor_camera_preset_count
 _wf_actor_camera_preset_name
 _wf_camera_activate_preset
 _wf_actor_preferred_render_mode
+_wf_actor_debug_family
 _wf_assets_needs_count
 _wf_assets_needs_get_kind
 _wf_assets_needs_get_subkind

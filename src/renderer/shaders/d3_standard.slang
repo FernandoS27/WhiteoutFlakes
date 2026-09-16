@@ -98,6 +98,8 @@
 // ordered layer list — each carries an EMaterialTextureType and the engine
 // binds it to whichever *stage* of the bound pass declares that type — so the
 // host resolves types to these slots and the shader only ever sees slots.
+import debug_view;
+
 static const int kD3SlotDiffuse = 0;
 static const int kD3SlotNormal = 1;
 static const int kD3SlotSpecular = 2;
@@ -228,6 +230,8 @@ static const int WF_PS_BIND_OFFSET = 16;
 // Vertex stage only; the rigid entry never references it and Slang strips it
 // from that entry's reflection.
 [[vk::binding(2, 0)]] ConstantBuffer<D3BoneData> bones : register(b2);
+// The debug entry only (DEBUG_VIEW_DESIGN.md); stripped from the others.
+[[vk::binding(3, 0)]] ConstantBuffer<DebugViewData> debugView : register(b3);
 
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D texDiffuse : register(t0);
 [[vk::binding(WF_PS_BIND_OFFSET + 1, 1)]] Texture2D texNormal : register(t1);
@@ -555,7 +559,12 @@ float4 SampleChainStage(int i, float4 uv01)
 // Nothing here reads MaterialColors, and that is the original's doing rather
 // than an omission: `ps_legacy` samples textures and folds in COLOR0, `Factor`
 // and `appearanceFX`, and the material's four colours reach no stage of it.
-float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int stageCount)
+// `lightOverride` < 0 runs the chain as shipped; 0 or 1 replaces COLOR0.rgb with
+// that constant, which is how the debug views pull a fixed-function surface
+// apart into what light scales and what it shows unlit. `vcolLight` is the
+// light the chain would have taken.
+float4 D3LegacyChainLit(PSInput input, bool frontFace, uint vertexColorMode, int stageCount,
+                        float lightOverride, out float3 vcolLight)
 {
     float3 N = normalize(input.normalWS);
     if (draw.params0.z != 0.0 && !frontFace)
@@ -569,7 +578,9 @@ float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int st
     float3 ambient, diffuseSum, specSum;
     D3LightSum(input.worldPos.xyz, N, V, input.vertexCol, vertexColorMode, ambient, diffuseSum,
                specSum);
-    let vcolRgb = ambient + diffuseSum;
+    vcolLight = ambient + diffuseSum;
+    let vcolRgb = (lightOverride < 0.0) ? vcolLight
+                                        : float3(lightOverride, lightOverride, lightOverride);
 
     // COLOR0.a. `TAG_VS_EDGEALPHA` decides between the attribute and a facing
     // term, and the facing term is what makes Urzael's cannonball a glowing orb
@@ -674,6 +685,12 @@ float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int st
     return outColor;
 }
 
+float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int stageCount)
+{
+    float3 vcolLight;
+    return D3LegacyChainLit(input, frontFace, vertexColorMode, stageCount, -1.0, vcolLight);
+}
+
 // The fixed-function alpha test, which is a COMPARISON and a reference, not a
 // threshold: `sub_5717F0` sets ALPHAFUNC and ALPHAREF together and passes (0, 0)
 // when the enable is clear. 67 shipped passes compare LessEqual and 5 Less --
@@ -691,30 +708,25 @@ bool D3AlphaTestKeeps(float a, float reference, int func) {
     }
 }
 
-// `[shader("fragment")]` belongs HERE and only here. It sat above
-// D3AlphaTestKeeps, one comment block up, where it made that helper an ENTRY
-// POINT: Slang then lowered its three parameters to `ptr<function, ...>`
-// varyings, which is invalid SPIR-V (`OpLoad Pointer is not a logical
-// pointer`) and invalid WGSL, so the whole D3 pixel stage failed to build on
-// Vulkan and WebGPU. DXBC never noticed, because `-entry psD3Standard` picks
-// the entry point by name.
-[shader("fragment")]
-float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
+// The material terms the slot path's colour is built from, for the debug views.
+struct D3SlotTerms
 {
-    let vertexColorMode = uint(draw.params0.w);
+    float3 albedo;
+    float alpha;
+    float3 N;
+    float3 specTint;
+    float3 ambient;
+    float3 diffuseSum;
+    float3 specSum;
+    float3 lightmap;
+    float3 emissive;
+    float3 glowMul;
+};
 
-    // `Legacy.fx` first, because for that family the slots below are the wrong
-    // question — see D3LegacyChain. The alpha test runs on what was WRITTEN,
-    // which for a `_pma` pass is the inverted coverage.
-    let chainCount = int(draw.params3.x);
-    if (chainCount > 0)
-    {
-        let chained = D3LegacyChain(input, frontFace, vertexColorMode, chainCount);
-        if (!D3AlphaTestKeeps(chained.a, draw.params0.x, (int)draw.params1.w))
-            discard;
-        return chained;
-    }
-
+// The named-slot material, whole: what psD3Standard writes when the pass runs no
+// `Legacy.fx` chain.
+float4 D3ShadeSlots(PSInput input, bool frontFace, uint vertexColorMode, out D3SlotTerms terms)
+{
     // Unresolved slots fall back to the type's documented default, and the
     // surface still draws. The original's residency gate returns *before* the
     // draw when a bound texture is not resident — an "invisible mesh" in D3 is
@@ -898,6 +910,16 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
     float3 color = albedo.rgb * glowMul * (ambient + diffuseSum * lightmap + emissive) +
                    specSum * specTint;
+    terms.albedo = albedo.rgb;
+    terms.alpha = albedo.a;
+    terms.N = N;
+    terms.specTint = specTint;
+    terms.ambient = ambient;
+    terms.diffuseSum = diffuseSum;
+    terms.specSum = specSum;
+    terms.lightmap = lightmap;
+    terms.emissive = emissive;
+    terms.glowMul = glowMul;
     // The chain's output gain, colour half. Not saturated: the original does not
     // either — its `MUL result.color.xyz, R0, c[0].y` runs straight into a UNORM
     // target, and clamping here would cost the HDR path its headroom.
@@ -920,4 +942,100 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
             outColor.a = 1.0;
     }
     return outColor;
+}
+
+// `[shader("fragment")]` belongs HERE and only here. It sat above
+// D3AlphaTestKeeps, one comment block up, where it made that helper an ENTRY
+// POINT: Slang then lowered its three parameters to `ptr<function, ...>`
+// varyings, which is invalid SPIR-V (`OpLoad Pointer is not a logical
+// pointer`) and invalid WGSL, so the whole D3 pixel stage failed to build on
+// Vulkan and WebGPU. DXBC never noticed, because `-entry psD3Standard` picks
+// the entry point by name.
+[shader("fragment")]
+float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
+{
+    let vertexColorMode = uint(draw.params0.w);
+
+    // `Legacy.fx` first, because for that family the slots below are the wrong
+    // question — see D3LegacyChain. The alpha test runs on what was WRITTEN,
+    // which for a `_pma` pass is the inverted coverage.
+    let chainCount = int(draw.params3.x);
+    if (chainCount > 0)
+    {
+        let chained = D3LegacyChain(input, frontFace, vertexColorMode, chainCount);
+        if (!D3AlphaTestKeeps(chained.a, draw.params0.x, (int)draw.params1.w))
+            discard;
+        return chained;
+    }
+
+    D3SlotTerms terms;
+    return D3ShadeSlots(input, frontFace, vertexColorMode, terms);
+}
+
+// ---- Debug views (DEBUG_VIEW_DESIGN.md) ------------------------------------
+//
+// Both material shapes, run exactly as psD3Standard runs them, with their terms
+// handed to DebugLegacy. A `Legacy.fx` chain names no channels, so it is taken
+// apart by running it at fixed light: unlit it shows its emissive part, and
+// what light adds on top is its diffuse.
+[shader("fragment")]
+float4 psD3StandardDebug(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
+{
+    let d = debugView;
+    let vertexColorMode = uint(draw.params0.w);
+
+    DebugSurface s = DebugSurfaceInit();
+    uint w, h;
+    texDiffuse.GetDimensions(w, h);
+    s.mipLevel = DebugMipLevel(SlotUv(kD3SlotDiffuse, input.uv01), float2(w, h));
+
+    float3 vertexN = normalize(input.normalWS);
+    if (draw.params0.z != 0.0 && !frontFace)
+        vertexN = -vertexN;
+    s.vertexNormalWS = vertexN;
+    s.vertexColor = input.vertexCol.rgb;
+    float lights = pass.cylPos.w > 0.0 ? 1.0 : 0.0;
+    for (int i = 0; i < kD3MaxLights; ++i)
+        lights += pass.lightAtten[i].w > 0.0 ? 1.0 : 0.0;
+    s.lightCount = lights;
+    s.present = kDbgHasMip | kDbgHasVertexNormal | kDbgHasVertexColor | kDbgHasLightCount |
+                kDbgHasAlbedo | kDbgHasNormal | kDbgHasEmissive | kDbgHasLit;
+
+    let lighting = DebugLightingOverride(d);
+    let chainCount = int(draw.params3.x);
+    if (chainCount > 0)
+    {
+        float3 light;
+        let shaded = D3LegacyChainLit(input, frontFace, vertexColorMode, chainCount, -1.0, light);
+        let unlit = D3LegacyChainLit(input, frontFace, vertexColorMode, chainCount, 0.0, light);
+        let lit1 = D3LegacyChainLit(input, frontFace, vertexColorMode, chainCount, 1.0, light);
+        if (!D3AlphaTestKeeps(shaded.a, draw.params0.x, (int)draw.params1.w))
+            discard;
+        s.albedo = lit1.rgb - unlit.rgb;
+        s.emissive = unlit.rgb;
+        s.normalWS = vertexN;
+        s.opacity = shaded.a;
+        // A chain computes no specular it keeps.
+        s.lit = DebugOverrideAlbedo(d, float3(1, 1, 1)) * light;
+        if (lighting == 3u)
+            s.lit = float3(0, 0, 0);
+    }
+    else
+    {
+        D3SlotTerms t;
+        let shaded = D3ShadeSlots(input, frontFace, vertexColorMode, t);
+        s.albedo = t.albedo;
+        s.normalWS = t.N;
+        s.specular = t.specTint;
+        s.opacity = t.alpha;
+        // What the surface shows with no light at all.
+        s.emissive = t.albedo * t.glowMul * t.emissive * draw.params1.x;
+        s.present |= kDbgHasSpecular;
+        let diffuseLight = t.ambient + t.diffuseSum * t.lightmap;
+        let spec = t.specSum * t.specTint;
+        s.lit = DebugOverrideAlbedo(d, float3(1, 1, 1)) * diffuseLight + spec;
+        if (lighting == 3u)
+            s.lit = spec;
+    }
+    return DebugLegacy(s, d, input.position.xy);
 }

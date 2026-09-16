@@ -71,6 +71,10 @@ struct PsoRequest {
     bool wireframe = false;
 
     bool lhClipSpace = false;
+    // Replaces the program's pixel permutation with an engine shader built
+    // against the same interstage signature — the debug views. Never recorded
+    // into the PSO trace: a debug permutation is not worth pre-warming.
+    gfx::ShaderHandle psOverride = gfx::ShaderHandle::Invalid;
 };
 
 class BlsPsoTrace;

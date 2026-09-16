@@ -3,7 +3,10 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
+#include "renderer/bls/bls_permuter.h"
 #include "renderer/bls/bls_shader_cache.h"
+#include "renderer/core/surface_table.h"
+#include "renderer/profiles/wc3/wc3_surface_table.h"
 #include "renderer/core/render_profile.h"
 #include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/dnc/dnc_service.h"
@@ -465,6 +468,24 @@ bool RenderService::ComputeEffectWorldBounds(u32 actor, i32 emitterId, Vector3f&
     return impl_->activeServices_->corn.ComputeWorldParticleBounds(actor, emitterId, outMin,
                                                                    outMax);
 }
+DebugViewFamily RenderService::DebugFamilyOf(u32 actor) const {
+    const model::Actor* a = Scene().Actors().Find(actor);
+    // An actor naming its own model is M2, M3, D3 or unlit; the WC3 ones leave
+    // it to the profile, and only the HD profile runs the PBR programs.
+    if (!a || a->shadingModel != core::ShadingModelId::None ||
+        Settings().GetRenderMode() != RenderMode::HD)
+        return DebugViewFamily::Legacy;
+    if (a->render.surfaceTable && a->render.surfaceTable->Product() == core::ProductId::Wc3) {
+        const auto* table =
+            static_cast<const profiles::wc3::Wc3SurfaceTable*>(a->render.surfaceTable.get());
+        for (const auto& mat : table->Materials())
+            for (const auto& layer : mat.cpu.layers)
+                if (bls::ProgramForLayer(layer.shaderId) != bls::GxShaderID::SD_on_HD)
+                    return DebugViewFamily::Pbr;
+    }
+    return DebugViewFamily::Legacy;
+}
+
 SpnSpawner& RenderService::Spn() {
     return *impl_->activeServices_->spn;
 }

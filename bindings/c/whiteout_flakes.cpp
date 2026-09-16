@@ -743,6 +743,14 @@ void whiteout_flakes_FlakesSettingsView_SetIblMode(whiteout_FlakesSettingsView* 
     reinterpret_cast<whiteout::flakes::SettingsView*>(self)->SetIblMode(static_cast<whiteout::flakes::IblMode>(arg));
 }
 
+int32_t whiteout_flakes_FlakesSettingsView_DebugView(const whiteout_FlakesSettingsView* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::SettingsView*>(self)->GetDebugView());
+}
+
+void whiteout_flakes_FlakesSettingsView_SetDebugView(whiteout_FlakesSettingsView* self, int32_t arg) {
+    reinterpret_cast<whiteout::flakes::SettingsView*>(self)->SetDebugView(static_cast<whiteout::flakes::DebugView>(arg));
+}
+
 int32_t whiteout_flakes_FlakesSettingsView_HdDebugMode(const whiteout_FlakesSettingsView* self) {
     return reinterpret_cast<const whiteout::flakes::SettingsView*>(self)->HdDebugMode();
 }
@@ -1069,6 +1077,10 @@ uint32_t whiteout_flakes_FlakesActorView_Handle(const whiteout_FlakesActorView* 
 
 int32_t whiteout_flakes_FlakesActorView_Role(const whiteout_FlakesActorView* self) {
     return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::ActorView*>(self)->Role());
+}
+
+int32_t whiteout_flakes_FlakesActorView_DebugFamily(const whiteout_FlakesActorView* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::ActorView*>(self)->DebugFamily());
 }
 
 float whiteout_flakes_FlakesActorView_PlaybackSpeed(const whiteout_FlakesActorView* self) {

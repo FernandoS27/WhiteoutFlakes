@@ -179,6 +179,108 @@ impl TryFrom<i32> for IblMode {
     }
 }
 
+/// Surface debug visualisation.
+///
+/// Two families share one value space: 1–14 are the PBR views (0–9 are the values the old `HdDebugMode` integer used, unchanged), 15–19 the legacy ones, and 1–7 and 13 serve both. Contiguous on purpose: the generated C enum numbers its constants by position. A view a surface cannot answer draws a hatch rather than black. See @ref DebugViewInFamily for the menus.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DebugView {
+    Off = 0,
+    /// Base colour (PBR) / diffuse (legacy).
+    Albedo = 1,
+    /// Shading normal, normal map applied.
+    Normal = 2,
+    /// Mip level sampled from the base colour texture.
+    TextureMip = 3,
+    /// Lights reaching the pixel (or the draw).
+    LightCount = 4,
+    /// Lit result with a white base colour.
+    LightingWhite = 5,
+    /// Lit result with a 50% grey base colour.
+    LightingGrey = 6,
+    /// Lit result with a black base colour.
+    SpecularOnly = 7,
+    /// PBR: lit with neutral roughness, metalness and AO.
+    NoOrm = 8,
+    /// Screen-space ambient occlusion.
+    AoOnly = 9,
+    /// PBR: roughness as shaded.
+    Roughness = 10,
+    /// PBR
+    Metalness = 11,
+    /// PBR: baked occlusion map.
+    MaterialAo = 12,
+    Emissive = 13,
+    /// Where team colour replaces the base colour.
+    TeamMask = 14,
+    /// Legacy: interpolated vertex normal.
+    VertexNormal = 15,
+    /// Legacy: specular colour times intensity.
+    Specular = 16,
+    /// Legacy: specular exponent, normalised.
+    Gloss = 17,
+    /// Legacy
+    VertexColor = 18,
+    /// Legacy: material alpha.
+    Opacity = 19,
+}
+
+impl TryFrom<i32> for DebugView {
+    type Error = crate::Error;
+    fn try_from(v: i32) -> Result<Self, crate::Error> {
+        match v {
+            0 => Ok(DebugView::Off),
+            1 => Ok(DebugView::Albedo),
+            2 => Ok(DebugView::Normal),
+            3 => Ok(DebugView::TextureMip),
+            4 => Ok(DebugView::LightCount),
+            5 => Ok(DebugView::LightingWhite),
+            6 => Ok(DebugView::LightingGrey),
+            7 => Ok(DebugView::SpecularOnly),
+            8 => Ok(DebugView::NoOrm),
+            9 => Ok(DebugView::AoOnly),
+            10 => Ok(DebugView::Roughness),
+            11 => Ok(DebugView::Metalness),
+            12 => Ok(DebugView::MaterialAo),
+            13 => Ok(DebugView::Emissive),
+            14 => Ok(DebugView::TeamMask),
+            15 => Ok(DebugView::VertexNormal),
+            16 => Ok(DebugView::Specular),
+            17 => Ok(DebugView::Gloss),
+            18 => Ok(DebugView::VertexColor),
+            19 => Ok(DebugView::Opacity),
+            other => Err(crate::Error::UnknownEnum {
+                name: "DebugView",
+                value: other,
+            }),
+        }
+    }
+}
+
+/// Which debug views describe a model's materials.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DebugViewFamily {
+    /// Specular / gloss materials: WC3 SD, SC2, WoW, Diablo III.
+    Legacy = 0,
+    /// Warcraft III Reforged HD materials drawn in HD.
+    Pbr = 1,
+}
+
+impl TryFrom<i32> for DebugViewFamily {
+    type Error = crate::Error;
+    fn try_from(v: i32) -> Result<Self, crate::Error> {
+        match v {
+            0 => Ok(DebugViewFamily::Legacy),
+            1 => Ok(DebugViewFamily::Pbr),
+            other => Err(crate::Error::UnknownEnum {
+                name: "DebugViewFamily",
+                value: other,
+            }),
+        }
+    }
+}
+
 /// Role of an actor within the scene.
 ///
 /// Exposed to host code (e.g. the Max plugin) so it can mark an actor as host-driven (`External`) and suppress automatic per-frame evaluation.
@@ -1853,7 +1955,25 @@ impl SettingsView {
         }
     }
 
-    /// HD-shader debug mode (0 = off, 1..7 = visualisations).
+    /// Surface debug visualisation (see @ref DebugView).
+    pub fn debug_view(&self) -> DebugView {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            DebugView::try_from(ffi::whiteout_flakes_FlakesSettingsView_DebugView(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
+        }
+    }
+
+    pub fn set_debug_view(&mut self, arg: DebugView) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_SetDebugView(self.raw.as_ptr(), arg as i32);
+        }
+    }
+
+    /// Deprecated integer form of @ref GetDebugView; 0–9 keep their old meaning. Unknown values turn the view off.
     pub fn hd_debug_mode(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
         unsafe { ffi::whiteout_flakes_FlakesSettingsView_HdDebugMode(self.raw.as_ptr()) }
@@ -2611,6 +2731,17 @@ impl ActorView {
         unsafe {
             ActorRole::try_from(ffi::whiteout_flakes_FlakesActorView_Role(self.raw.as_ptr()))
                 .expect("unknown enum discriminant from the native library (ABI version skew)")
+        }
+    }
+
+    /// Which debug views describe this actor's materials; hosts show that family's menu (see @ref DebugViewInFamily).
+    pub fn debug_family(&self) -> DebugViewFamily {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            DebugViewFamily::try_from(ffi::whiteout_flakes_FlakesActorView_DebugFamily(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -3937,6 +4068,13 @@ pub mod ffi {
             self_: *mut whiteout_FlakesSettingsView,
             arg: i32,
         );
+        pub fn whiteout_flakes_FlakesSettingsView_DebugView(
+            self_: *mut whiteout_FlakesSettingsView,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetDebugView(
+            self_: *mut whiteout_FlakesSettingsView,
+            arg: i32,
+        );
         pub fn whiteout_flakes_FlakesSettingsView_HdDebugMode(
             self_: *mut whiteout_FlakesSettingsView,
         ) -> i32;
@@ -4130,6 +4268,9 @@ pub mod ffi {
             -> i32;
         pub fn whiteout_flakes_FlakesActorView_Handle(self_: *mut whiteout_FlakesActorView) -> u32;
         pub fn whiteout_flakes_FlakesActorView_Role(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_DebugFamily(
+            self_: *mut whiteout_FlakesActorView,
+        ) -> i32;
         pub fn whiteout_flakes_FlakesActorView_PlaybackSpeed(
             self_: *mut whiteout_FlakesActorView,
         ) -> f32;

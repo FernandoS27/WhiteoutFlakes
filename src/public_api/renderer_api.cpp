@@ -378,6 +378,12 @@ IblMode SettingsView::GetIblMode() const {
 void SettingsView::SetIblMode(IblMode m) {
     Svc(impl_).Settings().SetIblMode(m);
 }
+DebugView SettingsView::GetDebugView() const {
+    return Svc(impl_).Settings().GetDebugView();
+}
+void SettingsView::SetDebugView(DebugView v) {
+    Svc(impl_).Settings().SetDebugView(v);
+}
 i32 SettingsView::HdDebugMode() const {
     return Svc(impl_).Settings().HdDebugMode();
 }
@@ -669,6 +675,10 @@ bool ActorView::IsValid() const {
 ActorRole ActorView::Role() const {
     auto* a = FindActor(impl_, handle_);
     return a ? static_cast<ActorRole>(a->role) : ActorRole::Unit;
+}
+
+DebugViewFamily ActorView::DebugFamily() const {
+    return Svc(impl_).DebugFamilyOf(handle_);
 }
 
 bool ActorView::EffectBounds(i32 emitterId, Vector3f& outMin, Vector3f& outMax) const {

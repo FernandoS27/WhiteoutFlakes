@@ -191,19 +191,6 @@ void SaveIni(const ViewerApp& app) {
                     i18n::languageCode(i18n::Localizer::instance().current()));
 }
 
-constexpr std::array<const char*, 10> kDebugVisLabels = {
-    "Off",
-    "Albedo",
-    "World Normal",
-    "LOD Heatmap",
-    "Light Count",
-    "Shading Only (white albedo)",
-    "Shading Only (grey albedo)",
-    "Specular Only (black albedo)",
-    "No ORM",
-    "AO Only",
-};
-
 constexpr std::array<const char*, 5> kLodLabels = {
     "Auto (screen size)", "Force LOD 0 (base)",   "Force LOD 1",
     "Force LOD 2",        "Force LOD 3 (lowest)",
@@ -218,12 +205,36 @@ constexpr std::array<const char*, 5> kBackendLabels = {"D3D11", "D3D12", "Vulkan
 
 // Parallel i18n key arrays for the visible label arrays above. Backend names
 // are product/tech names and stay in English, so they get no key array.
-constexpr std::array<const char*, 10> kDebugVisKeys = {
-    "debugvis.off",          "debugvis.albedo",        "debugvis.world_normal",
-    "debugvis.lod_heatmap",  "debugvis.light_count",   "debugvis.shading_white",
-    "debugvis.shading_grey", "debugvis.specular_only", "debugvis.no_orm",
-    "debugvis.ao_only",
+// Every debug view, in menu order, with the label it wears in the PBR and the
+// legacy menu. Which of the two a model gets is the renderer's call
+// (DebugFamilyOf); which views a family lists is DebugViewInFamily.
+struct DebugViewItem {
+    DebugView view;
+    const char* pbrKey;
+    const char* legacyKey;
 };
+constexpr std::array<DebugViewItem, 20> kDebugViews = {{
+    {DebugView::Off, "debugvis.off", "debugvis.off"},
+    {DebugView::Albedo, "debugvis.albedo", "debugvis.diffuse"},
+    {DebugView::Normal, "debugvis.world_normal", "debugvis.normal_mapped"},
+    {DebugView::VertexNormal, "debugvis.vertex_normal", "debugvis.vertex_normal"},
+    {DebugView::Roughness, "debugvis.roughness", "debugvis.roughness"},
+    {DebugView::Metalness, "debugvis.metalness", "debugvis.metalness"},
+    {DebugView::MaterialAo, "debugvis.material_ao", "debugvis.material_ao"},
+    {DebugView::Specular, "debugvis.specular", "debugvis.specular"},
+    {DebugView::Gloss, "debugvis.gloss", "debugvis.gloss"},
+    {DebugView::Emissive, "debugvis.emissive", "debugvis.emissive"},
+    {DebugView::TeamMask, "debugvis.team_mask", "debugvis.team_mask"},
+    {DebugView::VertexColor, "debugvis.vertex_color", "debugvis.vertex_color"},
+    {DebugView::Opacity, "debugvis.opacity", "debugvis.opacity"},
+    {DebugView::TextureMip, "debugvis.lod_heatmap", "debugvis.lod_heatmap"},
+    {DebugView::LightCount, "debugvis.light_count", "debugvis.light_count"},
+    {DebugView::LightingWhite, "debugvis.shading_white", "debugvis.shading_white"},
+    {DebugView::LightingGrey, "debugvis.shading_grey", "debugvis.shading_grey"},
+    {DebugView::SpecularOnly, "debugvis.specular_only", "debugvis.specular_only"},
+    {DebugView::NoOrm, "debugvis.no_orm", "debugvis.no_orm"},
+    {DebugView::AoOnly, "debugvis.ao_only", "debugvis.ao_only"},
+}};
 constexpr std::array<const char*, 5> kLodKeys = {
     "lod.auto", "lod.0", "lod.1", "lod.2", "lod.3",
 };
@@ -1528,10 +1539,22 @@ void ViewerUI::BuildMenuBar() {
             ImGui::Separator();
 
             if (ImGui::BeginMenu(i18n::tr("menu.debug.debugview"))) {
-                const i32 cur = svc.Settings().HdDebugMode();
-                for (i32 i = 0; i < static_cast<i32>(kDebugVisLabels.size()); ++i) {
-                    if (ImGui::MenuItem(i18n::tr(kDebugVisKeys[i]), nullptr, i == cur)) {
-                        svc.Settings().SetHdDebugMode(i);
+                // The views the focused model's materials can answer: a
+                // Reforged model drawn in HD gets the PBR set, everything
+                // else the legacy one.
+                const DebugViewFamily family = svc.DebugFamilyOf(app_.FocusActor());
+                ImGui::TextDisabled("%s", i18n::tr(family == DebugViewFamily::Pbr
+                                                        ? "debugvis.family_pbr"
+                                                        : "debugvis.family_legacy"));
+                ImGui::Separator();
+                const DebugView cur = svc.Settings().GetDebugView();
+                for (const auto& item : kDebugViews) {
+                    if (!DebugViewInFamily(item.view, family))
+                        continue;
+                    const char* key =
+                        family == DebugViewFamily::Pbr ? item.pbrKey : item.legacyKey;
+                    if (ImGui::MenuItem(i18n::tr(key), nullptr, item.view == cur)) {
+                        svc.Settings().SetDebugView(item.view);
                         SaveIni(app_);
                     }
                 }

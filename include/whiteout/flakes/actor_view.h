@@ -35,6 +35,9 @@ public:
     }
     /// @brief Role assigned at spawn time (see @ref ActorRole).
     ActorRole Role() const;
+    /// @brief Which debug views describe this actor's materials; hosts show
+    ///        that family's menu (see @ref DebugViewInFamily).
+    DebugViewFamily DebugFamily() const;
 
     /// @name Transform / playback / team-color
     /// @{
