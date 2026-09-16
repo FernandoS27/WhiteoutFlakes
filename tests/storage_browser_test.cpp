@@ -14,9 +14,15 @@
 
 #include "io/file_content_provider.h"
 #include "io/storage_browser.h"
+#include "whiteout/flakes/util/path_utf8.h"
+
+#if WHITEOUT_HAS_CASC
+#include <whiteout/storages/casc/storage_writable.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -667,3 +673,53 @@ TEST_CASE("A Warcraft III folder lists each model once, by its mod-chain name",
     CHECK(br.ChildPathAt("units\\human\\footman", "FOOTMAN.MDX") ==
           br.ChildPathAt("units\\human\\footman", "footman.mdx"));
 }
+
+#if WHITEOUT_HAS_CASC
+// ============================================================================
+// An install under a directory the ANSI code page cannot spell.
+//
+// Every path a host hands over is UTF-8. Given to std::filesystem as a plain
+// std::string, Windows decodes it in the ANSI code page instead, so a Warcraft
+// III install under "D:/光模型" looked like no directory at all — to the
+// Settings install path and to a Storage Explorer browse alike. A small storage
+// written by the library stands in for the install.
+// ============================================================================
+TEST_CASE("An install under a non-ASCII directory opens from Settings and from a browse",
+          "[browser][casc][unicode]") {
+    namespace fs = std::filesystem;
+    namespace casc = whiteout::storages::casc;
+    const fs::path parent = fs::temp_directory_path() / u8"wf_browser_\u5149\u6a21\u578b";
+    const std::string root = whiteout::flakes::PathToUtf8(parent / "Warcraft III");
+    std::error_code ec;
+    fs::remove_all(parent, ec);
+    {
+        casc::CreateOptions opts;
+        opts.product = "w3";
+        auto storage = casc::StorageWritable::create(opts);
+        REQUIRE(storage.writeFile("units/human/footman/footman.mdx",
+                                  std::vector<std::uint8_t>(64, 0x5A)));
+        REQUIRE(storage.save(root));
+    }
+
+    // Scoped so every mapping of the archives is gone before the cleanup.
+    {
+        CHECK(whiteout::flakes::io::ClassifyStorage(root) == StorageKind::Casc);
+        StorageBrowser br;
+        std::string error;
+        const bool opened = br.OpenAuto(root, &error);
+        INFO(error);
+        REQUIRE(opened);
+        CHECK(br.Kind() == StorageKind::Casc);
+        CHECK(br.Product() == ProductId::Wc3);
+    }
+    {
+        FileContentProvider provider;
+        provider.SetGame(ProductId::Wc3);
+        provider.SetInstallPath(root);
+        CHECK(provider.OpenStorages());
+        CHECK(provider.HasCasc());
+    }
+
+    fs::remove_all(parent, ec);
+}
+#endif

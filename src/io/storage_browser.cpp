@@ -3,6 +3,7 @@
 #include "io/product_detect.h"
 #include "io/progress.h"
 #include "io/storage/storage_paths.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <filesystem>
 #include <system_error>
@@ -25,7 +26,7 @@ std::string ToLower(std::string s) {
 
 StorageKind ClassifyStorage(const std::string& path) {
     std::error_code ec;
-    const std::filesystem::path p = std::filesystem::path(path);
+    const std::filesystem::path p = FsPathFromUtf8(path);
     if (!std::filesystem::is_directory(p, ec))
         return StorageKind::Mpq; // a file is one archive
 
@@ -40,7 +41,7 @@ StorageKind ClassifyStorage(const std::string& path) {
              p, std::filesystem::directory_options::skip_permission_denied, ec)) {
         if (!entry.is_regular_file(ec))
             continue;
-        const std::string name = ToLower(entry.path().filename().string());
+        const std::string name = ToLower(PathToUtf8(entry.path().filename()));
         if (name.size() > 4 && name.compare(name.size() - 4, 4, ".mpq") == 0)
             anyMpq = true;
         else if (name.compare(0, 19, "war3legacyinstaller") == 0)
@@ -427,7 +428,7 @@ void StorageBrowser::SetFilter(std::string pattern) {
 
 bool StorageBrowser::OpenAuto(const std::string& path, std::string* error) {
     std::error_code ec;
-    if (!std::filesystem::exists(std::filesystem::path(path), ec)) {
+    if (!std::filesystem::exists(FsPathFromUtf8(path), ec)) {
         if (error)
             *error = "no such file or directory: " + path;
         return false;
@@ -608,7 +609,7 @@ bool StorageBrowser::OpenMpq(const std::string& path, std::string* error) {
 // archives in — not here.
 bool StorageBrowser::OpenMpqSet(const std::string& directory, std::string* error) {
     std::error_code ec;
-    const std::filesystem::path base(directory);
+    const std::filesystem::path base = FsPathFromUtf8(directory);
     if (!std::filesystem::is_directory(base, ec)) {
         if (error)
             *error = "not a directory: " + directory;
@@ -630,7 +631,7 @@ bool StorageBrowser::OpenMpqSet(const std::string& directory, std::string* error
              base, std::filesystem::directory_options::skip_permission_denied, ec)) {
         if (!entry.is_regular_file(ec))
             continue;
-        const std::string name = ToLower(entry.path().filename().string());
+        const std::string name = ToLower(PathToUtf8(entry.path().filename()));
         if (name.size() < 5 || name.compare(name.size() - 4, 4, ".mpq") != 0)
             continue;
         const auto it = std::find_if(std::begin(kKnownOrder), std::end(kKnownOrder),
@@ -653,7 +654,7 @@ bool StorageBrowser::OpenMpqSet(const std::string& directory, std::string* error
         if (p.empty())
             return;
         std::string err;
-        InsertMpqEntries(p.string(), &err);
+        InsertMpqEntries(PathToUtf8(p), &err);
         if (err.empty())
             ++opened;
         else
@@ -674,7 +675,7 @@ bool StorageBrowser::OpenMpqSet(const std::string& directory, std::string* error
 
 bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
     std::error_code ec;
-    const std::filesystem::path base = std::filesystem::path(path);
+    const std::filesystem::path base = FsPathFromUtf8(path);
     if (!std::filesystem::is_directory(base, ec)) {
         if (error)
             *error = "not a directory: " + path;
@@ -699,26 +700,26 @@ bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
         return false;
     }
     // One bad entry must not cost the whole tree. The per-entry work is
-    // guarded because path::string() throws on a name this platform's narrow
-    // encoding cannot represent, and the walk is advanced with the
-    // non-throwing overload — a range-for would throw out of operator++.
+    // guarded because converting a name that is not valid UTF-16 throws, and
+    // the walk is advanced with the non-throwing overload — a range-for would
+    // throw out of operator++.
     const std::filesystem::recursive_directory_iterator end;
     while (it != end) {
         try {
             const std::filesystem::directory_entry& entry = *it;
             std::error_code fe;
             if (entry.is_regular_file(fe) && !fe) {
-                const std::string name = entry.path().filename().string();
+                const std::string name = PathToUtf8(entry.path().filename());
                 if (Any(BrowseTypeOfFile(name) & available_)) {
                     // Display relative to the root, with the tree's separator;
                     // the original stays absolute so a provider can open it
                     // directly.
-                    std::string rel = std::filesystem::relative(entry.path(), base, fe).string();
+                    std::string rel = PathToUtf8(std::filesystem::relative(entry.path(), base, fe));
                     if (!fe && !rel.empty()) {
                         for (char& c : rel)
                             if (c == '/')
                                 c = '\\';
-                        Insert(entry.path().string(), rel);
+                        Insert(PathToUtf8(entry.path()), rel);
                     }
                 }
             }

@@ -165,7 +165,7 @@ bool SamePath(const std::string& a, const std::string& b) {
     if (a.empty() || b.empty())
         return false;
     auto norm = [](const std::string& in) {
-        std::string out = LowerPath(std::filesystem::path(in).lexically_normal().string());
+        std::string out = LowerPath(PathToUtf8(FsPathFromUtf8(in).lexically_normal()));
         for (char& c : out)
             if (c == '/')
                 c = '\\';
@@ -351,7 +351,7 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
     // A single archive is a file, not a directory; hand the provider the
     // directory holding it so the rest of the load order is still reachable.
     provider_->SetInstallPath(browser_.Kind() == io::StorageKind::Mpq
-                                  ? std::filesystem::path(browser_.Root()).parent_path().string()
+                                  ? PathToUtf8(FsPathFromUtf8(browser_.Root()).parent_path())
                                   : browser_.Root());
     // Warcraft III's overlays only exist in a CASC install; a classic
     // MPQ-only one has no mod chain and every overlay lookup in it misses.
