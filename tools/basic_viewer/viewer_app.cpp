@@ -1103,6 +1103,14 @@ bool ViewerApp::ExportGltf(const std::filesystem::path& outPath, bool binary,
     request.modelName = io::PathToUtf8(currentModelPath_.stem());
     request.binary = binary;
     request.exportTextures = exportTextures;
+    request.teamColor = actor->teamColor;
+
+    // Read under the tier the scene draws. A render-mode change forwards its
+    // implied tier to the shared provider and only the next pump re-imposes the
+    // scene's own, so an export straight after a load read Definitive art
+    // through the classic overlay and embedded none of it.
+    if (request.provider != nullptr)
+        request.provider->SetArtTier(service_.EffectiveArtTier());
 
     const GltfExportReport report = ExportModelAsGltf(request);
     if (!report.diagnostics.empty()) {

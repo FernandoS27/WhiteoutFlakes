@@ -478,7 +478,7 @@ struct Sources {
 
 Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvider* provider,
                                       const tx::pbr::NormalRestatement& normal,
-                                      wem::Diagnostics& out) {
+                                      wem::Diagnostics& out, const Vector3f& teamColor) {
     Sc2PbrBakeResult result;
     if (provider == nullptr) {
         return result;
@@ -572,8 +572,21 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
                 }
             }
             if (const nat::M3TextureLayer* layer = LayerOf(standard->ambientOcclusionLayer)) {
-                sources.occlusion = cache.Decode(layer->texturePath);
-                sources.occlusionChannel = ScalarChannelFor(layer->colorType);
+                // The ORM is one map over the base colour's coordinates, the
+                // rule the masks and the decal below already follow: an
+                // occlusion on another UV set would land on texels it was never
+                // painted for. SM_ArmorySpectreCrate's cloak reuses its diffuse
+                // over UV 1 as occlusion, and baked, it stained the cloth.
+                const nat::M3TextureLayer* paint = LayerOf(standard->diffuseLayer);
+                if (paint != nullptr && layer->uvMapping != paint->uvMapping) {
+                    out.warn(wem::DiagCode::LossyKindConversion,
+                             "the ambient occlusion samples a different UV set than the diffuse; "
+                             "it is not baked into the occlusion map",
+                             where, wem::ProfileId::Wc3Reforged);
+                } else {
+                    sources.occlusion = cache.Decode(layer->texturePath);
+                    sources.occlusionChannel = ScalarChannelFor(layer->colorType);
+                }
             }
 
             // --- the team-colour mask, which is two mechanisms -------------
@@ -867,6 +880,9 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             recipe.occlusion.texture = sources.occlusion;
             recipe.occlusion.channel = sources.occlusionChannel;
             recipe.occlusion.constant = 1.0f;
+            recipe.teamColor[0] = teamColor.x;
+            recipe.teamColor[1] = teamColor.y;
+            recipe.teamColor[2] = teamColor.z;
             if (diffuseIsTeamMasked) {
                 recipe.teamMask.texture = diffuse;
                 recipe.teamMask.channel = tx::Channel::A;
@@ -952,6 +968,7 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
                     base.decalOp = recipe.decalOp;
                     base.teamMask = recipe.teamMask;
                     base.teamMaskAlt = recipe.teamMaskAlt;
+                    std::copy_n(recipe.teamColor, 3, base.teamColor);
                     base.coverage1 = coverage1;
                     base.coverage2 = coverage2;
                     if (alphaKeyed) {
@@ -1000,6 +1017,7 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
                     base.baseColor = recipe.baseColor;
                     base.teamMask = recipe.teamMask;
                     base.teamMaskAlt = recipe.teamMaskAlt;
+                    std::copy_n(recipe.teamColor, 3, base.teamColor);
                     base.reflectance = recipe.reflectance;
                     if (std::optional<tx::Texture> rewritten = tx::pbr::BakeBaseColor(base)) {
                         result.baked.emplace(

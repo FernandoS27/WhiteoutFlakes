@@ -13,7 +13,9 @@
 // each `TextureRef` through the scene's provider, decodes it with the in-house
 // parsers, re-encodes as PNG and embeds it in the GLB (or writes it beside a
 // `.gltf`). Unresolvable references keep their suggested URI and the file
-// still validates.
+// still validates. A StarCraft II or Heroes surface goes through Export to
+// MDX's bake first (sc2_pbr_export.h): its specular, gloss and team colour have
+// no metallic-roughness slot to move into, only pixels to become.
 //
 // Free of ImGui and of ViewerApp on purpose, like its MDX twin — the dialog is
 // one caller and `--export-gltf` is the other.
@@ -47,8 +49,9 @@ struct GltfExportRequest {
     /// Names the document, and the fallback stem for an id-addressed texture.
     std::string modelName;
 
-    /// Which carried profile's materials cross. `Count` takes the document's
-    /// own default — the profile the model was authored in.
+    /// Which carried profile's materials cross. `Count` takes Reforged where a
+    /// `.mdx` carries it, and otherwise the document's own default — the
+    /// profile the model was authored in.
     wem::ProfileId profile = wem::ProfileId::Count;
 
     /// `.glb` (one self-contained file) against `.gltf` + `.bin` + images.
@@ -57,6 +60,11 @@ struct GltfExportRequest {
     /// Resolve, decode and PNG-encode the textures. Off leaves suggested URIs
     /// in place — the file still validates, the DCC shows placeholders.
     bool exportTextures = true;
+
+    /// The team colour a StarCraft II or Heroes surface is baked in, packed like
+    /// `Actor::teamColor` (r | g<<8 | b<<16) and snapped to the game's palette
+    /// as the shading does. glTF has no team slot, so the export wears one.
+    u32 teamColor = 0x000000FFu;
 
     /// Multiplies every length on the way out. glTF says metres and WEM keeps
     /// authored game units; 1.0 exports as-authored and the knob is for users

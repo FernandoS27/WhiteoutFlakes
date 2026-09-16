@@ -14,6 +14,7 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/types.h"
+#include "sc2_team_colors.h"
 
 #include "compiled_shaders.h"
 
@@ -162,57 +163,6 @@ constexpr Sc2LightRig kSc2GlueBackground = {
     .hdrSpecMul = 2.63f,
     .hdrEmisMul = 0.56f,
 };
-
-// ---- The recovered team-colour palette --------------------------------------
-//
-// gamedata.xml <TeamColors> (mods/core.sc2mod): the sixteen melee slots'
-// Diffuse / Emissive pairs — exactly what the engine uploads as
-// p_cDiffuseTeamColor / p_cEmissiveTeamColor. Display-referred, like every
-// editor-authored colour. tc00 White .. tc15 Pink.
-struct Sc2TeamColor {
-    Vector3f diffuse;
-    Vector3f emissive;
-};
-
-constexpr Sc2TeamColor kSc2TeamColors[] = {
-    {{1.000000f, 1.000000f, 1.000000f}, {0.764600f, 0.764600f, 0.764600f}}, // White
-    {{0.705882f, 0.078431f, 0.117647f}, {0.545098f, 0.145098f, 0.145098f}}, // Red
-    {{0.000000f, 0.258700f, 1.000000f}, {0.000000f, 0.258700f, 1.000000f}}, // Blue
-    {{0.109800f, 0.654700f, 0.917700f}, {0.066600f, 0.517500f, 0.733300f}}, // Teal
-    {{0.301961f, 0.000000f, 0.784314f}, {0.274510f, 0.176471f, 0.627451f}}, // Purple
-    {{0.921600f, 0.882300f, 0.161000f}, {0.588100f, 0.588100f, 0.117600f}}, // Yellow
-    {{0.996000f, 0.541200f, 0.055000f}, {0.996000f, 0.541200f, 0.055000f}}, // Orange
-    {{0.086100f, 0.502000f, 0.000000f}, {0.086100f, 0.502000f, 0.000000f}}, // Green
-    {{0.800000f, 0.650980f, 0.988235f}, {0.800000f, 0.650980f, 0.988235f}}, // Light Pink
-    {{0.121569f, 0.003922f, 0.788235f}, {0.121569f, 0.003922f, 0.788235f}}, // Violet
-    {{0.321569f, 0.329412f, 0.580392f}, {0.078431f, 0.211765f, 0.317647f}}, // Light Grey
-    {{0.062700f, 0.384200f, 0.274400f}, {0.062700f, 0.384200f, 0.274400f}}, // Dark Green
-    {{0.306000f, 0.164700f, 0.015600f}, {0.306000f, 0.164700f, 0.015600f}}, // Brown
-    {{0.588235f, 1.000000f, 0.568627f}, {0.517647f, 1.000000f, 0.309804f}}, // Light Green
-    {{0.137255f, 0.137255f, 0.137255f}, {0.058824f, 0.058824f, 0.058824f}}, // Dark Grey
-    {{0.898000f, 0.357000f, 0.690100f}, {0.898000f, 0.357000f, 0.690100f}}, // Pink
-};
-
-/// The palette pair for an instance's packed RGB (r | g<<8 | b<<16). The host
-/// swatch stores one colour, the shader needs the diffuse+emissive pair, so
-/// the nearest diffuse wins — an exact palette pick maps exactly, anything
-/// else degrades to the closest slot rather than a made-up emissive.
-const Sc2TeamColor& ResolveTeamColor(u32 packed) {
-    const f32 r = static_cast<f32>(packed & 0xFF) / 255.0f;
-    const f32 g = static_cast<f32>((packed >> 8) & 0xFF) / 255.0f;
-    const f32 b = static_cast<f32>((packed >> 16) & 0xFF) / 255.0f;
-    const Sc2TeamColor* best = &kSc2TeamColors[0];
-    f32 bestD = 1e9f;
-    for (const auto& c : kSc2TeamColors) {
-        const f32 dr = c.diffuse.x - r, dg = c.diffuse.y - g, db = c.diffuse.z - b;
-        const f32 d = dr * dr + dg * dg + db * db;
-        if (d < bestD) {
-            bestD = d;
-            best = &c;
-        }
-    }
-    return *best;
-}
 
 } // namespace
 
@@ -569,7 +519,7 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         // The instance's palette pair, de-gamma'd like every other authored
         // colour when the profile shades linearly.
         {
-            const Sc2TeamColor& tc = ResolveTeamColor(item.view->teamColor);
+            const Sc2TeamColor& tc = ResolveSc2TeamColor(item.view->teamColor);
             const bool linear = !ctx.profile || ctx.profile->LinearShading();
             auto enc = [&](const Vector3f& v) -> Vector4f {
                 if (!linear)
@@ -831,7 +781,7 @@ void M3StandardShading::DrawWorldVertices(model::Actor& actor, i32 surfaceIndex,
         c->uvTransform = {1.0f, 0.0f, surf->emissiveMultiplier, actor.parentVisibility};
         {
             const bool linear = rs_.Pipeline().ActiveProfile().LinearShading();
-            const Sc2TeamColor& tc = ResolveTeamColor(actor.teamColor);
+            const Sc2TeamColor& tc = ResolveSc2TeamColor(actor.teamColor);
             auto enc = [&](const Vector3f& v) -> Vector4f {
                 if (!linear)
                     return {v.x, v.y, v.z, 0.0f};

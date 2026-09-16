@@ -120,8 +120,12 @@ struct Sc2PbrBakeResult {
 ///
 /// @param provider  where a texture reference resolves. Null does nothing.
 /// @param normal    the two conventions the normal-map packing does not settle.
+/// @param teamColor the linear colour a team mask lerps the albedo toward. White
+///                  for Reforged, whose runtime multiplies its own swatch in; a
+///                  target with no team slot (glTF) passes the colour it wants.
 Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvider* provider,
                                       const tx::pbr::NormalRestatement& normal,
-                                      wem::Diagnostics& out);
+                                      wem::Diagnostics& out,
+                                      const Vector3f& teamColor = Vector3f{1.0f, 1.0f, 1.0f});
 
 } // namespace whiteout::flakes
