@@ -578,6 +578,7 @@ using ::whiteout::flakes::FilterMode;
 using ::whiteout::flakes::MapFilterMode;
 using ::whiteout::flakes::MapPE2BlendMode;
 
+using ::whiteout::flakes::MAT_AMBIENT_OCCLUSION;
 using ::whiteout::flakes::MAT_CONSTANT_COLOR;
 using ::whiteout::flakes::MAT_NO_DEPTH_SET;
 using ::whiteout::flakes::MAT_NO_DEPTH_TEST;

@@ -360,9 +360,11 @@ public:
                 rs.alphaMode = static_cast<u8>(matParams.alpha);
                 rs.numColors = 0;
                 rs.numTexCoords = hasUv1 ? 2 : 1;
-                // AO_MAP samples ORM.x at UV1. Both halves have to be there:
-                // the stream, and an ORM to read the channel out of.
-                rs.aoMap = hasUv1 && layer.ormMapId >= 0;
+                // AO_MAP samples ORM.x at UV1. The engine keys it on the layer's
+                // AmbientOcclusion flag alone, not on a second UV set being
+                // present; the stream and an ORM are our own preconditions.
+                rs.aoMap = (layer.flags & MAT_AMBIENT_OCCLUSION) != 0 && hasUv1 &&
+                           layer.ormMapId >= 0;
                 rs.numTangents = hasTangents ? 1 : 0;
                 rs.numWeights = hasBones ? 4 : 0;
                 rs.boneBuffer = boneBuffer;

@@ -173,6 +173,8 @@ enum MaterialFlags {
     MAT_NO_DEPTH_TEST = 8,
     MAT_NO_DEPTH_SET = 16,
     MAT_CONSTANT_COLOR = 32,
+    /// Reforged: sample baked occlusion (ORM.x) through the second UV set.
+    MAT_AMBIENT_OCCLUSION = 64,
 };
 
 } // namespace whiteout::flakes
