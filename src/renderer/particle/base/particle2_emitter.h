@@ -25,7 +25,6 @@ namespace whiteout::flakes::renderer::particle {
 using ParticleBehavior = core::ParticleBehavior;
 
 class ChildModelEmitter;
-struct sc2::Runtime;
 
 /// What one run of a WC3-family emitter accumulates. A rewind replaces it
 /// whole, so a member added here cannot silently survive one.

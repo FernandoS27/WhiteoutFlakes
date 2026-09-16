@@ -443,11 +443,17 @@ export class WhiteoutViewer {
     }
 
     // mdx-m3-viewer-shape load. `src` is opaque; the solver returns its
-    // URL (and the URL of every dep). With no solver, deps resolve
-    // relative to `src`'s directory.
+    // URL (and the URL of every dep). With none passed, the one from
+    // setPathSolver() is used; with neither, deps resolve relative to
+    // `src`'s directory.
     async load(src, pathSolver = null) {
         if (!this._handle) throw new Error('viewer not initialised');
 
+        // A relative fallback left by an earlier load points at that model's
+        // directory, so it is rebuilt for this one rather than reused.
+        if (!pathSolver && this._lazySolver && !this._lazySolver.relativeTo) {
+            pathSolver = this._lazySolver;
+        }
         if (!pathSolver) {
             const baseDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
             pathSolver = (name) => {
@@ -455,7 +461,12 @@ export class WhiteoutViewer {
                 if (name === src) return src;
                 return baseDir + name;
             };
+            pathSolver.relativeTo = src;
         }
+        // Dependencies only go out through the persistent solver, so with
+        // none installed a model spawns and never gets its textures. Adopt
+        // this load's, unless the host installed one of its own.
+        if (!this._lazySolver || this._lazySolver.relativeTo) this._lazySolver = pathSolver;
 
         // An effect frames the camera on its particle cloud, which is nowhere
         // near where the next model wants it — a `.pkb` zoomed in hard leaves
@@ -639,12 +650,6 @@ export class WhiteoutViewer {
         if (!M._wf_spawn_effect) {
             throw new Error('this wf-core build has no wf_spawn_effect export');
         }
-        // The effect file is a pump dependency, not something we fetch here,
-        // so with no persistent solver installed nothing would ever arrive —
-        // a model at least still spawns without one. Adopt this load's solver
-        // so `viewer.load(pkbUrl, solver)` works on its own.
-        if (!this._lazySolver && pathSolver) this._lazySolver = pathSolver;
-
         // Corn effects are Reforged-only content, so one always renders
         // through the HD pipeline regardless of the previous model's mode —
         // same rule as basic_viewer's LoadEffectIntoActiveScene.
