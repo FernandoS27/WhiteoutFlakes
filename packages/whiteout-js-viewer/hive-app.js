@@ -507,6 +507,9 @@ export class HiveApp {
         const views = debugViewsFor(family);
         sel.innerHTML = '';
         for (const v of views) {
+            // The geometry views start at Wireframe; the desktop menu
+            // separates them too. Browsers without <hr> in <select> skip it.
+            if (v.value === 20) sel.appendChild(document.createElement('hr'));
             const opt = document.createElement('option');
             opt.value = String(v.value);
             opt.textContent = v.label;
