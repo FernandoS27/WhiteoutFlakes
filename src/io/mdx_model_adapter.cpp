@@ -428,7 +428,7 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
                 i32 base = v * 8;
                 if (base + 7 < (i32)gs.skinData.size()) {
                     for (i32 k = 0; k < 4; k++) {
-                        u8 raw = gs.skinData[base + k];
+                        u16 raw = gs.skinData[base + k];
                         i32 matsValue;
                         if (!gs.matrixIndices.empty() && raw < gs.matrixIndices.size())
                             matsValue = (i32)gs.matrixIndices[raw];

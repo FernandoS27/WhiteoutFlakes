@@ -107,6 +107,8 @@ private:
     bool LoadEffectInto(Document& doc, const std::filesystem::path& path);
     /// Whether a Warcraft III model has any HD layer, from a parse of the file.
     RenderMode ProbeWc3RenderMode(const std::filesystem::path& path) const;
+    /// The same, for a model inside a storage.
+    RenderMode ProbeWc3RenderMode(io::IContentProvider& provider, const std::string& archivePath) const;
 
     renderer::RenderService& service_;
     DocumentManager& documents_;

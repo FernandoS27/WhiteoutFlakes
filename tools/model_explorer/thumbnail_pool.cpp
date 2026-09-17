@@ -180,10 +180,9 @@ void ThumbnailPool::LoadCell(Cell& cell) {
         hero = svc_.Loader().SpawnUnit(cell.path);
         if (hero) {
             cell.isHd = tools::IsHdModel(hero);
-            // The layers say how to draw it; the path says which tier's files
-            // its children and textures come from. Both, not one.
-            sm.SetArtTier(io::Wc3TierOfPath(cell.path)
-                              .value_or(cell.isHd ? Wc3ArtTier::Reforged : Wc3ArtTier::Classic));
+            // The layers and the path together say which tier's files its
+            // children and textures come from.
+            sm.SetArtTier(io::Wc3TierForModel(cell.path, cell.isHd));
             // Play the stand animation (or the first if there's no stand).
             const int idx = tools::PickStandSequenceIndex(hero);
             if (idx >= 0)

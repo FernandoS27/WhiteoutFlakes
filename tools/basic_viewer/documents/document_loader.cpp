@@ -178,12 +178,17 @@ bool DocumentLoader::OpenStorageDocumentNow(const std::string& archivePath, bool
     return documents_.Open(provider, io::PathToUtf8(apath.stem()), [&](Document& doc) {
         service_.Scene().SetPE1BasePath(apath.parent_path());
 
-        // The tier from the archive location, the one thing a storage path states
-        // outright. Armed before the spawn so the parse resolves through the
-        // right overlay. The render mode is only a starting guess: Definitive and
-        // Reforged are both HD, and the loader trues it up from the parsed layers.
-        const Wc3ArtTier tier = io::Wc3TierOfPath(archivePath).value_or(Wc3ArtTier::Classic);
-        ApplyRenderMode(tier == Wc3ArtTier::Classic ? RenderMode::SD : RenderMode::HD);
+        // Mode and tier, armed before the spawn so the parse, the SLK loads and
+        // the textures resolve through them. An effect has no layers to probe and
+        // takes its tier from where it lives; a model's layers and its location
+        // decide both (io::Wc3TierForModel).
+        Wc3ArtTier tier = io::Wc3TierOfPath(archivePath).value_or(Wc3ArtTier::Classic);
+        RenderMode mode = tier == Wc3ArtTier::Classic ? RenderMode::SD : RenderMode::HD;
+        if (!effect && provider && IsModelKind(apath, ModelKind::Wc3Model)) {
+            mode = ProbeWc3RenderMode(*provider, archivePath);
+            tier = io::Wc3TierForModel(archivePath, mode == RenderMode::HD);
+        }
+        ApplyRenderMode(mode);
         service_.Scene().SetArtTier(tier);
 
         service_.Loader().RequestClearAll();
@@ -209,21 +214,51 @@ bool DocumentLoader::OpenStorageDocumentNow(const std::string& archivePath, bool
     });
 }
 
+namespace {
+
+// Any layer whose ShaderType is not `SD` is a Reforged HD layer (shipping models
+// tag classic-on-HD as `SDOnHD`, which counts).
+RenderMode RenderModeOfLayers(const whiteout::mdx::Model& model) {
+    for (const auto& mat : model.materials)
+        for (const auto& layer : mat.layers)
+            if (layer.shader != whiteout::mdx::Layer::ShaderType::SD)
+                return RenderMode::HD;
+    return RenderMode::SD;
+}
+
+} // namespace
+
 RenderMode DocumentLoader::ProbeWc3RenderMode(const fs::path& path) const {
     // The mode has to be settled before the spawn, which primes SLK loads, splat
     // prefetches and the BLS shader path under it. Parsing the MDX through
-    // WhiteoutLib is enough: any layer whose ShaderType is not `SD` is a Reforged
-    // HD layer (shipping models tag classic-on-HD as `SDOnHD`, which counts).
+    // WhiteoutLib is enough.
     try {
         whiteout::mdx::Parser parser;
-        const whiteout::mdx::Model probe = parser.parse(io::PathToUtf8(path));
-        for (const auto& mat : probe.materials)
-            for (const auto& layer : mat.layers)
-                if (layer.shader != whiteout::mdx::Layer::ShaderType::SD)
-                    return RenderMode::HD;
+        return RenderModeOfLayers(parser.parse(io::PathToUtf8(path)));
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[viewer] HD-probe parse FAILED for %s: %s (continuing in SD)\n",
                      io::PathToUtf8(path).c_str(), e.what());
+    }
+    return RenderMode::SD;
+}
+
+RenderMode DocumentLoader::ProbeWc3RenderMode(io::IContentProvider& provider,
+                                              const std::string& archivePath) const {
+    const auto bytes = provider.ReadFile(archivePath);
+    if (!bytes) {
+        std::fprintf(stderr, "[viewer] HD-probe read FAILED for %s (continuing in SD)\n",
+                     archivePath.c_str());
+        return RenderMode::SD;
+    }
+    try {
+        const auto format = io::GetLowerExtension(archivePath) == ".mdl"
+                                ? whiteout::mdx::MDLXFormat::MDL
+                                : whiteout::mdx::MDLXFormat::MDX;
+        whiteout::mdx::Parser parser;
+        return RenderModeOfLayers(parser.parse(std::span<const u8>(*bytes), format));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[viewer] HD-probe parse FAILED for %s: %s (continuing in SD)\n",
+                     archivePath.c_str(), e.what());
     }
     return RenderMode::SD;
 }

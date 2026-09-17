@@ -22,6 +22,7 @@ using whiteout::flakes::io::StripWc3ModRoot;
 using whiteout::flakes::io::ToListingPath;
 using whiteout::flakes::io::Wc3ModChain;
 using whiteout::flakes::io::Wc3TierOfPath;
+using whiteout::flakes::io::Wc3TierForModel;
 
 namespace {
 
@@ -72,12 +73,14 @@ TEST_CASE("the older tiers keep the order they had before 3.0.0",
           "[wc3][tier]") {
     // Classic and Reforged each lead with their own overlay and then reach
     // the other one; that fall-through is what lets the viewer show an asset
-    // the selected tier never shipped. Definitive is not in either chain, so
-    // nothing that resolved before 3.0.0 resolves differently now.
+    // the selected tier never shipped. Definitive comes after both, so
+    // nothing that resolved before 3.0.0 resolves differently now — it only
+    // answers what they miss (a cinematic under the root whose textures exist
+    // only under `_de`).
     CHECK(IndexIn(Wc3ArtTier::Classic, kSd) < IndexIn(Wc3ArtTier::Classic, kHd));
     CHECK(IndexIn(Wc3ArtTier::Reforged, kHd) < IndexIn(Wc3ArtTier::Reforged, kSd));
-    CHECK(IndexIn(Wc3ArtTier::Classic, kDe) == -1);
-    CHECK(IndexIn(Wc3ArtTier::Reforged, kDe) == -1);
+    CHECK(IndexIn(Wc3ArtTier::Classic, kHd) < IndexIn(Wc3ArtTier::Classic, kDe));
+    CHECK(IndexIn(Wc3ArtTier::Reforged, kSd) < IndexIn(Wc3ArtTier::Reforged, kDe));
 }
 
 TEST_CASE("a stored path names its own tier", "[wc3][tier]") {
@@ -98,6 +101,19 @@ TEST_CASE("only the segment under the root decides the tier", "[wc3][tier]") {
     CHECK(Wc3TierOfPath("war3.w3mod:_de.w3mod:_tilesets\\a.w3mod:doodads\\x.mdx") ==
           Wc3ArtTier::Definitive);
     CHECK(Wc3TierOfPath("war3.w3mod:maps\\_hd.w3mod_backup\\x.mdx") == Wc3ArtTier::Classic);
+}
+
+TEST_CASE("a model reads Definitive only from _de with an HD material", "[wc3][tier]") {
+    const char* de = "war3.w3mod:_de.w3mod:units\\human\\uther\\uther.mdx";
+    const char* hd = "war3.w3mod:_hd.w3mod:units\\human\\uther\\uther.mdx";
+    const char* base = "war3.w3mod:units\\human\\uther\\uther.mdx";
+    CHECK(Wc3TierForModel(de, true) == Wc3ArtTier::Definitive);
+    CHECK(Wc3TierForModel(hd, true) == Wc3ArtTier::Reforged);
+    CHECK(Wc3TierForModel(base, true) == Wc3ArtTier::Reforged);
+    CHECK(Wc3TierForModel("C:\\Games\\model.mdx", true) == Wc3ArtTier::Reforged);
+    CHECK(Wc3TierForModel(de, false) == Wc3ArtTier::Classic);
+    CHECK(Wc3TierForModel(hd, false) == Wc3ArtTier::Classic);
+    CHECK(Wc3TierForModel(base, false) == Wc3ArtTier::Classic);
 }
 
 TEST_CASE("a path with no mod chain names no tier", "[wc3][tier]") {

@@ -17,6 +17,7 @@
 #include "bls/bls_draw_helpers.h"
 #include "effects/spn_spawner.h"
 #include "io/file_content_provider.h" // FileContentProvider::SetGame
+#include "io/storage/storage_paths.h"
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
 #include "model/model_instance.h"
@@ -1281,6 +1282,12 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
         rs_.Scene().SetRenderMode(want);
         if (changed)
             rs_.Settings().MarkRenderModeDirty();
+        // The tier trues up in the same breath, after SetRenderMode (which
+        // forwards its implied tier) and before textures resolve. Only a
+        // storage path says where the model came from; a loose file keeps the
+        // global setting.
+        if (io::HasWc3ModChain(mdxPath))
+            rs_.Scene().SetArtTier(io::Wc3TierForModel(mdxPath, want == RenderMode::HD));
     }
 
     u32 handle;

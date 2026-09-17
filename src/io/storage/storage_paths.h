@@ -72,6 +72,12 @@ std::string_view StripWc3ModRoot(std::string_view stored);
 // file on disk, or anything belonging to another game.
 std::optional<Wc3ArtTier> Wc3TierOfPath(std::string_view stored);
 
+// Which art tier a Warcraft III model reads its textures and children through,
+// once its materials are known: Definitive when it comes from `_de` and has at
+// least one HD material, Reforged for any other model with an HD material, and
+// Classic for a model with none.
+Wc3ArtTier Wc3TierForModel(std::string_view stored, bool hasHdMaterial);
+
 // Same normalisation for a caller-supplied directory, minus any trailing
 // separator so "textures/fx" and "Textures\FX\" mean the same thing.
 std::string NormalizeListingDir(const std::string& directory);

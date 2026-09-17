@@ -424,13 +424,10 @@ int main(int argc, char* argv[]) {
             std::printf("[casc-render] effect tier=%d\n", static_cast<int>(effTier));
         }
         if (hero && !isEffect) {
-            // Two separate questions: how to draw it (its layers) and which
-            // files to read (where it lives). A Definitive model answers HD to
-            // the first and Definitive to the second.
+            // How to draw it comes from its layers; which files to read comes
+            // from its layers and where it lives together.
             const bool hd = whiteout::flakes::tools::IsHdModel(hero);
-            const wf::Wc3ArtTier tier =
-                wf::io::Wc3TierOfPath(cascRenderPath)
-                    .value_or(hd ? wf::Wc3ArtTier::Reforged : wf::Wc3ArtTier::Classic);
+            const wf::Wc3ArtTier tier = wf::io::Wc3TierForModel(cascRenderPath, hd);
             // Render in the model's natural shading mode, but route the SD path
             // through the HDR scene target + tonemap (SceneHdrInSd) so additive
             // / team-color geosets roll off instead of clipping to opaque white

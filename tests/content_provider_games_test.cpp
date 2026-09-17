@@ -21,6 +21,8 @@
 #include "io/storage_browser.h"
 #include "whiteout/flakes/content_ref.h"
 
+#include <whiteout/models/mdx/parser.h>
+
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -388,8 +390,11 @@ TEST_CASE("A Warcraft III storage reads every art tier", "[provider][tier]") {
                 const std::string bare =
                     std::string(whiteout::flakes::io::StripWc3ModRoot(archive))
                         .substr(std::strlen("_de.w3mod:"));
-                p.SetArtTier(Wc3ArtTier::Reforged);
-                if (auto other = p.ReadFile(bare); other && !other->empty())
+                // Asked of each older overlay by name — a tier read would now
+                // reach `_de` last and find it anyway.
+                const auto inHd = p.ReadFile("war3.w3mod:_hd.w3mod:" + bare);
+                const auto inSd = p.ReadFile("war3.w3mod:" + bare);
+                if ((inHd && !inHd->empty()) || (inSd && !inSd->empty()))
                     continue; // the older overlays have it too; not a witness
                 deOnly = bare;
                 return;
@@ -416,10 +421,81 @@ TEST_CASE("A Warcraft III storage reads every art tier", "[provider][tier]") {
     std::printf("[provider] wc3 Definitive-only model: %s\n", deOnly.c_str());
     p.SetArtTier(Wc3ArtTier::Definitive);
     auto found = p.ReadFile(deOnly);
-    CHECK((found && !found->empty()));
-    p.SetArtTier(Wc3ArtTier::Reforged);
-    auto notFound = p.ReadFile(deOnly);
-    CHECK((!notFound || notFound->empty()));
+    REQUIRE((found && !found->empty()));
+    // The older tiers reach `_de` last, so a file only it has still resolves
+    // under them — and it is the same file, not a stand-in.
+    for (Wc3ArtTier older : {Wc3ArtTier::Reforged, Wc3ArtTier::Classic}) {
+        p.SetArtTier(older);
+        auto fallback = p.ReadFile(deOnly);
+        REQUIRE(fallback);
+        CHECK(fallback->size() == found->size());
+    }
+}
+
+TEST_CASE("A cinematic under the root reads its _de-only textures", "[provider][tier]") {
+    FileContentProvider p;
+    if (p.GamePath(ProductId::Wc3).empty())
+        SKIP("no Warcraft III install found");
+    p.SetGame(ProductId::Wc3);
+    if (!p.HasCasc())
+        SKIP("Warcraft III install has no CASC storage (pre-Reforged?)");
+
+    // 3.0.0's cinematics sit under `war3.w3mod:cinematics\`, outside every
+    // overlay, and are HD — so they read the Reforged tier — yet much of their
+    // art exists only under `_de.w3mod`. Scanned, not hardcoded: which
+    // cinematic has such a texture is a property of the installed build.
+    StorageBrowser b;
+    b.SetOpenTypes(whiteout::flakes::io::BrowseType::Models);
+    std::string err;
+    if (!b.Open(p.InstallPath(), StorageKind::Casc, &err))
+        SKIP("could not browse the Warcraft III install: " + err);
+
+    constexpr int kMaxModels = 12; // each parse is several MB
+    int parsed = 0;
+    for (const std::string& folder : b.TreeChildren("cinematics").folders) {
+        const std::string dir = "cinematics\\" + folder;
+        for (const std::string& f : b.TreeChildren(dir).files) {
+            if (f.size() < 4 || f.compare(f.size() - 4, 4, ".mdx") != 0)
+                continue;
+            if (parsed++ >= kMaxModels)
+                break;
+            const std::string archive = b.ChildPathAt(dir, f);
+            const auto bytes = p.ReadFile(archive);
+            if (!bytes)
+                continue;
+            whiteout::mdx::Model model;
+            try {
+                whiteout::mdx::Parser parser;
+                model = parser.parse(std::span<const whiteout::u8>(*bytes));
+            } catch (const std::exception&) {
+                continue;
+            }
+            int deOnly = 0, resolved = 0;
+            for (const auto& tex : model.textures) {
+                if (tex.fileName.empty())
+                    continue;
+                const auto inDe = p.ReadFile("war3.w3mod:_de.w3mod:" + tex.fileName);
+                const auto inHd = p.ReadFile("war3.w3mod:_hd.w3mod:" + tex.fileName);
+                const auto inSd = p.ReadFile("war3.w3mod:" + tex.fileName);
+                if (!inDe || inDe->empty() || (inHd && !inHd->empty()) || (inSd && !inSd->empty()))
+                    continue;
+                ++deOnly;
+                p.SetArtTier(Wc3ArtTier::Reforged);
+                const auto read = p.ReadFile(tex.fileName);
+                if (read && read->size() == inDe->size())
+                    ++resolved;
+            }
+            if (deOnly == 0)
+                continue;
+            std::printf("[provider] wc3 %s: %d _de-only textures, %d resolved under Reforged\n",
+                        archive.c_str(), deOnly, resolved);
+            CHECK(resolved == deOnly);
+            return;
+        }
+        if (parsed >= kMaxModels)
+            break;
+    }
+    WARN("no cinematic with a _de-only texture found to check");
 }
 
 TEST_CASE("A WoW storage reads by fileDataID", "[provider]") {

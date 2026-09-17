@@ -26,8 +26,11 @@ constexpr const char* kDeprecated = "war3.w3mod:_deprecated.w3mod:";
 // answered.
 constexpr const char* kBare = "";
 
-constexpr std::array<const char*, 4> kChainClassic = {kSd, kHd, kDeprecated, kBare};
-constexpr std::array<const char*, 4> kChainReforged = {kHd, kSd, kDeprecated, kBare};
+// `_de` comes after every overlay the older tiers read before 3.0.0, so it
+// only answers what they miss: the Definitive cinematics sit under the root
+// but draw with textures that exist only under `_de`.
+constexpr std::array<const char*, 5> kChainClassic = {kSd, kHd, kDeprecated, kDe, kBare};
+constexpr std::array<const char*, 5> kChainReforged = {kHd, kSd, kDeprecated, kDe, kBare};
 constexpr std::array<const char*, 5> kChainDefinitive = {kDe, kHd, kSd, kDeprecated, kBare};
 
 // The overlay segment each tier is named by, longest first so `_deprecated`
@@ -127,6 +130,13 @@ std::optional<Wc3ArtTier> Wc3TierOfPath(std::string_view stored) {
     }
     // Under the root but under no overlay: the classic art.
     return Wc3ArtTier::Classic;
+}
+
+Wc3ArtTier Wc3TierForModel(std::string_view stored, bool hasHdMaterial) {
+    if (!hasHdMaterial)
+        return Wc3ArtTier::Classic;
+    return Wc3TierOfPath(stored) == Wc3ArtTier::Definitive ? Wc3ArtTier::Definitive
+                                                          : Wc3ArtTier::Reforged;
 }
 
 std::string NormalizeListingDir(const std::string& directory) {
