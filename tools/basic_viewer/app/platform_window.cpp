@@ -1,5 +1,6 @@
 #include "app/platform_window.h"
 
+#include "imgui_app_icon.h"
 #include "imgui_theme.h"
 #include "localization.h"
 #include "renderer/render_pipeline.h"
@@ -254,6 +255,9 @@ void PlatformWindow::InitImGui(std::optional<f32> dpiScale) {
         endonyms += ' ';
     }
     ApplyImGuiDpiScale(xs, io::PathToUtf8(AssetDir() / "fonts"), endonyms);
+    // After the fonts, because the atlas it packs into is the one they were just
+    // baked into, and before the renderer uploads that atlas.
+    ui::BakeAppIcon(xs);
 
     // GLFW handles input only; the engine adapter draws.
     ImGui_ImplGlfw_InitForOther(window_, true);

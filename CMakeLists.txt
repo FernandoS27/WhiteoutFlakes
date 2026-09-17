@@ -676,7 +676,27 @@ add_custom_command(
     VERBATIM
 )
 
-add_custom_target(WhiteoutFlakesEmbedded DEPENDS "${TEAM_GLOW_H}" "${ROBOTO_H}")
+# The application's own icon, for the ribbon's application tile. Embedded
+# rather than staged beside the exe because a host that is not the standalone
+# viewer — the Max plugin ships as one .dlu — has no asset directory to look in.
+set(FLAKES_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/resources/flakes_icon_linux.png")
+set(FLAKES_ICON_H   "${EMBED_OUT_DIR}/flakes_icon_embedded.h")
+
+add_custom_command(
+    OUTPUT  "${FLAKES_ICON_H}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${FLAKES_ICON_PNG}"
+            "-DOUTPUT=${FLAKES_ICON_H}"
+            "-DVAR_NAME=kFlakesIconPNG"
+            "-DNAMESPACE=whiteout::flakes::ui"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/resources/embed_binary.cmake"
+    DEPENDS "${FLAKES_ICON_PNG}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/embed_binary.cmake"
+    COMMENT "Embedding flakes_icon_linux.png into flakes_icon_embedded.h"
+    VERBATIM
+)
+
+add_custom_target(WhiteoutFlakesEmbedded DEPENDS "${TEAM_GLOW_H}" "${ROBOTO_H}" "${FLAKES_ICON_H}")
 
 # ============================================================================
 # Wc3Shaders — opt-in build of the externals/Wc3Shaders Slang reconstruction.
@@ -1917,7 +1937,7 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     # The UI: the frame and its panels, and the widgets they share.
     tools/basic_viewer/ui/viewer_ui.cpp
     tools/basic_viewer/ui/menu_bar.cpp
-    tools/basic_viewer/ui/toolbar.cpp
+    tools/basic_viewer/ui/ribbon.cpp
     tools/basic_viewer/ui/d3_equip_popup.cpp
     tools/basic_viewer/ui/tab_bar.cpp
     tools/basic_viewer/ui/animation_window.cpp
@@ -1951,6 +1971,10 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp
     tools/common/imgui_theme.cpp
+    # The ribbon widget: generic ImGui, no viewer types, so a second host can
+    # take it without taking the viewer with it.
+    tools/common/imgui_ribbon.cpp
+    tools/common/imgui_app_icon.cpp
     tools/common/log_console.cpp
     # thumbnail_framing now ships in WhiteoutFlakesExplorerLib (linked below),
     # which the viewer also uses for its own camera framing + the embedded

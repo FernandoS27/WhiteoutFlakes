@@ -16,25 +16,6 @@
 
 namespace whiteout::flakes::ui {
 
-// ---- Toolbar ----
-
-/// Drawn, not typed: the viewer bakes one static font atlas, so an icon font
-/// would mean a second TTF merged into it and still be absent on the Roboto
-/// fallback. A few vector glyphs scale with the frame height and take the
-/// theme's text colour for free.
-enum class ToolbarIcon { Play, Pause, Restart, Tracks };
-
-/// A square icon button at the frame height, so swapping play for pause cannot
-/// resize it and shuffle the toolbar. @p active holds it in its pressed colour,
-/// for a button that toggles a window: with no words on the face, the colour is
-/// all that says the window is open. The tooltip names the button, then explains it.
-bool IconButton(const char* id, ToolbarIcon icon, const char* nameKey, const char* tipKey, bool active = false);
-
-/// A caption in FRONT of the next toolbar control. ImGui writes a label to the
-/// right, which on a horizontal toolbar reads backwards. The wider gap keeps the
-/// caption attached to the control after it rather than the one before.
-void ToolbarLabel(const char* key);
-
 // ---- Forms ----
 
 /// ImGui::Combo over localisation keys, translated each frame.

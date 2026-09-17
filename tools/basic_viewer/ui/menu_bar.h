@@ -1,7 +1,8 @@
 #pragma once
 
 // ============================================================================
-// The main menu bar: File, View, Debug, Tools, Language and Settings.
+// The ribbon's menus: View, Debug, Tools and Language along its slim top row,
+// and the File items behind the rail's application tile.
 // ============================================================================
 
 namespace whiteout::flakes {
@@ -17,7 +18,11 @@ public:
     MenuBar(UiContext& ctx, OpenDialog& openDialog, ExportDialogs& exportDialogs, ExportWindow& exportWindow,
             SettingsWindow& settings);
 
-    void Build();
+    /// Inside the ribbon's menu row.
+    void BuildStrip();
+    /// Inside the popup the ribbon's File tile opens. The items only, so the
+    /// tile owns the popup and the strip owns the row.
+    void BuildFileItems();
 
     /// View ▸ View Cube.
     bool ShowViewCube() const {
@@ -34,7 +39,6 @@ public:
     }
 
 private:
-    void BuildFileMenu();
     void BuildViewMenu();
     void BuildDebugMenu();
     void BuildPhysicsMenu();

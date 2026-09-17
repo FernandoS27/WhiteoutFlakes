@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================================
-// The strip of document tabs under the toolbar: one per open model or effect,
+// The strip of document tabs under the ribbon: one per open model or effect,
 // each with a close button. Nothing when no document is open.
 // ============================================================================
 

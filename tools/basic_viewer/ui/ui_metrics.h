@@ -15,7 +15,8 @@ inline constexpr const char* kWindowTitle = "WhiteoutFlakes";
 inline constexpr i32 kDefaultWindowWidth = 1024;
 inline constexpr i32 kDefaultWindowHeight = 768;
 
-/// Toolbar and tab strip: one frame height plus this.
+/// The document tab strip: one frame height plus this. The ribbon sizes itself
+/// (tools/common/imgui_ribbon.h).
 inline constexpr f32 kStripPadding = 8.0f;
 
 // ---- Modal dialogs ----
@@ -28,7 +29,7 @@ struct Rgba {
 /// A failed save or attach, said in the dialog that caused it.
 inline constexpr Rgba kErrorText = {1.0f, 0.45f, 0.35f, 1.0f};
 
-// ---- Toolbar ----
+// ---- The ribbon's controls ----
 inline constexpr f32 kSequenceComboWidth = 220.0f;
 inline constexpr f32 kCameraComboWidth = 140.0f;
 inline constexpr f32 kSkinComboWidth = 160.0f;

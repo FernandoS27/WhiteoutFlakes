@@ -84,60 +84,55 @@ MenuBar::MenuBar(UiContext& ctx, OpenDialog& openDialog, ExportDialogs& exportDi
     : ctx_(ctx), openDialog_(openDialog), exportDialogs_(exportDialogs), exportWindow_(exportWindow),
       settings_(settings) {}
 
-void MenuBar::Build() {
+void MenuBar::BuildStrip() {
     auto& render = ctx_.app.Service().Settings();
     DisplayFlags df = render.GetDisplayFlags();
     bool displayChanged = false;
 
-    if (ImGui::BeginMainMenuBar()) {
-        // Every frame: a window appearing takes focus and closes popups.
-        if (shotMenuKey_)
-            ImGui::OpenPopup(i18n::tr(shotMenuKey_), ImGuiPopupFlags_NoReopen);
+    // Every frame: a window appearing takes focus and closes popups.
+    if (shotMenuKey_)
+        ImGui::OpenPopup(i18n::tr(shotMenuKey_), ImGuiPopupFlags_NoReopen);
 
-        BuildFileMenu();
+    if (ImGui::BeginMenu(i18n::tr("menu.view"))) {
+        displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.grid"), nullptr, &df.showGrid);
+        displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.particles"), nullptr, &df.showParticles);
+        displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.ribbons"), nullptr, &df.showRibbons);
+        displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.events"), nullptr, &df.showEvents);
+        ImGui::MenuItem(i18n::tr("menu.view.viewcube"), nullptr, &showViewCube_);
+        BuildViewMenu();
+        ImGui::EndMenu();
+    }
 
-        if (ImGui::BeginMenu(i18n::tr("menu.view"))) {
-            displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.grid"), nullptr, &df.showGrid);
-            displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.particles"), nullptr, &df.showParticles);
-            displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.ribbons"), nullptr, &df.showRibbons);
-            displayChanged |= ImGui::MenuItem(i18n::tr("menu.view.events"), nullptr, &df.showEvents);
-            ImGui::MenuItem(i18n::tr("menu.view.viewcube"), nullptr, &showViewCube_);
-            BuildViewMenu();
-            ImGui::EndMenu();
-        }
+    if (ImGui::BeginMenu(i18n::tr("menu.debug"))) {
+        displayChanged |= ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr, &df.showCollisions);
+        displayChanged |= ImGui::MenuItem(i18n::tr("menu.debug.lights"), nullptr, &df.showLights);
+        BuildDebugMenu();
+        ImGui::EndMenu();
+    }
 
-        if (ImGui::BeginMenu(i18n::tr("menu.debug"))) {
-            displayChanged |= ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr, &df.showCollisions);
-            displayChanged |= ImGui::MenuItem(i18n::tr("menu.debug.lights"), nullptr, &df.showLights);
-            BuildDebugMenu();
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu(i18n::tr("menu.tools"))) {
-            bool explorerOpen = ctx_.app.Explorer().IsOpen();
-            if (ImGui::MenuItem(i18n::tr("menu.tools.storage_explorer"), nullptr, &explorerOpen))
-                ctx_.app.Explorer().SetOpen(explorerOpen);
-            ImGui::EndMenu();
-        }
-
-        // Endonyms in their own script, not translated; the bundled Noto fonts
-        // cover every entry. Switching swaps the in-memory catalog, so the whole
-        // UI re-localises next frame.
-        if (ImGui::BeginMenu(i18n::tr("menu.language"))) {
-            const i18n::Language cur = i18n::Localizer::instance().current();
-            for (const auto& e : i18n::languages()) {
-                if (ImGui::MenuItem(e.endonym, nullptr, e.lang == cur)) {
-                    i18n::Localizer::instance().setLanguage(e.lang);
-                    ctx_.MarkSettingsDirty();
-                }
-            }
-            ImGui::EndMenu();
-        }
-
+    // Settings rides with the Storage Explorer rather than sitting on the strip
+    // by itself: the ribbon's Tools group is where both are one click away.
+    if (ImGui::BeginMenu(i18n::tr("menu.tools"))) {
+        bool explorerOpen = ctx_.app.Explorer().IsOpen();
+        if (ImGui::MenuItem(i18n::tr("menu.tools.storage_explorer"), nullptr, &explorerOpen))
+            ctx_.app.Explorer().SetOpen(explorerOpen);
         if (ImGui::MenuItem(i18n::tr("menu.settings")))
             settings_.Open();
+        ImGui::EndMenu();
+    }
 
-        ImGui::EndMainMenuBar();
+    // Endonyms in their own script, not translated; the bundled Noto fonts
+    // cover every entry. Switching swaps the in-memory catalog, so the whole
+    // UI re-localises next frame.
+    if (ImGui::BeginMenu(i18n::tr("menu.language"))) {
+        const i18n::Language cur = i18n::Localizer::instance().current();
+        for (const auto& e : i18n::languages()) {
+            if (ImGui::MenuItem(e.endonym, nullptr, e.lang == cur)) {
+                i18n::Localizer::instance().setLanguage(e.lang);
+                ctx_.MarkSettingsDirty();
+            }
+        }
+        ImGui::EndMenu();
     }
 
     if (displayChanged) {
@@ -146,9 +141,7 @@ void MenuBar::Build() {
     }
 }
 
-void MenuBar::BuildFileMenu() {
-    if (!ImGui::BeginMenu(i18n::tr("menu.file")))
-        return;
+void MenuBar::BuildFileItems() {
     ViewerApp& app = ctx_.app;
     if (ImGui::MenuItem(i18n::tr("menu.file.open"), "Ctrl+O"))
         openDialog_.PickAndOpen();
@@ -187,7 +180,6 @@ void MenuBar::BuildFileMenu() {
     ImGui::Separator();
     if (ImGui::MenuItem(i18n::tr("menu.file.exit")))
         app.Window().RequestClose();
-    ImGui::EndMenu();
 }
 
 void MenuBar::BuildViewMenu() {

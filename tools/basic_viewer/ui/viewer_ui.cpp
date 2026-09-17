@@ -1,6 +1,7 @@
 #include "ui/viewer_ui.h"
 
 #include "app/viewer_app.h"
+#include "imgui_ribbon.h"
 #include "imgui_viewcube.h"
 #include "localization.h"
 #include "log_console.h"
@@ -24,8 +25,8 @@ ViewerUI::ViewerUI(ViewerApp& app)
       exportDialogs_(ctx_),
       settings_(ctx_),
       animationWindow_(ctx_),
-      toolbar_(ctx_, animationWindow_),
-      menuBar_(ctx_, openDialog_, exportDialogs_, exportWindow_, settings_) {
+      menuBar_(ctx_, openDialog_, exportDialogs_, exportWindow_, settings_),
+      ribbon_(ctx_, menuBar_, animationWindow_, openDialog_, exportDialogs_, exportWindow_, settings_) {
     // NFD's init / quit can be reference-counted; once, at first UI
     // construction, matches its single-process expectations.
     NFD::Init();
@@ -33,8 +34,7 @@ ViewerUI::ViewerUI(ViewerApp& app)
 
 void ViewerUI::BuildFrame() {
     ViewerApp& app = ctx_.app;
-    menuBar_.Build();
-    toolbar_.Build();
+    ribbon_.Build();
     BuildTabBar(app);
     if (menuBar_.ShowViewCube())
         BuildViewCube();
@@ -57,8 +57,9 @@ void ViewerUI::BuildFrame() {
 }
 
 void ViewerUI::BuildViewCube() {
-    const f32 stripH = ImGui::GetFrameHeight() + ui::kStripPadding;
-    const f32 topOffset = stripH + (ctx_.app.Documents().Count() > 0 ? stripH : 0.0f);
+    const f32 tabStripH = ImGui::GetFrameHeight() + ui::kStripPadding;
+    const f32 topOffset =
+        ui::RibbonMetrics().topH + (ctx_.app.Documents().Count() > 0 ? tabStripH : 0.0f);
     tools::DrawViewCube(ctx_.app.Service().Scene().Camera(), topOffset);
 }
 
@@ -67,8 +68,7 @@ bool ViewerUI::OpenPanelForShot(std::string_view panel) {
         std::string_view name;
         const char* key;
     };
-    constexpr MenuShot kMenus[] = {{"menu-file", "menu.file"},
-                                   {"menu-view", "menu.view"},
+    constexpr MenuShot kMenus[] = {{"menu-view", "menu.view"},
                                    {"menu-debug", "menu.debug"},
                                    {"menu-tools", "menu.tools"},
                                    {"menu-language", "menu.language"}};
@@ -87,6 +87,12 @@ bool ViewerUI::OpenPanelForShot(std::string_view panel) {
     ViewerApp& app = ctx_.app;
     if (panel == "main")
         return true;
+    // File is the rail's tile rather than a menu on the strip, so it is a popup
+    // to hold open, not a menu.
+    if (panel == "menu-file") {
+        ribbon_.HoldPopupOpen("##file");
+        return true;
+    }
     for (const MenuShot& m : kMenus) {
         if (panel == m.name) {
             menuBar_.HoldMenuOpen(m.key);
@@ -113,12 +119,12 @@ bool ViewerUI::OpenPanelForShot(std::string_view panel) {
         return true;
     }
     if (panel == "d3-equip") {
-        toolbar_.HoldPopupOpen("##d3equip");
+        ribbon_.HoldPopupOpen("##d3equip");
         const D3Wardrobe* d3 = app.Features().D3();
         return d3 && !d3->CharacterSlots().empty();
     }
     if (panel == "wow-customize") {
-        toolbar_.HoldPopupOpen("##customize");
+        ribbon_.HoldPopupOpen("##customize");
         const WowAppearance* wow = app.Features().Wow();
         return wow && !wow->CharacterOptions().empty();
     }

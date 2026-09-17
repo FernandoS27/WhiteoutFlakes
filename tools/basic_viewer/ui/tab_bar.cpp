@@ -1,6 +1,7 @@
 #include "ui/tab_bar.h"
 
 #include "app/viewer_app.h"
+#include "imgui_ribbon.h"
 #include "ui/ui_metrics.h"
 
 #include <imgui.h>
@@ -12,12 +13,12 @@ void BuildTabBar(ViewerApp& app) {
     if (documents.Count() <= 0)
         return;
 
-    // Directly beneath the toolbar, over the top of the 3D view.
+    // Directly beneath the ribbon and right of its rail, over the top of the 3D
+    // view: the tabs belong to the content area, not to the ribbon.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const f32 menuH = ImGui::GetFrameHeight();
-    const f32 toolbarH = menuH + ui::kStripPadding;
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + toolbarH));
-    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, menuH + ui::kStripPadding));
+    const ui::RibbonLayout ribbon = ui::RibbonMetrics();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + ribbon.railW, vp->WorkPos.y + ribbon.topH));
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x - ribbon.railW, ImGui::GetFrameHeight() + ui::kStripPadding));
     ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;

@@ -12,7 +12,7 @@
 #include "ui/menu_bar.h"
 #include "ui/open_dialog.h"
 #include "ui/settings_window.h"
-#include "ui/toolbar.h"
+#include "ui/ribbon.h"
 #include "ui/ui_context.h"
 
 #include <string_view>
@@ -42,7 +42,7 @@ public:
 
 private:
     /// A host-side widget the renderer has no notion of (imgui_viewcube.h),
-    /// offset below the toolbar and, with documents open, the tab strip.
+    /// offset below the ribbon and, with documents open, the tab strip.
     void BuildViewCube();
 
     // Declaration order is construction order: each panel takes the ones above it.
@@ -54,8 +54,9 @@ private:
     ExportDialogs exportDialogs_;
     SettingsWindow settings_;
     AnimationWindow animationWindow_;
-    Toolbar toolbar_;
     MenuBar menuBar_;
+    /// Last: it hosts the menus and drives every panel above it.
+    Ribbon ribbon_;
 };
 
 } // namespace whiteout::flakes
