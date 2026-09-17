@@ -1,4 +1,5 @@
 #include "thumbnail_pool.h"
+#include "string_util.h"
 
 #include "io/storage/storage_paths.h"
 #include "renderer/model/corn_effect_source.h"
@@ -190,10 +191,7 @@ void ThumbnailPool::LoadCell(Cell& cell) {
             // A "portrait" model with an embedded camera frames the face the way
             // the artist intended — use it. Everything else auto-frames to the
             // active animation's extents.
-            std::string lower = cell.path;
-            for (char& c : lower)
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            const bool isPortrait = lower.find("portrait") != std::string::npos;
+            const bool isPortrait = tools::ContainsIgnoreCase(cell.path, "portrait");
             if (!isPortrait || !tools::ApplyModelCamera(sm.Camera(), hero)) {
                 const auto seqs = hero->animation.Sequences();
                 const std::string seqName = (idx >= 0 && idx < static_cast<int>(seqs.size()))

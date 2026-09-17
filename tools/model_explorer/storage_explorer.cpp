@@ -1,4 +1,5 @@
 #include "storage_explorer.h"
+#include "string_util.h"
 
 #include "io/load_task.h"
 
@@ -34,10 +35,7 @@ std::string ExtOf(const std::string& name) {
     const auto dot = name.find_last_of('.');
     if (dot == std::string::npos)
         return {};
-    std::string ext = name.substr(dot + 1);
-    for (char& c : ext)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext;
+    return ToLowerAscii(std::string_view(name).substr(dot + 1));
 }
 
 StorageFileKind KindOf(const std::string& name) {
@@ -149,10 +147,8 @@ constexpr std::size_t kMaxTreeRows = 20000;
 // RebuildTreeRows.
 constexpr std::size_t kAutoExpandMax = 400;
 
-std::string LowerPath(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+std::string LowerPath(std::string_view s) {
+    return ToLowerAscii(s);
 }
 
 // Two spellings of one install directory. Lexical and case-insensitive on

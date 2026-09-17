@@ -1,4 +1,5 @@
 #include "log_console.h"
+#include "string_util.h"
 
 #include <algorithm>
 #include <cctype>
@@ -38,18 +39,7 @@ int MakePipe(int fds[2]) {
 // Case-insensitive substring test — used for the cheap severity guess in
 // PushLine (WC3/engine logs carry no structured level).
 bool ContainsCI(const std::string& hay, const char* needle) {
-    const std::size_t n = std::char_traits<char>::length(needle);
-    if (n == 0 || hay.size() < n) return false;
-    for (std::size_t i = 0; i + n <= hay.size(); ++i) {
-        std::size_t j = 0;
-        for (; j < n; ++j) {
-            const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(hay[i + j])));
-            const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(needle[j])));
-            if (a != b) break;
-        }
-        if (j == n) return true;
-    }
-    return false;
+    return *needle != '\0' && ContainsIgnoreCase(hay, needle);
 }
 
 } // namespace

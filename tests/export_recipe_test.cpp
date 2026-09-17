@@ -20,9 +20,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "export_ini.h"
-#include "export_recipe.h"
+#include "capture/export_ini.h"
+#include "capture/export_recipe.h"
 #include "settings_ini.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <cmath>
 #include <fstream>
@@ -70,7 +71,7 @@ ExportClip Clip(i32 sequence, i32 repeats = 1, f32 speed = 1.0f) {
 // Fresh ini per case, so one case's writes cannot satisfy another's reads.
 struct ScopedIni {
     explicit ScopedIni(const char* name) {
-        path = ExecutableDir() / name;
+        path = io::ExecutableDirectory() / name;
         std::error_code ec;
         std::filesystem::remove(path, ec);
         SetSettingsIniPathOverride(path);
@@ -559,7 +560,7 @@ TEST_CASE("A clip the model does not have survives as an unresolved row",
 TEST_CASE("A recipe file is the same writer pointed somewhere else", "[export]") {
     ScopedIni ini("export_recipefile.ini");
     const auto names = SampleNames();
-    const std::filesystem::path file = ExecutableDir() / "sample_recipe.ini";
+    const std::filesystem::path file = io::ExecutableDirectory() / "sample_recipe.ini";
     std::error_code ec;
     std::filesystem::remove(file, ec);
 

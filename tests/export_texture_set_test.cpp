@@ -10,7 +10,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "export_texture_set.h"
+#include "export/export_texture_set.h"
 
 #include <whiteout/textures/texture.h>
 

@@ -5,7 +5,7 @@
 // rule a name nobody listed falls through to.
 // ============================================================================
 
-#include "wc3_attachment_names.h"
+#include "export/wc3_attachment_names.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>

@@ -1,4 +1,5 @@
 #include "thumbnail_framing.h"
+#include "string_util.h"
 
 #include "io/mdx_model_adapter.h"
 #include "renderer/camera.h"
@@ -17,10 +18,8 @@ namespace whiteout::flakes::tools {
 using renderer::Camera;
 
 namespace {
-std::string Lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+std::string Lower(std::string_view s) {
+    return ToLowerAscii(s);
 }
 
 // Pose the camera given a finished extent accumulation (or its absence).

@@ -20,20 +20,6 @@
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#elif defined(__linux__)
-#include <climits>
-#include <unistd.h>
-#elif defined(__APPLE__)
-#include <climits>
-#include <mach-o/dyld.h>
-#endif
-
 namespace whiteout::flakes {
 
 using ini::IniMap;
@@ -53,13 +39,7 @@ fs::path g_iniPathOverride;
 //              and the .app bundle is read-only anyway).
 fs::path DefaultSettingsIniPath() {
 #ifdef _WIN32
-    wchar_t exePath[MAX_PATH] = {};
-    DWORD n = ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH)
-        return fs::path("WhiteoutFlakes.ini");
-    fs::path p(exePath);
-    p.replace_filename(L"WhiteoutFlakes.ini");
-    return p;
+    return io::ExecutableDirectory() / "WhiteoutFlakes.ini";
 #elif defined(__APPLE__)
     fs::path base;
     if (const char* home = std::getenv("HOME"); home && *home)
@@ -152,47 +132,11 @@ void SetSettingsIniPathOverride(const fs::path& file) {
     g_iniPathOverride = file;
 }
 
-// Directory holding the running executable — where the bundled `lang/` and
-// `fonts/` asset folders are copied by the build. Unlike SettingsIniPath this
-// is always the exe location on every OS (not a per-user config dir).
-fs::path ExecutableDir() {
-#ifdef _WIN32
-    wchar_t exePath[MAX_PATH] = {};
-    DWORD n = ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH)
-        return fs::current_path();
-    return fs::path(exePath).parent_path();
-#elif defined(__linux__)
-    char buf[PATH_MAX] = {};
-    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0)
-        return fs::current_path();
-    return fs::path(std::string(buf, static_cast<size_t>(n))).parent_path();
-#elif defined(__APPLE__)
-    char buf[PATH_MAX] = {};
-    uint32_t size = sizeof(buf);
-    if (_NSGetExecutablePath(buf, &size) != 0)
-        return fs::current_path();
-    std::error_code ec;
-    fs::path resolved = fs::canonical(fs::path(buf), ec);
-    if (ec)
-        resolved = fs::path(buf);
-    return resolved.parent_path();
-#else
-    return fs::current_path();
-#endif
-}
-
 fs::path AssetDir() {
-    fs::path dir = ExecutableDir();
-#ifdef __APPLE__
-    // In a .app bundle the exe is Contents/MacOS/; bundled read-only data
-    // (lang/, fonts/) ships in Contents/Resources/ — codesign rejects non-code
-    // files under MacOS/. Mirrors io::ExecutableDirectory() in path_utf8.cpp.
-    if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents")
-        return dir.parent_path() / "Resources";
-#endif
-    return dir;
+    // io::ExecutableDirectory already answers Contents/Resources inside a macOS
+    // bundle, which is where the bundled read-only data ships.
+    fs::path dir = io::ExecutableDirectory();
+    return dir.empty() ? fs::current_path() : dir;
 }
 
 IoPathOverrides LoadIoPathOverrides() {

@@ -1821,14 +1821,10 @@ add_library(WhiteoutFlakesExplorerLib STATIC
 set_target_properties(WhiteoutFlakesExplorerLib PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 # Public: the lib's own headers (storage_explorer.h / casc_browser.h /
-# thumbnail_pool.h) for any external consumer. Private: PkbEffectSource, used
-# only inside thumbnail_pool.cpp — it isn't part of the public surface.
+# thumbnail_pool.h) for any external consumer.
 target_include_directories(WhiteoutFlakesExplorerLib PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/model_explorer"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/common"
-)
-target_include_directories(WhiteoutFlakesExplorerLib PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer" # PkbEffectSource (header-only)
 )
 target_link_libraries(WhiteoutFlakesExplorerLib PUBLIC WhiteoutFlakesLib imgui nfd)
 if(MSVC)
@@ -1839,35 +1835,119 @@ if(WDX_BUILD_WC3_SHADERS OR WDX_USE_PREBUILT_SHADERS)
     add_dependencies(WhiteoutFlakesExplorerLib Wc3Shaders)
 endif()
 
-set(WHITEOUTFLAKES_VIEWER_SOURCES
-    tools/basic_viewer/test_main.cpp
-    tools/basic_viewer/viewer_app.cpp
-    tools/basic_viewer/viewer_ui.cpp
+# ---- Model conversion library ----
+# The "Export to ..." converters and the texture work they share: device-free,
+# so tests link it, and the viewer reaches it only through
+# export/model_export_service. Built to move into src/ later: its one include
+# directory of its own is export/, so a converter that reaches for another
+# tools/ header fails to compile instead of slipping in.
+add_library(WhiteoutFlakesConvert STATIC
+    # What every converter shares: the subject and report core, the WEM hop,
+    # texture reads and writes, and the texture containers.
+    tools/basic_viewer/export/export_common.cpp
+    tools/basic_viewer/export/texture_io.cpp
+    tools/basic_viewer/export/texture_codec.cpp
     # "Export to MDX": a foreign model converted THROUGH WEM into Warcraft III.
-    tools/basic_viewer/mdx_export.cpp
+    tools/basic_viewer/export/mdx_export.cpp
     # "Export to M3": the same crossing pointed at StarCraft II.
-    tools/basic_viewer/m3_export.cpp
+    tools/basic_viewer/export/m3_export.cpp
     # Which textures those write: what the written model reads, less War3 (Mod)'s.
-    tools/basic_viewer/export_texture_set.cpp
+    tools/basic_viewer/export/export_texture_set.cpp
     # "Export to glTF": the crossing pointed out of the Blizzard family.
-    tools/basic_viewer/gltf_export.cpp
+    tools/basic_viewer/export/gltf_export.cpp
     # The Warcraft III -> StarCraft II game conventions that ride that export.
-    tools/basic_viewer/wc3_to_sc2_export.cpp
-    tools/basic_viewer/wc3_attachment_names.cpp
+    tools/basic_viewer/export/wc3_to_sc2_export.cpp
+    tools/basic_viewer/export/wc3_attachment_names.cpp
     # The one crossing a slot rename cannot make: StarCraft II's
     # specular/gloss baked into a Reforged occlusion/roughness/metalness map.
-    tools/basic_viewer/sc2_pbr_export.cpp
+    tools/basic_viewer/export/sc2_pbr_export.cpp
+)
+# "Save As" for a model that IS `.m3`: written back through m3::Writer with no
+# WEM hop. Needs the `.m3` adapter, so it ships only where that adapter does.
+if(WDX_ENABLE_M3)
+    target_sources(WhiteoutFlakesConvert PRIVATE tools/basic_viewer/export/m3_save.cpp)
+endif()
+set_target_properties(WhiteoutFlakesConvert PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+# Consumers spell the folder: `#include "export/m3_export.h"`.
+target_include_directories(WhiteoutFlakesConvert
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer/export"
+    INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer")
+target_link_libraries(WhiteoutFlakesConvert PUBLIC WhiteoutFlakesLib)
+if(MSVC)
+    target_compile_options(WhiteoutFlakesConvert PRIVATE
+        /W3 /EHsc /wd4100 /wd4127 /wd4244 /wd4267)
+endif()
+
+set(WHITEOUTFLAKES_VIEWER_SOURCES
+    # The entry point: parse, settle the platform, dispatch on the run mode.
+    tools/basic_viewer/main.cpp
+    tools/basic_viewer/platform/platform_paths.cpp
+    # The command line as a table of options, and the work each mode runs on the app.
+    tools/basic_viewer/cli/cli_options.cpp
+    tools/basic_viewer/cli/cli_commands.cpp
+    # The gate harnesses render-diff.ps1, particle-diff.ps1 and friends drive:
+    # device + offscreen target, no window, no ViewerApp.
+    tools/basic_viewer/harness/harness_common.cpp
+    tools/basic_viewer/harness/smoke_test.cpp
+    tools/basic_viewer/harness/multiscene_test.cpp
+    tools/basic_viewer/harness/childmodel_check.cpp
+    tools/basic_viewer/harness/particle_diff.cpp
+    tools/basic_viewer/harness/draw_trace.cpp
+    tools/basic_viewer/harness/draw_trace_scenario.cpp
+    # The app: the composition root and frame loop, the window and camera input,
+    # and the embedded Storage Explorer.
+    tools/basic_viewer/app/viewer_app.cpp
+    tools/basic_viewer/app/platform_window.cpp
+    tools/basic_viewer/app/orbit_camera_input.cpp
+    tools/basic_viewer/app/storage_explorer_host.cpp
+    # Open documents (tabs), how they load, and playback of the active one.
+    tools/basic_viewer/documents/document_manager.cpp
+    tools/basic_viewer/documents/document_loader.cpp
+    tools/basic_viewer/documents/playback_controller.cpp
+    # The game storages and the settings profile.
+    tools/basic_viewer/session/storage_session.cpp
+    # Per-game features on a loaded model. Each implementation is listed under
+    # its format's flag below; game_features.cpp makes the absent ones null.
+    tools/basic_viewer/features/game_features.cpp
+    # The conversion front door: what the active document can be written as,
+    # the writes, and Save As for a model that stays in its own format.
+    tools/basic_viewer/export/model_export_service.cpp
+    tools/basic_viewer/export/mdx_save.cpp
+    # The UI: the frame and its panels, and the widgets they share.
+    tools/basic_viewer/ui/viewer_ui.cpp
+    tools/basic_viewer/ui/menu_bar.cpp
+    tools/basic_viewer/ui/toolbar.cpp
+    tools/basic_viewer/ui/d3_equip_popup.cpp
+    tools/basic_viewer/ui/tab_bar.cpp
+    tools/basic_viewer/ui/animation_window.cpp
+    tools/basic_viewer/ui/settings_window.cpp
+    tools/basic_viewer/ui/settings_general_pages.cpp
+    tools/basic_viewer/ui/settings_io_page.cpp
+    tools/basic_viewer/ui/export_dialogs.cpp
+    tools/basic_viewer/ui/open_dialog.cpp
+    tools/basic_viewer/ui/widgets.cpp
+    tools/basic_viewer/ui/setting_rows.cpp
+    # The scalar settings as descriptors: ini key, read rule, page row, reset.
+    tools/basic_viewer/settings/setting_descriptors.cpp
     # The animation exporter: the device-free recipe/schedule and its ini, the
     # output sinks, the capture loop, and the dialog.
-    tools/basic_viewer/export_recipe.cpp
-    tools/basic_viewer/export_ini.cpp
-    tools/basic_viewer/export_encoders.cpp
-    tools/basic_viewer/export_runner.cpp
-    tools/basic_viewer/export_window.cpp
+    tools/basic_viewer/capture/export_recipe.cpp
+    tools/basic_viewer/capture/export_ini.cpp
+    tools/basic_viewer/capture/capture_sinks.cpp
+    tools/basic_viewer/capture/export_runner.cpp
+    tools/basic_viewer/capture/export_window.cpp
+    tools/basic_viewer/capture/capture_controller.cpp
     tools/basic_viewer/settings_ini.cpp
     tools/basic_viewer/settings_io.cpp
     tools/basic_viewer/storage_explorer_ini.cpp
     tools/basic_viewer/localization.cpp
+    # `--ui-shot`: the UI captured to a PNG with no visible window.
+    tools/basic_viewer/harness/ui_shot.cpp
+    # Every extension the viewer opens and what it is: the dialogs, the loader
+    # and the game follow read this one table.
+    tools/basic_viewer/documents/model_formats.cpp
+    tools/basic_viewer/ui/file_dialogs.cpp
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp
     tools/common/imgui_theme.cpp
@@ -1879,15 +1959,23 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     # imgui core lib because it pulls in <GLFW/glfw3.h> — the engine library
     # itself only links the renderer-agnostic ImGui core.
     externals/imgui/backends/imgui_impl_glfw.cpp
+    # InputText over std::string, for the path rows and the item filters.
+    externals/imgui/misc/cpp/imgui_stdlib.cpp
 )
-# "Save As" for a model that IS `.m3`: written back through m3::Writer with no
-# WEM hop. Needs the `.m3` adapter, so it ships only where that adapter does.
 if(WDX_ENABLE_M3)
-    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/m3_save.cpp)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/features/sc2_animation_files.cpp)
+endif()
+if(WDX_ENABLE_M2)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/features/wow_appearance.cpp)
+endif()
+if(WDX_ENABLE_D3)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES
+        tools/basic_viewer/features/d3_wardrobe.cpp
+        tools/basic_viewer/features/d3_outfit_presets.cpp)
 endif()
 # Win32 .rc — embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so the
 # viewer can hand it to the GLFW HWND via WM_SETICON. On Linux we instead
-# load the same icon via glfwSetWindowIcon at runtime (see ViewerApp::Open).
+# load the same icon via glfwSetWindowIcon at runtime (see PlatformWindow::Open).
 if(WIN32)
     list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/resource.rc)
 endif()
@@ -1896,7 +1984,7 @@ endif()
 # glfwCreateWindowSurface, which trips VK_ERROR_INITIALIZATION_FAILED on
 # macOS 13+ / MoltenVK 1.4. cocoa_window_macos.mm tints the NSWindow's
 # title bar to match the ImGui MenuBarBg — Cocoa parity for the Windows
-# DwmSetWindowAttribute path in viewer_app.cpp.
+# DwmSetWindowAttribute path in app/platform_window.cpp.
 if(APPLE)
     list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES
         tools/basic_viewer/vulkan_surface_macos.mm
@@ -1930,10 +2018,12 @@ target_include_directories(WhiteoutFlakesStandalone PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/externals/dr_libs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/externals/imgui/misc/cpp"
 )
 
 target_link_libraries(WhiteoutFlakesStandalone PRIVATE
     WhiteoutFlakesExplorerLib # embedded Storage Explorer + shared thumbnail_framing
+    WhiteoutFlakesConvert     # the model converters behind export/model_export_service
     WhiteoutFlakesLib
     glfw
     nfd
@@ -2125,8 +2215,7 @@ add_custom_command(TARGET WhiteoutFlakesStandalone POST_BUILD
 # ---- ModelExplorer ----
 # A CASC browser that renders a grid of live model/effect thumbnails, each in
 # its own scene+viewport (exercises the multi-scene renderer). Mirrors the
-# standalone viewer's window/device/ImGui boilerplate; shares tools/common and
-# the basic_viewer include dir (for the macOS surface shim + PkbEffectSource).
+# standalone viewer's window/device/ImGui boilerplate and shares tools/common.
 # The browser / pool / panel / framing now live in WhiteoutFlakesExplorerLib;
 # this target keeps only the standalone shell (window + device + ImGui context)
 # and the entry point + headless self-tests.
@@ -2154,7 +2243,6 @@ set_target_properties(WhiteoutFlakesExplorer PROPERTIES
 )
 target_include_directories(WhiteoutFlakesExplorer PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/model_explorer"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer" # PkbEffectSource + macOS shim headers
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/externals/dr_libs"
 )
@@ -2292,7 +2380,7 @@ if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
 
     # Pre-baked PSO replay trace: seeds the Vulkan pipeline cache on first
     # launch so the user doesn't pay the cold-build hitch. Lives next to the
-    # binary inside the AppImage; test_main copies it into $XDG_CACHE_HOME/
+    # binary inside the AppImage; platform_paths.cpp copies it into $XDG_CACHE_HOME/
     # WhiteoutFlakes/ if no per-user trace exists yet (subsequent runs save
     # their own additions there).
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin")
@@ -2397,7 +2485,7 @@ if(APPLE)
             DESTINATION WhiteoutFlakes.app/Contents/Resources/fonts)
 
     # Self-contained bundle: stage the Vulkan loader + MoltenVK driver and
-    # rewrite the ICD JSON's library_path to bundle-relative. test_main.cpp
+    # rewrite the ICD JSON's library_path to bundle-relative. platform_paths.cpp
     # sets VK_ICD_FILENAMES to <bundle>/Contents/Resources/vulkan/icd.d/
     # MoltenVK_icd.json at startup, so the loader finds MoltenVK without
     # any system Vulkan SDK on the user's machine — the .app is launchable

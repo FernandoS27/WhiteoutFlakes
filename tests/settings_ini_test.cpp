@@ -17,6 +17,7 @@
 
 #include "settings_ini.h"
 #include "storage_explorer_ini.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <fstream>
 #include <string>
@@ -33,7 +34,7 @@ namespace {
 // Fresh file per case, so one case's writes cannot satisfy another's reads.
 struct ScopedIni {
     explicit ScopedIni(const char* name) {
-        path = whiteout::flakes::ExecutableDir() / name;
+        path = whiteout::flakes::io::ExecutableDirectory() / name;
         std::error_code ec;
         std::filesystem::remove(path, ec);
         whiteout::flakes::SetSettingsIniPathOverride(path);

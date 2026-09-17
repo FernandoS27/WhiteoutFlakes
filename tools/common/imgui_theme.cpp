@@ -62,7 +62,8 @@ void ApplyImGuiTheme() {
     c[ImGuiCol_TitleBg] = ImVec4(0.08627451f, 0.11764706f, 0.13725491f, 0.65f);
     c[ImGuiCol_TitleBgActive] = ImVec4(0.078431375f, 0.09803922f, 0.11764706f, 1.0f);
     c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.0f, 0.0f, 0.0f, 0.51f);
-    c[ImGuiCol_MenuBarBg] = ImVec4(0.14901961f, 0.1764706f, 0.21960784f, 1.0f);
+    c[ImGuiCol_MenuBarBg] = ImVec4(kMenuBarBgRgb[0] / 255.0f, kMenuBarBgRgb[1] / 255.0f,
+                                   kMenuBarBgRgb[2] / 255.0f, 1.0f);
     c[ImGuiCol_ScrollbarBg] = ImVec4(0.019607844f, 0.019607844f, 0.019607844f, 0.39f);
     c[ImGuiCol_ScrollbarGrab] = ImVec4(0.2f, 0.24705882f, 0.28627452f, 1.0f);
     c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.1764706f, 0.21960784f, 0.24705882f, 1.0f);

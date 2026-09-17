@@ -6,9 +6,12 @@
 
 #include "settings_ini.h"
 
+#include "backend_names.h"
+#include "color_pack.h"
 #include "ini_file.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/render_service.h"
+#include "settings/setting_descriptors.h"
 #include "whiteout/flakes/types.h"
 
 #include <algorithm>
@@ -44,28 +47,12 @@ void LoadStartupSettingsFromIni(RenderService& service) {
     IniMap ini;
     ini.Load(SettingsIniPath());
 
-    if (auto* s = ini.Get(KeyOf("GraphicsDebug"))) {
-        bool v = false;
-        if (ParseBool(*s, v))
-            service.Settings().SetGraphicsDebug(v);
-    }
+    settings::Load(service.Settings(), ini, settings::kGraphicsDebug);
+    // A name this platform does not build (Metal off Apple) is ignored rather
+    // than selecting a backend that cannot start.
     if (auto* s = ini.Get(KeyOf("DefaultBackend"))) {
-        using gfx::GfxApi;
-        if (*s == "d3d11" || *s == "D3D11")
-            service.Settings().SetDefaultBackend(GfxApi::D3D11);
-        else if (*s == "d3d12" || *s == "D3D12")
-            service.Settings().SetDefaultBackend(GfxApi::D3D12);
-        else if (*s == "vulkan" || *s == "Vulkan" || *s == "VULKAN")
-            service.Settings().SetDefaultBackend(GfxApi::Vulkan);
-        else if (*s == "webgpu" || *s == "WebGPU" || *s == "WEBGPU")
-            service.Settings().SetDefaultBackend(GfxApi::WebGPU);
-#if defined(__APPLE__)
-        // Metal is Apple-only; ignore a stale / hand-edited "metal" value on
-        // other platforms so it can't select an unavailable backend (the UI
-        // doesn't offer it there either).
-        else if (*s == "metal" || *s == "Metal" || *s == "METAL")
-            service.Settings().SetDefaultBackend(GfxApi::Metal);
-#endif
+        if (const auto api = tools::BackendFromIniName(*s))
+            service.Settings().SetDefaultBackend(*api);
     }
     if (auto* s = ini.Get(KeyOf("PreferredDevice")); s && !s->empty()) {
         service.Settings().SetPreferredDevice(*s);
@@ -80,17 +67,11 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
     if (auto* s = ini.Get(KeyOf("BackgroundColor"))) {
         i32 v = 0;
         if (ParseInt(*s, v)) {
-            const u32 c = static_cast<u32>(v);
-            service.Settings().SetBackgroundColor(static_cast<u8>(c & 0xFF),
-                                                  static_cast<u8>((c >> 8) & 0xFF),
-                                                  static_cast<u8>((c >> 16) & 0xFF));
+            const tools::Rgb8 c = tools::UnpackBgr(static_cast<u32>(v));
+            service.Settings().SetBackgroundColor(c.r, c.g, c.b);
         }
     }
-    if (auto* s = ini.Get(KeyOf("Exposure"))) {
-        f32 v = 0;
-        if (ParseFloat(*s, v))
-            service.Settings().SetTonemapExposure(std::clamp(v, 0.0f, 3.0f));
-    }
+    settings::Load(service.Settings(), ini, settings::kExposure);
     if (auto* s = ini.Get(KeyOf("SoundVolume"))) {
         f32 v = 0;
         if (ParseFloat(*s, v))
@@ -140,18 +121,9 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
             service.Settings().SetDisplayFlags(df);
     }
 
-    {
-        auto loadPhysFlag = [&](const char* key, void (RenderSettings::*set)(bool)) {
-            if (auto* s = ini.Get(KeyOf(key)))
-                (service.Settings().*set)(*s == "1");
-        };
-        loadPhysFlag("ShowPhysicsDynamic", &RenderSettings::SetShowPhysicsDynamic);
-        loadPhysFlag("ShowPhysicsKinematic", &RenderSettings::SetShowPhysicsKinematic);
-        loadPhysFlag("ShowPhysicsStatic", &RenderSettings::SetShowPhysicsStatic);
-        loadPhysFlag("ShowPhysicsCloth", &RenderSettings::SetShowPhysicsCloth);
-        loadPhysFlag("ClothDeform", &RenderSettings::SetClothDeform);
-        loadPhysFlag("PhysicsSubstepping", &RenderSettings::SetPhysicsSubstepping);
-    }
+    settings::Load(service.Settings(), ini, settings::kPhysicsOverlays);
+    settings::Load(service.Settings(), ini, settings::kClothDeform);
+    settings::Load(service.Settings(), ini, settings::kPhysicsSubstepping);
 
     if (auto* s = ini.Get(KeyOf("LightingMode"))) {
         i32 v = 0;
@@ -204,9 +176,10 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         if (auto* s = ini.Get(KeyOf("FogColor"))) {
             i32 v = 0;
             if (ParseInt(*s, v) && v >= 0 && v <= 0xFFFFFF) {
-                fog.color[0] = static_cast<u8>(v >> 16);
-                fog.color[1] = static_cast<u8>(v >> 8);
-                fog.color[2] = static_cast<u8>(v);
+                const tools::Rgb8 c = tools::UnpackRgb(static_cast<u32>(v));
+                fog.color[0] = c.r;
+                fog.color[1] = c.g;
+                fog.color[2] = c.b;
             }
         }
         auto loadFogFloat = [&](const char* key, f32& out) {
@@ -231,86 +204,19 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         }
         service.Settings().SetWorldFog(fog);
     }
-    if (auto* s = ini.Get(KeyOf("M2LazyAnimations"))) {
-        bool v = false;
-        if (ParseBool(*s, v))
-            service.Settings().SetM2LazyAnimations(v);
-    }
-    if (auto* s = ini.Get(KeyOf("M2DistanceSortGeometry"))) {
-        bool v = false;
-        if (ParseBool(*s, v))
-            service.Settings().SetM2DistanceSortGeometry(v);
-    }
-    if (auto* s = ini.Get(KeyOf("M2ModelLights"))) {
-        bool v = true;
-        if (ParseBool(*s, v))
-            service.Settings().SetM2ModelLights(v);
-    }
-    if (auto* s = ini.Get(KeyOf("AoEnabled"))) {
-        bool v = true;
-        if (ParseBool(*s, v))
-            service.Settings().SetAoEnabled(v);
-    }
+    settings::Load(service.Settings(), ini, settings::kWowPage);
+    settings::Load(service.Settings(), ini, settings::kAoEnabled);
     if (auto* s = ini.Get(KeyOf("AoQuality"))) {
         const i32 v = std::atoi(s->c_str());
         if (v >= 0 && v <= 2)
             service.Settings().SetAoQuality(static_cast<u32>(v));
     }
-    if (auto* s = ini.Get(KeyOf("AoBentBoost"))) {
-        f32 v = 0.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetAoBentBoost(v);
-    }
-    if (auto* s = ini.Get(KeyOf("BloomEnabled"))) {
-        bool v = false;
-        if (ParseBool(*s, v))
-            service.Settings().SetBloomEnabled(v);
-    }
-    if (auto* s = ini.Get(KeyOf("BloomThreshold"))) {
-        f32 v = 1.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetBloomThreshold(v);
-    }
-    if (auto* s = ini.Get(KeyOf("BloomIntensity"))) {
-        f32 v = 1.25f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetBloomIntensity(v);
-    }
-    if (auto* s = ini.Get(KeyOf("BloomSaturation"))) {
-        f32 v = 1.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetBloomSaturation(v);
-    }
-    if (auto* s = ini.Get(KeyOf("DofEnabled"))) {
-        bool v = false;
-        if (ParseBool(*s, v))
-            service.Settings().SetDofEnabled(v);
-    }
-    if (auto* s = ini.Get(KeyOf("DofFocusDistance"))) {
-        f32 v = 0.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetDofFocusDistance(v);
-    }
-    if (auto* s = ini.Get(KeyOf("DofFocusScale"))) {
-        f32 v = 1.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetDofFocusScale(v);
-    }
-    if (auto* s = ini.Get(KeyOf("DofMaxBlurSize"))) {
-        f32 v = 10.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetDofMaxBlurSize(v);
-    }
-    if (auto* s = ini.Get(KeyOf("DofRadiusScale"))) {
-        f32 v = 1.0f;
-        if (ParseFloat(*s, v))
-            service.Settings().SetDofRadiusScale(v);
-    }
-    if (auto* s = ini.Get(KeyOf("DofFarFieldOnly"))) {
-        bool v = false;
-        if (ParseBool(*s, v))
-            service.Settings().SetDofFarFieldOnly(v);
-    }
+    settings::Load(service.Settings(), ini, settings::kAoBentBoost);
+    settings::Load(service.Settings(), ini, settings::kBloomEnabled);
+    settings::Load(service.Settings(), ini, settings::kBloomLevels);
+    settings::Load(service.Settings(), ini, settings::kDofEnabled);
+    settings::Load(service.Settings(), ini, settings::kDofLevels);
+    settings::Load(service.Settings(), ini, settings::kDofFarFieldOnly);
     if (auto* dnc = service.GetDncService()) {
         if (auto* s = ini.Get(KeyOf("TimeOfDay"))) {
             f32 v = 0;
@@ -345,7 +251,7 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
                       static_cast<u32>(service.Settings().BackgroundColorRaw()));
         ini.Set(KeyOf("BackgroundColor"), buf);
     }
-    ini.Set(KeyOf("Exposure"), FloatToString(service.Settings().GetTonemapExposure()));
+    settings::Save(service.Settings(), ini, settings::kExposure);
     ini.Set(KeyOf("SoundVolume"), FloatToString(service.Sound().GetVolume()));
     ini.Set(KeyOf("LoopNonLooping"), loopNonLoopingPolicy ? "1" : "0");
     ini.Set(KeyOf("ReforgedGraphics"), forceHd ? "1" : "0");
@@ -357,29 +263,10 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
     else
         ini.Remove(KeyOf("Wc3ArtTier"));
     ini.Set(KeyOf("Language"), languageCode);
-    ini.Set(KeyOf("GraphicsDebug"), service.Settings().GraphicsDebug() ? "1" : "0");
+    settings::Save(service.Settings(), ini, settings::kGraphicsDebug);
 
-    {
-        const char* name = "d3d12";
-        switch (service.Settings().DefaultBackend()) {
-        case gfx::GfxApi::D3D11:
-            name = "d3d11";
-            break;
-        case gfx::GfxApi::D3D12:
-            name = "d3d12";
-            break;
-        case gfx::GfxApi::Vulkan:
-            name = "vulkan";
-            break;
-        case gfx::GfxApi::WebGPU:
-            name = "webgpu";
-            break;
-        case gfx::GfxApi::Metal:
-            name = "metal";
-            break;
-        }
-        ini.Set(KeyOf("DefaultBackend"), name);
-    }
+    ini.Set(KeyOf("DefaultBackend"),
+            std::string(tools::BackendNameOf(service.Settings().DefaultBackend()).iniName));
     ini.Set(KeyOf("PreferredDevice"), service.Settings().PreferredDevice());
 
     {
@@ -391,13 +278,10 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         saveFlag("ShowEvents", df.showEvents);
         saveFlag("ShowCollisions", df.showCollisions);
         saveFlag("ShowLights", df.showLights);
-        saveFlag("ShowPhysicsDynamic", service.Settings().ShowPhysicsDynamic());
-        saveFlag("ShowPhysicsKinematic", service.Settings().ShowPhysicsKinematic());
-        saveFlag("ShowPhysicsStatic", service.Settings().ShowPhysicsStatic());
-        saveFlag("ShowPhysicsCloth", service.Settings().ShowPhysicsCloth());
-        saveFlag("ClothDeform", service.Settings().ClothDeform());
-        saveFlag("PhysicsSubstepping", service.Settings().PhysicsSubstepping());
     }
+    settings::Save(service.Settings(), ini, settings::kPhysicsOverlays);
+    settings::Save(service.Settings(), ini, settings::kClothDeform);
+    settings::Save(service.Settings(), ini, settings::kPhysicsSubstepping);
     ini.Set(KeyOf("LightingMode"),
             ToString(static_cast<u32>(service.Settings().GetLightingMode())));
     ini.Set(KeyOf("HdDebugMode"), ToString(service.Settings().HdDebugMode()));
@@ -412,8 +296,8 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
     {
         const RenderSettings::WorldFog& fog = service.Settings().GetWorldFog();
         ini.Set(KeyOf("FogMode"), ToString(fog.mode));
-        ini.Set(KeyOf("FogColor"),
-                ToString(static_cast<i32>((fog.color[0] << 16) | (fog.color[1] << 8) | fog.color[2])));
+        ini.Set(KeyOf("FogColor"), ToString(static_cast<i32>(tools::PackRgb(
+                                       {fog.color[0], fog.color[1], fog.color[2]}))));
         ini.Set(KeyOf("FogStart"), FloatToString(fog.start));
         ini.Set(KeyOf("FogEnd"), FloatToString(fog.end));
         ini.Set(KeyOf("FogDensity"), FloatToString(fog.density));
@@ -424,23 +308,15 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         ini.Set(KeyOf("FogRadialStrength"), FloatToString(fog.radialStrength));
         ini.Set(KeyOf("FogEverywhere"), fog.everywhere ? "1" : "0");
     }
-    ini.Set(KeyOf("M2LazyAnimations"), service.Settings().M2LazyAnimations() ? "1" : "0");
-    ini.Set(KeyOf("M2DistanceSortGeometry"),
-            service.Settings().M2DistanceSortGeometry() ? "1" : "0");
-    ini.Set(KeyOf("M2ModelLights"), service.Settings().M2ModelLights() ? "1" : "0");
-    ini.Set(KeyOf("AoEnabled"), service.Settings().AoEnabled() ? "1" : "0");
+    settings::Save(service.Settings(), ini, settings::kWowPage);
+    settings::Save(service.Settings(), ini, settings::kAoEnabled);
     ini.Set(KeyOf("AoQuality"), ToString(static_cast<i32>(service.Settings().AoQuality())));
-    ini.Set(KeyOf("AoBentBoost"), FloatToString(service.Settings().AoBentBoost()));
-    ini.Set(KeyOf("BloomEnabled"), service.Settings().BloomEnabled() ? "1" : "0");
-    ini.Set(KeyOf("BloomThreshold"), FloatToString(service.Settings().BloomThreshold()));
-    ini.Set(KeyOf("BloomIntensity"), FloatToString(service.Settings().BloomIntensity()));
-    ini.Set(KeyOf("BloomSaturation"), FloatToString(service.Settings().BloomSaturation()));
-    ini.Set(KeyOf("DofEnabled"), service.Settings().DofEnabled() ? "1" : "0");
-    ini.Set(KeyOf("DofFocusDistance"), FloatToString(service.Settings().DofFocusDistance()));
-    ini.Set(KeyOf("DofFocusScale"), FloatToString(service.Settings().DofFocusScale()));
-    ini.Set(KeyOf("DofMaxBlurSize"), FloatToString(service.Settings().DofMaxBlurSize()));
-    ini.Set(KeyOf("DofRadiusScale"), FloatToString(service.Settings().DofRadiusScale()));
-    ini.Set(KeyOf("DofFarFieldOnly"), service.Settings().DofFarFieldOnly() ? "1" : "0");
+    settings::Save(service.Settings(), ini, settings::kAoBentBoost);
+    settings::Save(service.Settings(), ini, settings::kBloomEnabled);
+    settings::Save(service.Settings(), ini, settings::kBloomLevels);
+    settings::Save(service.Settings(), ini, settings::kDofEnabled);
+    settings::Save(service.Settings(), ini, settings::kDofLevels);
+    settings::Save(service.Settings(), ini, settings::kDofFarFieldOnly);
     if (const auto* dnc = service.GetDncService()) {
         ini.Set(KeyOf("TimeOfDay"), FloatToString(dnc->GetTimeOfDay()));
         ini.Set(KeyOf("AnimateTod"), dnc->GetTodScale() > 0.0f ? "1" : "0");

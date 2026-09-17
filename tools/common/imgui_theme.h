@@ -4,9 +4,14 @@
 // Mirrors the "Dark Ruda" theme (Raikiri / ImThemes) used by WhiteoutTex so
 // the three companion tools render with the same look.
 
+#include <array>
 #include <string>
 
 namespace whiteout::flakes {
+
+// The menu bar's background as 8-bit RGB. The OS title bar is tinted to it so
+// the window chrome runs into the menu strip.
+inline constexpr std::array<unsigned char, 3> kMenuBarBgRgb = {38, 45, 56};
 
 // Applies the theme to the current ImGui context. Call once after
 // ImGui::CreateContext() and before NewFrame.

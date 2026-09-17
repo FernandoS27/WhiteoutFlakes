@@ -1,6 +1,7 @@
 // ModelExplorer — entry point. Brings up the renderer + window and runs the
 // explorer loop. Optional CLI: [--backend d3d11|d3d12|vulkan|webgpu] [<casc-root>].
 
+#include "backend_names.h"
 #include "io/storage/storage_paths.h"
 #include "io/storage_browser.h"
 #include "explorer_app.h"
@@ -70,14 +71,6 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 #endif
 
 using whiteout::flakes::gfx::GfxApi;
-
-static int CompareCi(const char* a, const char* b) {
-#if defined(_WIN32)
-    return _stricmp(a, b);
-#else
-    return strcasecmp(a, b);
-#endif
-}
 
 namespace wf = whiteout::flakes;
 
@@ -208,17 +201,9 @@ int main(int argc, char* argv[]) {
             rsInstallDir = argv[++i];
             rsRelPath = argv[++i];
         } else if ((std::strcmp(a, "--backend") == 0 || std::strcmp(a, "-b") == 0) && i + 1 < argc) {
-            const char* v = argv[++i];
-            if (CompareCi(v, "vulkan") == 0)
-                backend = GfxApi::Vulkan;
-            else if (CompareCi(v, "webgpu") == 0)
-                backend = GfxApi::WebGPU;
-#if defined(_WIN32)
-            else if (CompareCi(v, "d3d11") == 0)
-                backend = GfxApi::D3D11;
-            else if (CompareCi(v, "d3d12") == 0)
-                backend = GfxApi::D3D12;
-#endif
+            // The viewer's names; an unknown one keeps the default.
+            if (const auto api = whiteout::flakes::tools::BackendFromCliName(argv[++i]))
+                backend = *api;
         } else if (a[0] != '-' && cascRoot.empty()) {
             cascRoot = a;
         }
@@ -711,10 +696,10 @@ int main(int argc, char* argv[]) {
                     return k;
                 });
                 const wf::ProductId fallback =
-                    CompareCi(syncGame, "sc2") == 0   ? wf::ProductId::Sc2
-                    : CompareCi(syncGame, "wc3") == 0 ? wf::ProductId::Wc3
-                    : CompareCi(syncGame, "d3") == 0  ? wf::ProductId::D3
-                                                      : wf::ProductId::Wow;
+                    wf::tools::EqualsIgnoreCase(syncGame, "sc2")   ? wf::ProductId::Sc2
+                    : wf::tools::EqualsIgnoreCase(syncGame, "wc3") ? wf::ProductId::Wc3
+                    : wf::tools::EqualsIgnoreCase(syncGame, "d3")  ? wf::ProductId::D3
+                                                                   : wf::ProductId::Wow;
                 panel.Sync(fallback);
                 std::printf("[panel-sync] no keys yet: open=%d empty=%d\n", (int)panel.IsOpen(),
                             (int)panel.IsEmpty());
@@ -740,8 +725,8 @@ int main(int argc, char* argv[]) {
             // to the tree reveals whatever folder the grid is in, which is the
             // half of SetView a shot of the tree at the root would not show.
             if (const char* v = std::getenv("PANEL_VIEW"); v && !hadState) {
-                panel.SetView(CompareCi(v, "tree") == 0 ? wf::tools::ExplorerView::Tree
-                                                        : wf::tools::ExplorerView::Grid);
+                panel.SetView(wf::tools::EqualsIgnoreCase(v, "tree") ? wf::tools::ExplorerView::Tree
+                                                                     : wf::tools::ExplorerView::Grid);
             }
             if (const char* f = std::getenv("PANEL_FILTER"); f && !hadState)
                 panel.SetSearchText(f);

@@ -101,24 +101,74 @@ target_include_directories(settings_ini_test PRIVATE
 # TUs link nothing, so this is a G0 test with no device and no corpus.
 # settings_io.cpp comes along for SettingsIniPath(), which export_ini.cpp uses.
 wdx_add_test(export_recipe_test export_recipe_test.cpp
-             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_recipe.cpp"
-             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_ini.cpp"
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/capture/export_recipe.cpp"
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/capture/export_ini.cpp"
              "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
 target_include_directories(export_recipe_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer"
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/common")
+# The viewer's command line: the option table replayed against what the
+# `strcmp` chain it replaced did with 471 argument vectors
+# (tests/data/viewer_cli_characterisation.txt), the run-mode precedence and
+# the generated help.
+wdx_add_test(viewer_cli_options_test viewer_cli_options_test.cpp
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/cli/cli_options.cpp")
+target_include_directories(viewer_cli_options_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer"
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/common")
+target_compile_definitions(viewer_cli_options_test PRIVATE
+    WDX_VIEWER_CLI_CHARACTERISATION="${CMAKE_CURRENT_SOURCE_DIR}/data/viewer_cli_characterisation.txt")
+# The viewer's scalar setting descriptors against the [Display] keys and value
+# spellings the hand-written ini code wrote (tests/data/viewer_settings_display.ini).
+wdx_add_test(viewer_setting_descriptors_test viewer_setting_descriptors_test.cpp
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/settings/setting_descriptors.cpp")
+target_include_directories(viewer_setting_descriptors_test PRIVATE
                            "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
+target_compile_definitions(viewer_setting_descriptors_test PRIVATE
+    WDX_VIEWER_SETTINGS_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/data/viewer_settings_display.ini")
+# Diablo III outfit presets: the d3_outfits.ini round trip, and the visual
+# slot names the command line shares with the equip popup.
+wdx_add_test(d3_outfit_presets_test d3_outfit_presets_test.cpp
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/features/d3_outfit_presets.cpp")
+target_include_directories(d3_outfit_presets_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
+# The viewer's model-format table: extensions, kinds, games and the Open
+# dialog filters this build's WDX_ENABLE_* configuration produces.
+wdx_add_test(model_formats_test model_formats_test.cpp
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/documents/model_formats.cpp")
+target_include_directories(model_formats_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer"
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/common")
 # Which textures the M3 and MDX exports write: the paths a written model reads,
 # the MDX table pruning, and the same-picture test that lets a Warcraft III
 # export name War3 (Mod)'s copy. Hand-built models and pixels, so a G0 test.
-wdx_add_test(export_texture_set_test export_texture_set_test.cpp
-             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_texture_set.cpp")
-target_include_directories(export_texture_set_test PRIVATE
-                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
+wdx_add_test(export_texture_set_test export_texture_set_test.cpp)
+target_link_libraries(export_texture_set_test PRIVATE WhiteoutFlakesConvert)
 # Warcraft III attachment names in StarCraft II's vocabulary: the §4.1 table of
 # WC3_TO_SC2_COMPLETION_PLAN.md, one pure function.
-wdx_add_test(wc3_attachment_names_test wc3_attachment_names_test.cpp
-             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/wc3_attachment_names.cpp")
-target_include_directories(wc3_attachment_names_test PRIVATE
-                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
+wdx_add_test(wc3_attachment_names_test wc3_attachment_names_test.cpp)
+target_link_libraries(wc3_attachment_names_test PRIVATE WhiteoutFlakesConvert)
+# The conversion library itself: the shared texture reads, keys and encodes,
+# the mip policies, the WEM hop, and a hand-built model through each exporter
+# into a temporary folder. Every public header also compiles on its own: one
+# translation unit per header, each including nothing else.
+wdx_add_test(viewer_convert_test viewer_convert_test.cpp)
+target_link_libraries(viewer_convert_test PRIVATE WhiteoutFlakesConvert)
+set(WDX_CONVERT_HEADERS
+    baked_texture.h color_math.h export_common.h export_options.h export_text.h
+    export_texture_set.h gltf_export.h m3_export.h mdx_export.h sc2_pbr_export.h texture_codec.h
+    texture_io.h wc3_attachment_names.h wc3_to_sc2_export.h)
+if(WDX_ENABLE_M3)
+    list(APPEND WDX_CONVERT_HEADERS m3_save.h)
+endif()
+set(WDX_CONVERT_HEADER_TUS)
+foreach(header IN LISTS WDX_CONVERT_HEADERS)
+    get_filename_component(stem "${header}" NAME_WE)
+    set(tu "${CMAKE_CURRENT_BINARY_DIR}/convert_headers/${stem}_header.cpp")
+    file(CONFIGURE OUTPUT "${tu}" CONTENT "#include \"export/${header}\"\n")
+    list(APPEND WDX_CONVERT_HEADER_TUS "${tu}")
+endforeach()
+target_sources(viewer_convert_test PRIVATE ${WDX_CONVERT_HEADER_TUS})
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)

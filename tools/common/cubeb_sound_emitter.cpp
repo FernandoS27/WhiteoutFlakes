@@ -1,4 +1,5 @@
 #include "cubeb_sound_emitter.h"
+#include "string_util.h"
 
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/event_data.h"
@@ -56,9 +57,7 @@ std::optional<std::vector<u8>> ResolveSoundBytes(IContentProvider& cp, const io:
         PathParts p;
         p.dir = path.substr(0, baseStart);
         p.stem = hasExt ? path.substr(baseStart, dotPos - baseStart) : path.substr(baseStart);
-        p.extLow = hasExt ? path.substr(dotPos) : std::string{};
-        for (auto& c : p.extLow)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        p.extLow = hasExt ? tools::ToLowerAscii(std::string_view(path).substr(dotPos)) : std::string{};
         p.hasExt = hasExt;
         return p;
     };
@@ -71,11 +70,7 @@ std::optional<std::vector<u8>> ResolveSoundBytes(IContentProvider& cp, const io:
     auto hasSoundPrefix = [](const std::string& s) {
         if (s.size() < 7 || (s[5] != '/' && s[5] != '\\'))
             return false;
-        const char* k = "sound";
-        for (i32 i = 0; i < 5; ++i)
-            if (std::tolower(static_cast<unsigned char>(s[i])) != k[i])
-                return false;
-        return true;
+        return tools::EqualsIgnoreCase(std::string_view(s).substr(0, 5), "sound");
     };
 
     auto candidates = [&](const std::string& path) -> std::vector<std::string> {
