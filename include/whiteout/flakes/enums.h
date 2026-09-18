@@ -230,6 +230,9 @@ enum MaterialFlags {
     MAT_CONSTANT_COLOR = 32,
     /// Reforged: sample baked occlusion (ORM.x) through the second UV set.
     MAT_AMBIENT_OCCLUSION = 64,
+    /// The layer casts into the shadow map from its back faces: the caster
+    /// culls front faces instead of back ones. TwoSided still wins (no cull).
+    MAT_BACK_FACES_FOR_SHADOWS = 128,
 };
 
 } // namespace whiteout::flakes

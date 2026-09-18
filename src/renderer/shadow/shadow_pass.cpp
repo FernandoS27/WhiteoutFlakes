@@ -40,7 +40,19 @@ struct CasterClass {
     bool cast = true;
     bool alphaTest = false;
     i32 layerIndex = -1;
+    RenderPipeline::ShadowCull cull = RenderPipeline::ShadowCull::Back;
 };
+
+// The faces the caster culls, from the same layer that decides its silhouette.
+// TwoSided is tested first because it disables culling outright; only a
+// culling layer has a face for BackFacesForShadows to flip.
+RenderPipeline::ShadowCull CasterCull(i32 layerFlags) {
+    if (layerFlags & MAT_TWO_SIDED)
+        return RenderPipeline::ShadowCull::None;
+    if (layerFlags & MAT_BACK_FACES_FOR_SHADOWS)
+        return RenderPipeline::ShadowCull::Front;
+    return RenderPipeline::ShadowCull::Back;
+}
 
 CasterClass ClassifyCaster(const RenderableView& view, const wc3::Wc3SurfaceTable* table,
                            const GPUGeoset& geo) {
@@ -57,7 +69,8 @@ CasterClass ClassifyCaster(const RenderableView& view, const wc3::Wc3SurfaceTabl
         wc3::Wc3SurfaceTable::Layer(table->Material(geo.materialId), gc.firstVisibleLayer);
     return {.cast = true,
             .alphaTest = bls::FilterToGxAlpha(layer.filterMode) == bls::GxMatAlpha::AlphaKey,
-            .layerIndex = gc.firstVisibleLayer};
+            .layerIndex = gc.firstVisibleLayer,
+            .cull = CasterCull(layer.flags)};
 }
 
 // The caster's VS constants. `underWater` has to stay 0: the depth-prepass PS
@@ -119,8 +132,9 @@ bool ShadowPass::Run(ShadowService& service) {
     const auto shadow = rs_.Pipeline().Shadow();
     const gfx::BufferHandle vsCb = shadow.vsCb;
     const gfx::BufferHandle psCb = shadow.psCb;
-    const bool anyPso = (shadow.psoSkinned != gfx::PipelineHandle::Invalid ||
-                         shadow.psoRigid != gfx::PipelineHandle::Invalid) &&
+    const auto& backCull = shadow.psos[static_cast<usize>(RenderPipeline::ShadowCull::Back)];
+    const bool anyPso = (backCull.skinned != gfx::PipelineHandle::Invalid ||
+                         backCull.rigid != gfx::PipelineHandle::Invalid) &&
                         vsCb != gfx::BufferHandle::Invalid;
 
     // Sorted handles, not map order. This is the second hash-ordered draw path
@@ -220,12 +234,13 @@ bool ShadowPass::Run(ShadowService& service) {
                     // rather than dropping the draw: a solid shadow is wrong,
                     // but no shadow at all is worse, and the fallback only
                     // happens on a bundle without the prepass permutations.
-                    gfx::PipelineHandle pso =
-                        hasBones ? shadow.psoSkinned : shadow.psoRigid;
+                    const RenderPipeline::ShadowPsos& psos =
+                        shadow.psos[static_cast<usize>(caster.cull)];
+                    gfx::PipelineHandle pso = hasBones ? psos.skinned : psos.rigid;
                     bool alphaTest = caster.alphaTest;
                     if (alphaTest) {
                         const gfx::PipelineHandle alphaPso =
-                            hasBones ? shadow.psoSkinnedAlphaTest : shadow.psoRigidAlphaTest;
+                            hasBones ? psos.skinnedAlphaTest : psos.rigidAlphaTest;
                         if (alphaPso != gfx::PipelineHandle::Invalid && psCb != gfx::BufferHandle::Invalid)
                             pso = alphaPso;
                         else
@@ -308,7 +323,8 @@ bool ShadowPass::Run(ShadowService& service) {
                         d.texIds[0] = alphaTest ? layer.textureId : -1;
                         d.texAnimId = alphaTest ? layer.textureAnimationId : -1;
                         d.combinedAlpha = vsData.diffuseColor.w;
-                        d.psoKey = (hasBones ? 2u : 1u) | (alphaTest ? 4u : 0u);
+                        d.psoKey = (hasBones ? 2u : 1u) | (alphaTest ? 4u : 0u) |
+                                   (static_cast<u32>(caster.cull) << 3);
                         debug::DrawTraceRecorder::Instance().Record(d);
                     }
 

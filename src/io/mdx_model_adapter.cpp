@@ -286,6 +286,8 @@ i32 MdxModelAdapter::MapShadingFlags(Layer::ShadingFlag sf) const {
         flags |= MAT_NO_DEPTH_SET;
     if (hasFlag(s, SF::AmbientOcclusion))
         flags |= MAT_AMBIENT_OCCLUSION;
+    if (hasFlag(s, SF::BackFacesForShadows))
+        flags |= MAT_BACK_FACES_FOR_SHADOWS;
     return flags;
 }
 

@@ -233,8 +233,7 @@ gfx::BufferHandle RenderPipeline::CbPerFrame() const {
 }
 
 RenderPipeline::ShadowResources RenderPipeline::Shadow() const {
-    return {impl_->shadowPSO_,      impl_->shadowPSORigid_, impl_->shadowPSOAlpha_,
-            impl_->shadowPSORigidAlpha_, impl_->shadowVsCb_, impl_->shadowPsCb_};
+    return {impl_->shadowPsos_, impl_->shadowVsCb_, impl_->shadowPsCb_};
 }
 
 void RenderPipeline::Shutdown() {
@@ -1145,8 +1144,8 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
             return sh->permuteHandles[perm];
         };
 
-        auto buildShadowPso = [&](bool skinned, bool alphaTest,
-                                  bls::VertexLayoutKind layoutKind) -> gfx::PipelineHandle {
+        auto buildShadowPso = [&](bool skinned, bool alphaTest, bls::VertexLayoutKind layoutKind,
+                                  gfx::CullMode cull) -> gfx::PipelineHandle {
             const bls::PermuteIndices perm = shadowPerms(skinned, alphaTest);
             const gfx::ShaderHandle vs = shaderAt(impl_->blsHdProgram_->vs, perm.vs);
             if (vs == gfx::ShaderHandle{0})
@@ -1165,7 +1164,7 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
             gpd.depthStencil.depthTest = true;
             gpd.depthStencil.depthWrite = true;
             gpd.depthStencil.depthCompare = gfx::CompareOp::LessEqual;
-            gpd.rasterizer.cull = gfx::CullMode::Back;
+            gpd.rasterizer.cull = cull;
             gpd.rasterizer.frontCCW = true;
             gpd.rasterizer.depthBias = sp.depthBias;
             gpd.rasterizer.slopeScaledDepthBias = sp.slopeScaledBias;
@@ -1177,14 +1176,21 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
 
         constexpr auto kSkinnedLayout = bls::VertexLayoutKind::MeshHDSkinnedNoTangent;
         constexpr auto kRigidLayout = bls::VertexLayoutKind::ParticleSD;
-        if (impl_->shadowPSO_ == gfx::PipelineHandle::Invalid)
-            impl_->shadowPSO_ = buildShadowPso(true, false, kSkinnedLayout);
-        if (impl_->shadowPSORigid_ == gfx::PipelineHandle::Invalid)
-            impl_->shadowPSORigid_ = buildShadowPso(false, false, kRigidLayout);
-        if (impl_->shadowPSOAlpha_ == gfx::PipelineHandle::Invalid)
-            impl_->shadowPSOAlpha_ = buildShadowPso(true, true, kSkinnedLayout);
-        if (impl_->shadowPSORigidAlpha_ == gfx::PipelineHandle::Invalid)
-            impl_->shadowPSORigidAlpha_ = buildShadowPso(false, true, kRigidLayout);
+        // Same order as ShadowCull.
+        constexpr gfx::CullMode kCasterCull[] = {gfx::CullMode::Back, gfx::CullMode::Front,
+                                                 gfx::CullMode::None};
+        for (usize c = 0; c < impl_->shadowPsos_.size(); ++c) {
+            RenderPipeline::ShadowPsos& set = impl_->shadowPsos_[c];
+            const gfx::CullMode cull = kCasterCull[c];
+            if (set.skinned == gfx::PipelineHandle::Invalid)
+                set.skinned = buildShadowPso(true, false, kSkinnedLayout, cull);
+            if (set.rigid == gfx::PipelineHandle::Invalid)
+                set.rigid = buildShadowPso(false, false, kRigidLayout, cull);
+            if (set.skinnedAlphaTest == gfx::PipelineHandle::Invalid)
+                set.skinnedAlphaTest = buildShadowPso(true, true, kSkinnedLayout, cull);
+            if (set.rigidAlphaTest == gfx::PipelineHandle::Invalid)
+                set.rigidAlphaTest = buildShadowPso(false, true, kRigidLayout, cull);
+        }
     }
 
     impl_->blsSpriteVs_ = impl_->blsShaderCache_->Acquire(gfx::ShaderStage::Vertex, "sprite");
@@ -1483,21 +1489,13 @@ void RenderPipeline::ShutdownBlsShaders() {
         impl_->blsHdLightsCapacity_ = 0;
         impl_->blsHdLightIndicesCapacity_ = 0;
         impl_->blsHdClustersCapacity_ = 0;
-        if (impl_->shadowPSO_ != gfx::PipelineHandle::Invalid) {
-            impl_->gfx_->Destroy(impl_->shadowPSO_);
-            impl_->shadowPSO_ = gfx::PipelineHandle::Invalid;
-        }
-        if (impl_->shadowPSORigid_ != gfx::PipelineHandle::Invalid) {
-            impl_->gfx_->Destroy(impl_->shadowPSORigid_);
-            impl_->shadowPSORigid_ = gfx::PipelineHandle::Invalid;
-        }
-        if (impl_->shadowPSOAlpha_ != gfx::PipelineHandle::Invalid) {
-            impl_->gfx_->Destroy(impl_->shadowPSOAlpha_);
-            impl_->shadowPSOAlpha_ = gfx::PipelineHandle::Invalid;
-        }
-        if (impl_->shadowPSORigidAlpha_ != gfx::PipelineHandle::Invalid) {
-            impl_->gfx_->Destroy(impl_->shadowPSORigidAlpha_);
-            impl_->shadowPSORigidAlpha_ = gfx::PipelineHandle::Invalid;
+        for (RenderPipeline::ShadowPsos& set : impl_->shadowPsos_) {
+            for (gfx::PipelineHandle* p :
+                 {&set.skinned, &set.rigid, &set.skinnedAlphaTest, &set.rigidAlphaTest}) {
+                if (*p != gfx::PipelineHandle::Invalid)
+                    impl_->gfx_->Destroy(*p);
+                *p = gfx::PipelineHandle::Invalid;
+            }
         }
         if (impl_->shadowVsCb_ != gfx::BufferHandle::Invalid) {
             impl_->gfx_->Destroy(impl_->shadowVsCb_);

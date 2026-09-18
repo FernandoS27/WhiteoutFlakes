@@ -22,6 +22,7 @@
 #include "renderer/profiles/diablo3/d3_standard_shading.h"
 #endif
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -267,10 +268,10 @@ struct RenderPipeline::Impl {
     u32 blsHdClustersCapacity_ = 0;
 
     // ---- Shadow ----
-    gfx::PipelineHandle shadowPSO_ = gfx::PipelineHandle::Invalid;
-    gfx::PipelineHandle shadowPSORigid_ = gfx::PipelineHandle::Invalid;
-    gfx::PipelineHandle shadowPSOAlpha_ = gfx::PipelineHandle::Invalid;
-    gfx::PipelineHandle shadowPSORigidAlpha_ = gfx::PipelineHandle::Invalid;
+    // One caster PSO set per RenderPipeline::ShadowCull.
+    std::array<RenderPipeline::ShadowPsos,
+               static_cast<usize>(RenderPipeline::ShadowCull::Count)>
+        shadowPsos_{};
     // Scene clock (ms) at the last point-shadow allocation, -1 before the first.
     i32 pointShadowClockMs_ = -1;
     gfx::BufferHandle shadowVsCb_ = gfx::BufferHandle::Invalid;

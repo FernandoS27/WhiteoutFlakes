@@ -22,6 +22,7 @@
 #include "viewport.h"
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -266,15 +267,26 @@ public:
     // ---- Shadow PSO/CB handles read by shadow::ShadowPass.
     //      Bundled rather than friended so the pass class doesn't need
     //      access to the rest of RenderPipeline::Impl. ----
-    struct ShadowResources {
-        gfx::PipelineHandle psoSkinned;
-        gfx::PipelineHandle psoRigid;
+    // Which faces a caster culls, which Warcraft III decides per layer
+    // (CGxDevice::GetPipelineFromCurrentState, 3.0.0): with the shadow pass's
+    // master enable 22 off, the cull is the lit pass's back-face cull unless
+    // the layer's BackFacesForShadows bit clears enable 5, which flips it to a
+    // front-face cull; TwoSided turns culling off in both passes. Back is 0 so
+    // an ordinary caster's trace psoKey is the one it always recorded.
+    enum class ShadowCull : u8 { Back = 0, Front = 1, None = 2, Count = 3 };
+    struct ShadowPsos {
+        gfx::PipelineHandle skinned = gfx::PipelineHandle::Invalid;
+        gfx::PipelineHandle rigid = gfx::PipelineHandle::Invalid;
         // The same two, on the HD depth-prepass permutation that runs the
         // material's alpha test. A cut-out layer has to punch its real
         // silhouette into the cascade or the shadow is the bounding quad —
         // see ps/ps_depth_prepass.slang, which exists for exactly this.
-        gfx::PipelineHandle psoSkinnedAlphaTest;
-        gfx::PipelineHandle psoRigidAlphaTest;
+        gfx::PipelineHandle skinnedAlphaTest = gfx::PipelineHandle::Invalid;
+        gfx::PipelineHandle rigidAlphaTest = gfx::PipelineHandle::Invalid;
+    };
+    struct ShadowResources {
+        // Indexed by ShadowCull.
+        std::array<ShadowPsos, static_cast<usize>(ShadowCull::Count)> psos;
         gfx::BufferHandle vsCb;
         gfx::BufferHandle psCb;
     };
