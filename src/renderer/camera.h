@@ -183,8 +183,12 @@ public:
         return view;
     }
 
+    // The same `up` as ViewLH: with world Z the SD geosets, particles and
+    // ribbons (drawn RH) ignored the roll the grid and HD passes showed.
     Matrix44f ViewRH() const {
-        return Matrix44f::look_at_rh(GetSource(), GetTarget(), GetUp());
+        Vector3f up =
+            (mode_ == Mode::Direct) ? ComputeUpFromLookDirection() : ComputeUpFromAngles();
+        return Matrix44f::look_at_rh(GetSource(), GetTarget(), up);
     }
 
     Matrix44f ProjectionLH(f32 aspect) const {
