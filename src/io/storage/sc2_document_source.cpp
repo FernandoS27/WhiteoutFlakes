@@ -105,7 +105,10 @@ const Sc2DocumentSource::Index& Sc2DocumentSource::EnsureIndex() const {
                     continue;
                 // Lexical: fs::relative would resolve a linked folder away to
                 // wherever it points, outside the mod.
-                index.emplace(LowerAscii(it->path().lexically_relative(root).generic_string()), it->path());
+                // UTF-8 like every other path here: generic_string() is the
+                // ANSI code page on Windows.
+                const fs::path rel = it->path().lexically_relative(root);
+                index.emplace(LowerAscii(FileResolver::NormalizeSeparators(PathToUtf8(rel))), it->path());
             }
             ec.clear();
         }
