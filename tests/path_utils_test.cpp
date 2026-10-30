@@ -177,6 +177,21 @@ TEST_CASE("FileResolver still misses a file that exists in no case") {
     REQUIRE(r.ResolveTexture("assets/textures/missing.dds").empty());
 }
 
+TEST_CASE("FileResolver tries asset roots after the base path") {
+    TempTree base("wdx_test_resolver_roots_base");
+    TempTree root("wdx_test_resolver_roots_root");
+    const fs::path inBase = base.Touch("x.dds");
+    const fs::path inRoot = root.Touch("assets/textures/x.dds");
+
+    FileResolver r(base.Root());
+    r.SetAssetRoots({root.Root()});
+    // The base path's bare-filename candidate comes before any asset root.
+    REQUIRE(r.ResolveTexture("assets/textures/x.dds") == inBase);
+
+    fs::remove(inBase);
+    REQUIRE(r.ResolveTexture("assets/textures/x.dds") == inRoot);
+}
+
 TEST_CASE("FileResolver's bare-filename fallback ignores case too") {
     TempTree tree("wdx_test_resolver_case_filename");
     const fs::path file = tree.Touch("Foo.dds");

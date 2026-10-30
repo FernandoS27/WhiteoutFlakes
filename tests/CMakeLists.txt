@@ -60,6 +60,7 @@ endfunction()
 # ---- io ----
 wdx_add_test(slk_test           slk_test.cpp)
 wdx_add_test(path_utils_test    path_utils_test.cpp)
+wdx_add_test(sc2_asset_roots_test sc2_asset_roots_test.cpp)
 wdx_add_test(texture_usage_test texture_usage_test.cpp)
 # The sphere-map -> cubemap projection StarCraft II's Spherical envio
 # mappings are decoded through. Device-free, so it is unconditional.

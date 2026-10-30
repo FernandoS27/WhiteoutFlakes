@@ -98,18 +98,20 @@ fs::path FileResolver::Resolve(const std::string& relativePath,
         const fs::path* root;
         const fs::path* rel;
     };
-    Candidate candidates[4];
-    usize nCand = 0;
+    std::vector<Candidate> candidates;
+    candidates.reserve(4 + assetRoots_.size());
     if (!basePath_.empty()) {
-        candidates[nCand++] = {&basePath_, &relPath};
-        candidates[nCand++] = {&basePath_, &filename};
+        candidates.push_back({&basePath_, &relPath});
+        candidates.push_back({&basePath_, &filename});
     }
+    for (const fs::path& root : assetRoots_)
+        candidates.push_back({&root, &relPath});
     if (!systemBasePath_.empty()) {
-        candidates[nCand++] = {&systemBasePath_, &relPath};
-        candidates[nCand++] = {&systemBasePath_, &filename};
+        candidates.push_back({&systemBasePath_, &relPath});
+        candidates.push_back({&systemBasePath_, &filename});
     }
 
-    for (usize i = 0; i < nCand; ++i) {
+    for (usize i = 0; i < candidates.size(); ++i) {
         const fs::path base = *candidates[i].root / *candidates[i].rel;
 
         if (fs::exists(base))

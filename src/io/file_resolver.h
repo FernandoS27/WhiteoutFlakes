@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace whiteout::flakes::io {
 
@@ -29,6 +31,15 @@ public:
         return systemBasePath_;
     }
 
+    // Roots a relative path is also tried under, after the base path and
+    // before the system one: the asset root of the mod a loose model ships in.
+    void SetAssetRoots(std::vector<std::filesystem::path> roots) {
+        assetRoots_ = std::move(roots);
+    }
+    const std::vector<std::filesystem::path>& AssetRoots() const {
+        return assetRoots_;
+    }
+
     std::filesystem::path Resolve(const std::string& relativePath,
                                   std::span<const char* const> extensions) const;
 
@@ -41,6 +52,7 @@ public:
 private:
     std::filesystem::path basePath_;
     std::filesystem::path systemBasePath_;
+    std::vector<std::filesystem::path> assetRoots_;
 };
 
 } // namespace whiteout::flakes::io

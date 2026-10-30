@@ -437,6 +437,11 @@ void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
     impl_->resolver.SetBasePath(basePath);
 }
 
+void FileContentProvider::SetAssetRoots(std::vector<std::filesystem::path> roots) {
+    std::unique_lock sg(impl_->storageMu);
+    impl_->resolver.SetAssetRoots(std::move(roots));
+}
+
 void FileContentProvider::SetSystemBasePath(const std::filesystem::path& root) {
     std::unique_lock sg(impl_->storageMu);
     impl_->resolver.SetSystemBasePath(root);

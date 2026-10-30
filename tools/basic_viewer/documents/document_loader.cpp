@@ -6,6 +6,7 @@
 #include "session/storage_session.h"
 
 #include "io/file_content_provider.h"
+#include "io/storage/sc2_asset_roots.h"
 #include "io/storage/storage_paths.h"
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
@@ -150,6 +151,18 @@ bool DocumentLoader::OpenDocument(const fs::path& path, bool effect) {
         // template cache's base path, not the shared provider's: set its local
         // file root directly so sibling textures resolve.
         session_.Provider().SetBasePath(path.parent_path());
+        // The provider is shared by every tab, so a non-StarCraft II open
+        // clears the roots the previous one set.
+        std::vector<fs::path> roots;
+        const ModelFormat* format = FindModelFormat(path);
+        if (format && format->game == ProductId::Sc2) {
+            roots = io::FindSc2AssetRoots(path);
+            std::string list;
+            for (const fs::path& root : roots)
+                list += (list.empty() ? "" : ", ") + io::PathToUtf8(root);
+            std::fprintf(stderr, "[sc2] asset roots: %s\n", list.empty() ? "none" : list.c_str());
+        }
+        session_.Provider().SetAssetRoots(std::move(roots));
         return effect ? LoadEffectInto(doc, path) : LoadModelInto(doc, path);
     });
 }

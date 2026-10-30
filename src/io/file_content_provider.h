@@ -42,6 +42,9 @@ public:
     FileContentProvider& operator=(const FileContentProvider&) = delete;
 
     void SetBasePath(const std::filesystem::path& basePath);
+    // Extra roots a relative path is tried under, after the base path: the
+    // asset root of the mod a loose model ships in. See FileResolver.
+    void SetAssetRoots(std::vector<std::filesystem::path> roots);
 
     // Root for engine-shipped assets (the BLS `shaders/` pack, pso_trace.bin).
     // The ctor defaults it to the executable's directory, which is only right
