@@ -75,6 +75,11 @@ struct IoPathOverrides {
     // StarCraft II only: the Heroes of the Storm root, the second CASC that
     // product opens.
     std::string hotsInstallPath;
+    // StarCraft II only: mods, maps and campaigns (folders or packed files),
+    // searched in order after the game's storage misses. Stored '|'-joined
+    // like the MPQ list, so a path holding '|' cannot be kept, and the ini
+    // trims each value, so neither can leading or trailing spaces.
+    std::vector<std::string> fallbackMods;
 };
 
 // The no-argument forms mean Warcraft III, which is what every existing

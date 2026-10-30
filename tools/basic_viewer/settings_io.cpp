@@ -169,6 +169,8 @@ IoPathOverrides LoadIoPathOverrides(ProductId game) {
         o.tactKeyPath = *s;
     if (auto* s = ini.Get(IoKeyOf(game, "HotsInstallPath")))
         o.hotsInstallPath = *s;
+    if (auto* s = ini.Get(IoKeyOf(game, "FallbackMods")))
+        o.fallbackMods = SplitMpqList(*s);
     return o;
 }
 
@@ -196,8 +198,10 @@ void SaveIoPathOverrides(ProductId game, const IoPathOverrides& overrides) {
         ini.Set(IoKeyOf(game, "Listfile"), overrides.listfilePath);
         ini.Set(IoKeyOf(game, "TactKeys"), overrides.tactKeyPath);
     }
-    if (game == ProductId::Sc2)
+    if (game == ProductId::Sc2) {
         ini.Set(IoKeyOf(game, "HotsInstallPath"), overrides.hotsInstallPath);
+        ini.Set(IoKeyOf(game, "FallbackMods"), JoinMpqList(overrides.fallbackMods));
+    }
     ini.Save(path);
 }
 
@@ -250,6 +254,11 @@ void ApplyIoPathOverrides(io::FileContentProvider& provider, ProductId game) {
     provider.SetIgnoreMpq(o.ignoreMpq);
     if (o.mpqListSet)
         provider.SetMpqList(o.mpqList);
+    std::vector<fs::path> mods;
+    if (game == ProductId::Sc2)
+        for (const std::string& m : o.fallbackMods)
+            mods.push_back(io::FsPathFromUtf8(m));
+    provider.SetFallbackMods(game, std::move(mods));
 }
 
 } // namespace whiteout::flakes

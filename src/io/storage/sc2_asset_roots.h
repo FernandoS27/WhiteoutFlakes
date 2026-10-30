@@ -10,9 +10,16 @@
 // ============================================================================
 
 #include <filesystem>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace whiteout::flakes::io {
+
+/// The child folder of `dir` whose name lowercases to `lowerName`; the
+/// smallest name by bytes when several spellings exist, so the pick is stable.
+std::optional<std::filesystem::path> ChildFolderAnyCase(const std::filesystem::path& dir,
+                                                        const std::string& lowerName);
 
 /// True when the name ends in .SC2Mod, .SC2Map or .SC2Campaign (any case).
 /// Says nothing about whether it is a folder or a packed file.

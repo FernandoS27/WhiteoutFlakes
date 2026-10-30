@@ -1522,6 +1522,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/storage/game_storage.cpp
     src/io/storage/game_rules.cpp
     src/io/storage/sc2_asset_roots.cpp
+    src/io/storage/sc2_document_source.cpp
     src/io/fetch_content_provider.cpp
     src/io/content_provider.cpp
     src/io/progress.cpp

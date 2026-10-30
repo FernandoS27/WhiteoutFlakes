@@ -23,9 +23,9 @@ std::string LowerName(const fs::path& p) {
     return LowerAscii(PathToUtf8(p.filename()));
 }
 
-// The child folder of `dir` named `lowerName` in any case; the smallest name
-// by bytes when several spellings exist, so the pick is stable.
-std::optional<fs::path> ChildFolder(const fs::path& dir, const std::string& lowerName) {
+} // namespace
+
+std::optional<fs::path> ChildFolderAnyCase(const fs::path& dir, const std::string& lowerName) {
     std::error_code ec;
     std::optional<std::string> best;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
@@ -41,8 +41,6 @@ std::optional<fs::path> ChildFolder(const fs::path& dir, const std::string& lowe
     return dir / FsPathFromUtf8(*best);
 }
 
-} // namespace
-
 bool IsSc2DocumentName(const fs::path& p) {
     const std::string name = LowerName(p);
     for (const std::string_view suffix : {".sc2mod", ".sc2map", ".sc2campaign"})
@@ -53,9 +51,9 @@ bool IsSc2DocumentName(const fs::path& p) {
 
 std::vector<fs::path> Sc2DocumentAssetRoots(const fs::path& docDir) {
     std::vector<fs::path> roots;
-    if (const auto base = ChildFolder(docDir, "base.sc2assets"); base && ChildFolder(*base, "assets"))
+    if (const auto base = ChildFolderAnyCase(docDir, "base.sc2assets"); base && ChildFolderAnyCase(*base, "assets"))
         roots.push_back(*base);
-    if (ChildFolder(docDir, "assets"))
+    if (ChildFolderAnyCase(docDir, "assets"))
         roots.push_back(docDir);
     return roots;
 }
