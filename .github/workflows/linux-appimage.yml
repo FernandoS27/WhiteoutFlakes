@@ -24,8 +24,8 @@ jobs:
       # ---- System deps -------------------------------------------------
       # GLFW under Wayland/X11 pulls in the X dev headers (libxkbcommon,
       # libwayland-dev, libxrandr-dev, libxinerama-dev, libxcursor-dev,
-      # libxi-dev); cubeb wants ALSA + PulseAudio headers; gtk3 is for
-      # nativefiledialog-extended's GTK backend.
+      # libxi-dev); cubeb wants ALSA + PulseAudio headers; dbus is for
+      # nativefiledialog-extended's xdg-desktop-portal backend.
       - name: Install build deps
         run: |
           sudo apt-get update
@@ -35,7 +35,7 @@ jobs:
             libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
             libgl1-mesa-dev mesa-vulkan-drivers \
             libasound2-dev libpulse-dev \
-            libgtk-3-dev \
+            libdbus-1-dev \
             software-properties-common \
             wget file
           # FUSE for running linuxdeploy AppImage. Ubuntu 24.04 renamed

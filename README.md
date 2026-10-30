@@ -154,6 +154,7 @@ python tools/web_viewer/serve_nocache.py 8080   # then open http://localhost:808
 | `WDX_USE_PREBUILT_SHADERS`     | auto  | Use the committed `prebuilt/shaders/` pack. |
 | `WDX_ENABLE_TRACY`             | `ON`  | Link the Tracy profiler client. |
 | `WDX_ENABLE_IMGUI`             | `ON`  | Engine-side BLS-backed Dear ImGui adapter + GLFW/Win32 frontends. |
+| `WDX_NFD_PORTAL`               | `ON`  | Linux file dialogs via xdg-desktop-portal (D-Bus); `OFF` uses GTK3. |
 | `WDX_BUILD_MAX_PLUGIN`         | `OFF` | Build the 3ds Max plugin (Windows; needs `-DMAX_VERSION=<year>`). |
 | `WDX_BUILD_CASC_SERVER`        | `OFF` | Build `wf_casc_server` — local dev replacement for Hive's CASC delivery. |
 | `WDX_BUILD_TESTS`              | `OFF` | Build the Catch2 unit tests under `tests/`. |

@@ -215,7 +215,8 @@ for:
     install:
       - sh: git submodule update --init --recursive
       # System deps mirror linux-appimage.yml: GLFW needs X11+Wayland
-      # dev headers, cubeb needs ALSA+PulseAudio, nativefiledialog needs GTK3.
+      # dev headers, cubeb needs ALSA+PulseAudio, nativefiledialog needs D-Bus
+      # (xdg-desktop-portal backend).
       - sh: |
           set -e
           sudo apt-get update
@@ -225,7 +226,7 @@ for:
               libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
               libgl1-mesa-dev mesa-vulkan-drivers \
               libasound2-dev libpulse-dev \
-              libgtk-3-dev \
+              libdbus-1-dev \
               software-properties-common wget file
       # GCC 15 from the toolchain PPA (Ubuntu 22.04 ships 11). Pin via
       # CC/CXX so we don't rely on update-alternatives.

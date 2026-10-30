@@ -1805,8 +1805,14 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
 add_subdirectory(externals/glfw EXCLUDE_FROM_ALL)
 
-# NFD — native file open / save dialogs. Linux builds want GTK/portal; on
-# Windows it's IFileOpenDialog and has no extra deps.
+# NFD — native file open / save dialogs. On Windows it's IFileOpenDialog and
+# has no extra deps. On Linux, xdg-desktop-portal (D-Bus) shows the desktop's
+# own dialog — KDE's on Plasma — where NFD's default GTK backend draws a GTK3
+# one everywhere. WDX_NFD_PORTAL=OFF brings GTK back for setups with no portal.
+if(UNIX AND NOT APPLE)
+    option(WDX_NFD_PORTAL "Linux file dialogs via xdg-desktop-portal instead of GTK3" ON)
+    set(NFD_PORTAL ${WDX_NFD_PORTAL} CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(externals/nativefiledialog-extended EXCLUDE_FROM_ALL)
 
 # cubeb — cross-platform audio output (WASAPI / PulseAudio / AudioUnit).
