@@ -5,6 +5,7 @@
 #include "capture/export_runner.h"
 #include "io/load_task.h"
 #include "localization.h"
+#include "native_dialogs.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -17,7 +18,6 @@
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
-#include <nfd.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -292,22 +292,20 @@ void ExportWindow::BuildPresetRow() {
 
     ImGui::SameLine(0.0f, 24.0f);
     if (ImGui::Button(T("dialog.export.recipe_save"))) {
-        NFD::UniquePathU8 out;
-        nfdu8filteritem_t filter[] = {{"Export recipe", "ini"}};
-        if (NFD::SaveDialog(out, filter, 1, nullptr, "recipe.ini") == NFD_OKAY) {
+        const nfdu8filteritem_t filter[] = {{"Export recipe", "ini"}};
+        if (const auto out = tools::SaveFileDialog(filter, "recipe.ini")) {
             recipe_.output.folder = io::FsPathFromUtf8(folderBuf_);
             recipe_.output.nameTemplate = nameBuf_;
-            WriteExportRecipeFile(io::FsPathFromUtf8(out.get()), recipe_, app_.Playback().SequenceNames(),
+            WriteExportRecipeFile(*out, recipe_, app_.Playback().SequenceNames(),
                                   app_.Documents().ActiveState().modelPath);
         }
     }
     ImGui::SameLine();
     if (ImGui::Button(T("dialog.export.recipe_load"))) {
-        NFD::UniquePathU8 out;
-        nfdu8filteritem_t filter[] = {{"Export recipe", "ini"}};
-        if (NFD::OpenDialog(out, filter, 1) == NFD_OKAY) {
+        const nfdu8filteritem_t filter[] = {{"Export recipe", "ini"}};
+        if (const auto out = tools::OpenFileDialog(filter)) {
             ExportRecipeLoadReport report;
-            if (ReadExportRecipeFile(io::FsPathFromUtf8(out.get()), recipe_, app_.Playback().SequenceNames(),
+            if (ReadExportRecipeFile(*out, recipe_, app_.Playback().SequenceNames(),
                                      &report)) {
                 folderBuf_ = io::PathToUtf8(recipe_.output.folder);
                 nameBuf_ = recipe_.output.nameTemplate;
@@ -936,9 +934,8 @@ void ExportWindow::BuildOutput() {
             MarkCustom();
         ImGui::SameLine();
         if (ImGui::Button(T("dialog.export.browse"))) {
-            NFD::UniquePathU8 out;
-            if (NFD::PickFolder(out) == NFD_OKAY) {
-                folderBuf_ = out.get();
+            if (const auto folder = tools::PickFolderDialog()) {
+                folderBuf_ = io::PathToUtf8(*folder);
                 MarkCustom();
             }
         }

@@ -1,4 +1,5 @@
 #include "storage_explorer.h"
+#include "native_dialogs.h"
 #include "string_util.h"
 
 #include "io/load_task.h"
@@ -14,8 +15,6 @@
 #include "gfx/gfx.h"
 
 #include <imgui.h>
-
-#include <nfd.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -486,9 +485,8 @@ void StorageExplorer::NavigateTo(const std::string& displayPath) {
 }
 
 void StorageExplorer::OpenCascDialog() {
-    NFD::UniquePathU8 outPath;
-    if (NFD::PickFolder(outPath) == NFD_OKAY && outPath)
-        OpenStorage(outPath.get());
+    if (const auto folder = tools::PickFolderDialog())
+        OpenStorage(io::PathToUtf8(*folder));
 }
 
 GameStorageKeys StorageExplorer::ResolveGame(ProductId game, bool heroes) const {

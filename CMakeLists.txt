@@ -1843,6 +1843,9 @@ add_library(WhiteoutFlakesExplorerLib STATIC
     # hosts that draw it link this lib already, and the Storage Explorer panel
     # itself needs it for its own async open.
     tools/common/progress_dialog.cpp
+    # Native file dialogs: the Storage Explorer's folder picker and every
+    # viewer dialog share its one-time NFD init and error reporting.
+    tools/common/native_dialogs.cpp
 )
 set_target_properties(WhiteoutFlakesExplorerLib PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

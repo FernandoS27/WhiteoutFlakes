@@ -1,10 +1,11 @@
 #include "ui/widgets.h"
 
 #include "localization.h"
+#include "native_dialogs.h"
 #include "ui/ui_metrics.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <imgui_stdlib.h>
-#include <nfd.hpp>
 
 #include <algorithm>
 #include <array>
@@ -37,16 +38,15 @@ bool PathRow(const PathRowSpec& spec, std::string& path, const std::string& rese
         commit = true;
     ImGui::SameLine();
     if (ImGui::Button(i18n::tr(spec.browseKey))) {
-        NFD::UniquePathU8 outPath;
-        nfdresult_t picked = NFD_CANCEL;
+        std::optional<std::filesystem::path> picked;
         if (spec.filterSpec) {
-            nfdu8filteritem_t filter[1] = {{spec.filterName, spec.filterSpec}};
-            picked = NFD::OpenDialog(outPath, filter, 1);
+            const nfdu8filteritem_t filter[1] = {{spec.filterName, spec.filterSpec}};
+            picked = tools::OpenFileDialog(filter);
         } else {
-            picked = NFD::PickFolder(outPath);
+            picked = tools::PickFolderDialog();
         }
-        if (picked == NFD_OKAY) {
-            path = outPath.get();
+        if (picked) {
+            path = io::PathToUtf8(*picked);
             commit = true;
         }
     }
