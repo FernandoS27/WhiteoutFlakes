@@ -1,12 +1,15 @@
 #pragma once
 
 // ============================================================================
-// One StarCraft II mod, map or campaign used as a fallback asset source.
+// One StarCraft II mod, map or campaign used as a fallback asset source:
+// a folder, or a packed MPQ archive.
 //
 // A folder document is indexed on first use: every file under its
 // Base.SC2Assets/Assets and Assets trees, keyed by its lowercased path from
 // the component root, Base.SC2Assets first, so a read is a lookup rather than
-// a directory walk. Reads try the usual extension alternatives. Thread-safe.
+// a directory walk. A packed one is read through its MPQ, trying
+// `base.sc2assets/<path>` before `<path>` since archives hold both layouts.
+// Reads try the usual extension alternatives. Thread-safe.
 // ============================================================================
 
 #include "storage_source.h"
@@ -34,6 +37,7 @@ public:
 
 private:
     Sc2DocumentSource(std::filesystem::path doc, std::vector<std::filesystem::path> roots);
+    Sc2DocumentSource(std::filesystem::path doc, std::unique_ptr<IStorageSource> packed);
 
     using Index = std::unordered_map<std::string, std::filesystem::path>;
     const Index& EnsureIndex() const;
@@ -44,6 +48,7 @@ private:
     std::vector<std::filesystem::path> roots_;
     mutable std::mutex indexMu_;
     mutable std::optional<Index> index_;
+    std::unique_ptr<IStorageSource> packed_; // the MPQ, for a packed document; null for a folder
 };
 
 } // namespace whiteout::flakes::io

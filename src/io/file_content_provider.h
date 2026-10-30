@@ -45,9 +45,10 @@ public:
     // Extra roots a relative path is tried under, after the base path: the
     // asset root of the mod a loose model ships in. See FileResolver.
     void SetAssetRoots(std::vector<std::filesystem::path> roots);
-    // StarCraft II mods, maps and campaigns (folders) searched in order after
-    // `game`'s storage misses. Per game, like the install path; setting the
-    // same list again is a no-op, and a change does not reopen the storage.
+    // StarCraft II mods, maps and campaigns (folders or packed MPQs) searched
+    // in order after `game`'s storage misses. Per game, like the install path;
+    // setting the same list again is a no-op, and a change does not reopen
+    // the storage.
     void SetFallbackMods(ProductId game, std::vector<std::filesystem::path> docs);
 
     // Root for engine-shipped assets (the BLS `shaders/` pack, pso_trace.bin).

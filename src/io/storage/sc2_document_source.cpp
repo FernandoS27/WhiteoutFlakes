@@ -1,6 +1,7 @@
 #include "sc2_document_source.h"
 
 #include "io/file_resolver.h"
+#include "mpq_source.h"
 #include "sc2_asset_roots.h"
 #include "storage_paths.h"
 #include "whiteout/flakes/types.h"
@@ -37,6 +38,9 @@ bool ReadWholeFile(const fs::path& p, std::vector<u8>& out) {
 Sc2DocumentSource::Sc2DocumentSource(fs::path doc, std::vector<fs::path> roots)
     : doc_(std::move(doc)), root_(PathToUtf8(doc_)), roots_(std::move(roots)) {}
 
+Sc2DocumentSource::Sc2DocumentSource(fs::path doc, std::unique_ptr<IStorageSource> packed)
+    : doc_(std::move(doc)), root_(PathToUtf8(doc_)), packed_(std::move(packed)) {}
+
 std::unique_ptr<Sc2DocumentSource> Sc2DocumentSource::Open(const fs::path& doc, std::string& error) {
     if (!IsSc2DocumentName(doc)) {
         error = "not a .SC2Mod, .SC2Map or .SC2Campaign";
@@ -48,8 +52,18 @@ std::unique_ptr<Sc2DocumentSource> Sc2DocumentSource::Open(const fs::path& doc, 
         return nullptr;
     }
     if (!fs::is_directory(doc, ec)) {
-        error = "packed mods are not supported yet";
+#if WHITEOUT_HAS_MPQ
+        auto mpq = MpqSource::Open(PathToUtf8(doc), error);
+        if (!mpq) {
+            if (error.empty())
+                error = "not a readable MPQ archive";
+            return nullptr;
+        }
+        return std::unique_ptr<Sc2DocumentSource>(new Sc2DocumentSource(doc, std::move(mpq)));
+#else
+        error = "packed mods need MPQ support, which this build lacks";
         return nullptr;
+#endif
     }
     std::vector<fs::path> roots = Sc2DocumentAssetRoots(doc);
     if (roots.empty()) {
@@ -125,11 +139,19 @@ bool Sc2DocumentSource::Read(const std::string& path, SourceRead& out) const {
     std::string key = LowerAscii(FileResolver::NormalizeSeparators(path));
     while (!key.empty() && key.front() == '/')
         key.erase(key.begin());
+    // MpqSource already matches case-insensitively and tries the extension
+    // alternatives itself.
+    if (packed_)
+        return packed_->Read("base.sc2assets/" + key, out) || packed_->Read(key, out);
     // Base.SC2Assets' root was indexed first, so its copy already wins.
     return ReadKey(key, out);
 }
 
 void Sc2DocumentSource::List(const std::function<void(std::string)>& emit) const {
+    if (packed_) {
+        packed_->List(emit);
+        return;
+    }
     for (const auto& [key, file] : EnsureIndex())
         emit(ToListingPath(key));
 }

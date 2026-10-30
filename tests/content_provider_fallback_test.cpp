@@ -5,6 +5,10 @@
 
 #include "io/file_content_provider.h"
 
+#if WHITEOUT_HAS_MPQ
+#include <whiteout/storages/mpq/storage.h>
+#endif
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -114,3 +118,23 @@ TEST_CASE("Fallback mods belong to the game they were set for") {
     p.SetGame(ProductId::Sc2);
     CHECK(Read(p, "assets/textures/x.dds") == "A");
 }
+
+#if WHITEOUT_HAS_MPQ
+TEST_CASE("Folder and packed fallback mods share one order") {
+    TempTree tree("wdx_test_fallback_packed");
+    fs::create_directories(tree.Root() / "base");
+    tree.Write("A.SC2Mod/Assets/Textures/x.dds", "A");
+    // WhiteoutLib's MPQ writer/reader does not round-trip files under 64 bytes.
+    const std::string b(256, 'B');
+    auto mpq = whiteout::storages::mpq::Storage::create();
+    REQUIRE(mpq.writeFile("Assets\\Textures\\x.dds", std::vector<whiteout::u8>(b.begin(), b.end())));
+    REQUIRE(mpq.save((tree.Root() / "B.SC2Mod").string()));
+
+    FileContentProvider p;
+    MakeSc2WithoutStorage(p, tree.Root() / "base");
+    p.SetFallbackMods(ProductId::Sc2, {tree.Root() / "B.SC2Mod", tree.Root() / "A.SC2Mod"});
+    CHECK(Read(p, "assets/textures/x.dds") == b);
+    p.SetFallbackMods(ProductId::Sc2, {tree.Root() / "A.SC2Mod", tree.Root() / "B.SC2Mod"});
+    CHECK(Read(p, "assets/textures/x.dds") == "A");
+}
+#endif // WHITEOUT_HAS_MPQ

@@ -4,10 +4,15 @@
 
 #include "io/storage/sc2_document_source.h"
 
+#if WHITEOUT_HAS_MPQ
+#include <whiteout/storages/mpq/storage.h>
+#endif
+
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -99,11 +104,11 @@ TEST_CASE("A folder mod substitutes texture extensions") {
 
 TEST_CASE("Opening something that is not a usable mod says why") {
     TempTree tree("wdx_test_sc2doc_errors");
-    tree.Write("P.SC2Mod", "packed");
+    tree.Write("P.SC2Mod", "not an mpq");
     fs::create_directories(tree.Root() / "Q.SC2Mod");
     tree.Write("R.zip", "zip");
 
-    CHECK(OpenError(tree.Root() / "P.SC2Mod") == "packed mods are not supported yet");
+    CHECK_FALSE(OpenError(tree.Root() / "P.SC2Mod").empty());
     CHECK(OpenError(tree.Root() / "Q.SC2Mod") == "no Assets folder");
     CHECK(OpenError(tree.Root() / "R.zip") == "not a .SC2Mod, .SC2Map or .SC2Campaign");
     CHECK(OpenError(tree.Root() / "S.SC2Mod") == "not found");
@@ -126,3 +131,60 @@ TEST_CASE("A folder mod follows symlinks and survives a symlink loop") {
     REQUIRE(MustOpen(tree.Root() / "M.SC2Mod")->Read("assets/textures/link/z.dds", r));
     CHECK(Text(r) == "z");
 }
+
+#if WHITEOUT_HAS_MPQ
+
+namespace {
+
+// WhiteoutLib's MPQ writer/reader does not round-trip files under 64 bytes,
+// so packed fixtures carry a 256-byte payload built from a short tag.
+std::string Payload(const std::string& tag) {
+    std::string s;
+    while (s.size() < 256)
+        s += tag;
+    return s;
+}
+
+// A packed mod built the way the editor ships one: a single MPQ file.
+fs::path WritePacked(const fs::path& file, const std::vector<std::pair<std::string, std::string>>& entries) {
+    auto mpq = whiteout::storages::mpq::Storage::create();
+    for (const auto& [name, bytes] : entries) {
+        const std::string payload = Payload(bytes);
+        const std::vector<whiteout::u8> data(payload.begin(), payload.end());
+        REQUIRE(mpq.writeFile(name, data));
+    }
+    REQUIRE(mpq.save(file.string()));
+    return file;
+}
+
+} // namespace
+
+TEST_CASE("A packed mod reads its assets in any case") {
+    TempTree tree("wdx_test_sc2doc_packed");
+    const fs::path pack = WritePacked(tree.Root() / "Pack.SC2Mod", {{"Assets\\Textures\\Q.dds", "q"}});
+
+    SourceRead r;
+    REQUIRE(MustOpen(pack)->Read("assets/textures/q.dds", r));
+    CHECK(Text(r) == Payload("q"));
+}
+
+TEST_CASE("A packed mod's Base.SC2Assets copy wins over its root copy") {
+    TempTree tree("wdx_test_sc2doc_packed_base");
+    const fs::path pack = WritePacked(tree.Root() / "Pack.SC2Mod", {{"Base.SC2Assets\\Assets\\Textures\\P.dds", "base"},
+                                                                    {"Assets\\Textures\\P.dds", "root"}});
+
+    SourceRead r;
+    REQUIRE(MustOpen(pack)->Read("assets/textures/p.dds", r));
+    CHECK(Text(r) == Payload("base"));
+}
+
+TEST_CASE("A packed mod substitutes texture extensions") {
+    TempTree tree("wdx_test_sc2doc_packed_ext");
+    const fs::path pack = WritePacked(tree.Root() / "Pack.SC2Mod", {{"Assets\\Textures\\Q.dds", "q"}});
+
+    SourceRead r;
+    REQUIRE(MustOpen(pack)->Read("assets/textures/q.tga", r));
+    CHECK(Text(r) == Payload("q"));
+}
+
+#endif // WHITEOUT_HAS_MPQ
