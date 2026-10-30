@@ -138,6 +138,53 @@ TEST_CASE("ResolveModel only accepts model extensions") {
     REQUIRE(r.ResolveModel("other.mdx").empty());
 }
 
+// AssetManager lowercases every path it asks for; mods ship mixed case.
+TEST_CASE("FileResolver matches path components ignoring case") {
+    TempTree tree("wdx_test_resolver_case");
+    const fs::path file = tree.Touch("Assets/Textures/Foo_Diff.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/foo_diff.dds") == file);
+}
+
+TEST_CASE("FileResolver substitutes extensions when matching case-insensitively") {
+    TempTree tree("wdx_test_resolver_case_ext");
+    const fs::path file = tree.Touch("Assets/Textures/Foo_Diff.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/foo_diff.tga") == file);
+}
+
+TEST_CASE("FileResolver prefers an exact-case match") {
+    TempTree tree("wdx_test_resolver_case_exact");
+    tree.Touch("probe");
+    if (fs::exists(tree.Root() / "PROBE")) {
+        SUCCEED("case-insensitive filesystem: both spellings are one file");
+        return;
+    }
+    const fs::path exact = tree.Touch("assets/textures/a.dds");
+    tree.Touch("Assets/Textures/A.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/a.dds") == exact);
+}
+
+TEST_CASE("FileResolver still misses a file that exists in no case") {
+    TempTree tree("wdx_test_resolver_case_missing");
+    tree.Touch("Assets/Textures/Other.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/missing.dds").empty());
+}
+
+TEST_CASE("FileResolver's bare-filename fallback ignores case too") {
+    TempTree tree("wdx_test_resolver_case_filename");
+    const fs::path file = tree.Touch("Foo.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/foo.dds") == file);
+}
+
 TEST_CASE("Replaceable tree IDs map to their canonical textures") {
     REQUIRE(std::string(ReplaceableCanonicalPath(31, Tileset::LordaeronSummer)) ==
             "ReplaceableTextures\\LordaeronTree\\LordaeronSummerTree.blp");
