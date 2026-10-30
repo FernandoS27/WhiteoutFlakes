@@ -27,7 +27,7 @@ namespace whiteout::flakes::gfx::vulkan {
 
 std::vector<std::string> EnumerateAdapterNames() {
     std::vector<std::string> names;
-    vk::raii::Context ctx;
+    vk::raii::Context ctx{vkGetInstanceProcAddr};
     vk::ApplicationInfo appInfo{
         .pApplicationName = "WhiteoutFlakes",
         .apiVersion = VK_API_VERSION_1_3,

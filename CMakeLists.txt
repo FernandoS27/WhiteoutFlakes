@@ -1245,6 +1245,12 @@ if(Vulkan_FOUND)
         # (`{ .field = value }`) become legal. sType is still default-
         # initialised correctly via the in-class initializer.
         VULKAN_HPP_NO_CONSTRUCTORS
+        # No built-in DynamicLoader: it dlopens `libvulkan.so` before
+        # `libvulkan.so.1`, so an AppImage's bundled loader and the host's dev
+        # symlink can both land in one process. vk::raii::Context takes the
+        # linked vkGetInstanceProcAddr instead.
+        # https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/docs/Configuration.md#vulkan_hpp_enable_dynamic_loader_tool
+        VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0
     )
     # Platform-specific surface extensions: Win32 surface on Windows; on Linux
     # we drive the surface from GLFW (glfwCreateWindowSurface) which auto-
