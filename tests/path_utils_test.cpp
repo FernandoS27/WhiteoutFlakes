@@ -192,6 +192,20 @@ TEST_CASE("FileResolver tries asset roots after the base path") {
     REQUIRE(r.ResolveTexture("assets/textures/x.dds") == inRoot);
 }
 
+TEST_CASE("FileResolver re-lists directories when its roots change") {
+    TempTree tree("wdx_test_resolver_case_cache");
+    tree.Touch("Assets/Textures/Other.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/late.dds").empty()); // lists and caches Textures/
+    const fs::path late = tree.Touch("Assets/Textures/Late.dds");
+    // Still the cached listing: only an exact-case name would be seen now.
+    CHECK(r.ResolveTexture("assets/textures/late.dds").empty());
+
+    r.SetBasePath(tree.Root());
+    CHECK(r.ResolveTexture("assets/textures/late.dds") == late);
+}
+
 TEST_CASE("FileResolver's bare-filename fallback ignores case too") {
     TempTree tree("wdx_test_resolver_case_filename");
     const fs::path file = tree.Touch("Foo.dds");
