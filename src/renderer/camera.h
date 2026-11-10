@@ -183,8 +183,12 @@ public:
         return view;
     }
 
+    // The same `up` as ViewLH: with world Z the SD geosets, particles and
+    // ribbons (drawn RH) ignored the roll the grid and HD passes showed.
     Matrix44f ViewRH() const {
-        return Matrix44f::look_at_rh(GetSource(), GetTarget(), GetUp());
+        Vector3f up =
+            (mode_ == Mode::Direct) ? ComputeUpFromLookDirection() : ComputeUpFromAngles();
+        return Matrix44f::look_at_rh(GetSource(), GetTarget(), up);
     }
 
     Matrix44f ProjectionLH(f32 aspect) const {
@@ -246,11 +250,14 @@ private:
 
         if (roll_ == 0.0f)
             return upBase;
+        // Positive roll tips `up` away from `right`, as ComputeUpFromAngles
+        // and 3ds Max's LookAt roll do; adding it turned MDX camera roll
+        // (KCRL) the opposite way.
         const f32 c = std::cos(roll_), s = std::sin(roll_);
         return {
-            c * upBase.x + s * right.x,
-            c * upBase.y + s * right.y,
-            c * upBase.z + s * right.z,
+            c * upBase.x - s * right.x,
+            c * upBase.y - s * right.y,
+            c * upBase.z - s * right.z,
         };
     }
 
