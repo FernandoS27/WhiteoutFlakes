@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -41,7 +43,16 @@ std::string ToLower(std::string_view s) {
 f32 ParseFloat(std::string_view sv) {
     if (sv.empty())
         return 0.0f;
-    return std::strtof(std::string(sv).c_str(), nullptr);
+    // SLK cells use '.'; strtof follows LC_NUMERIC, and a host running with
+    // ',' (3ds Max 2027 on a German Windows) would read "1.5" as 1.
+    std::string s(sv);
+    const char* const radix = std::localeconv()->decimal_point;
+    if (radix != nullptr && std::strcmp(radix, ".") != 0) {
+        const std::size_t dot = s.find('.');
+        if (dot != std::string::npos)
+            s.replace(dot, 1, radix);
+    }
+    return std::strtof(s.c_str(), nullptr);
 }
 
 i32 ParseInt(std::string_view sv) {
