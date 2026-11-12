@@ -91,6 +91,8 @@ private:
     bool ignoreCasc_ = false;
     bool ignoreMpq_ = false;
     std::vector<std::string> mpqList_;
+    std::vector<std::string> fallbackMods_; // StarCraft II page: fallback mods, in order
+    std::string fallbackModRejected_;       // last pick that was not a mod, shown until the next pick
     bool buffersSeeded_ = false;
     /// Which profile the buffers hold, and which product the provider served
     /// when they were filled. Either changing re-seeds them.

@@ -19,7 +19,9 @@
 namespace whiteout::flakes::gfx::vulkan {
 
 struct VulkanDeviceState {
-    vk::raii::Context ctx;
+    // The linked loader's entry point, so every Vulkan call shares one loader
+    // (see VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL in CMakeLists.txt).
+    vk::raii::Context ctx{vkGetInstanceProcAddr};
     vk::raii::Instance instance = nullptr;
     vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
     vk::raii::PhysicalDevice physicalDevice = nullptr;

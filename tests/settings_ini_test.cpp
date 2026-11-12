@@ -21,6 +21,7 @@
 
 #include <fstream>
 #include <string>
+#include <vector>
 
 using whiteout::flakes::IoPathOverrides;
 using whiteout::flakes::LoadIoPathOverrides;
@@ -56,6 +57,8 @@ IoPathOverrides Sample(const std::string& tag) {
     o.mpqList = {tag + "-a.mpq", tag + "-b.mpq"};
     o.listfilePath = "D:/lists/" + tag + ".csv";
     o.hotsInstallPath = "D:/games/" + tag + "-hots";
+    // The space is on purpose: real mod names carry them.
+    o.fallbackMods = {"/m/" + tag + "/A.SC2Mod", "/m/" + tag + "/B b.SC2Map"};
     return o;
 }
 
@@ -94,6 +97,9 @@ TEST_CASE("Each game's IO overrides round-trip independently", "[settings]") {
     CHECK(sc2.hotsInstallPath == "D:/games/sc2-hots");
     CHECK(wc3.hotsInstallPath.empty());
     CHECK(wow.hotsInstallPath.empty());
+    CHECK(sc2.fallbackMods == std::vector<std::string>{"/m/sc2/A.SC2Mod", "/m/sc2/B b.SC2Map"});
+    CHECK(wc3.fallbackMods.empty());
+    CHECK(wow.fallbackMods.empty());
 
     // The no-argument overloads still mean Warcraft III: every pre-existing
     // caller (the Max plugin, the viewer's startup path) is written that way.

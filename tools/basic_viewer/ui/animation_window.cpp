@@ -3,13 +3,13 @@
 #include "app/viewer_app.h"
 #include "features/sc2_animation_files.h"
 #include "localization.h"
+#include "native_dialogs.h"
 #include "ui/ui_context.h"
 #include "ui/ui_metrics.h"
 #include "ui/widgets.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
 #include <imgui.h>
-#include <nfd.hpp>
 
 namespace whiteout::flakes {
 
@@ -202,20 +202,10 @@ bool AnimationWindow::BuildTrackRow(Sc2AnimationFiles& sc2, usize index) {
 
 void AnimationWindow::AttachFiles(Sc2AnimationFiles& sc2) {
     attachError_.clear();
-    NFD::UniquePathSet outPaths;
-    nfdu8filteritem_t filter[1] = {{"StarCraft II animations", "m3a"}};
-    if (NFD::OpenDialogMultiple(outPaths, filter, 1) != NFD_OKAY)
-        return;
-    nfdpathsetsize_t count = 0;
-    if (NFD::PathSet::Count(outPaths, count) != NFD_OKAY)
-        return;
-    for (nfdpathsetsize_t i = 0; i < count; ++i) {
-        NFD::UniquePathSetPathU8 path;
-        if (NFD::PathSet::GetPath(outPaths, i, path) != NFD_OKAY)
-            continue;
+    const nfdu8filteritem_t filter[1] = {{"StarCraft II animations", "m3a"}};
+    for (const std::filesystem::path& p : tools::OpenFilesDialog(filter)) {
         // A pick can be refused — unparseable, no sequences, or a stem already
         // attached — and the window keeps the last one refused.
-        const std::filesystem::path p = io::FsPathFromUtf8(path.get());
         if (!sc2.Attach(p))
             attachError_ = io::PathToUtf8(p.filename());
     }

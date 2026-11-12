@@ -1245,6 +1245,12 @@ if(Vulkan_FOUND)
         # (`{ .field = value }`) become legal. sType is still default-
         # initialised correctly via the in-class initializer.
         VULKAN_HPP_NO_CONSTRUCTORS
+        # No built-in DynamicLoader: it dlopens `libvulkan.so` before
+        # `libvulkan.so.1`, so an AppImage's bundled loader and the host's dev
+        # symlink can both land in one process. vk::raii::Context takes the
+        # linked vkGetInstanceProcAddr instead.
+        # https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/docs/Configuration.md#vulkan_hpp_enable_dynamic_loader_tool
+        VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0
     )
     # Platform-specific surface extensions: Win32 surface on Windows; on Linux
     # we drive the surface from GLFW (glfwCreateWindowSurface) which auto-
@@ -1515,6 +1521,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/storage/mpq_source.cpp
     src/io/storage/game_storage.cpp
     src/io/storage/game_rules.cpp
+    src/io/storage/sc2_asset_roots.cpp
+    src/io/storage/sc2_document_source.cpp
     src/io/fetch_content_provider.cpp
     src/io/content_provider.cpp
     src/io/progress.cpp
@@ -1799,8 +1807,14 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
 add_subdirectory(externals/glfw EXCLUDE_FROM_ALL)
 
-# NFD — native file open / save dialogs. Linux builds want GTK/portal; on
-# Windows it's IFileOpenDialog and has no extra deps.
+# NFD — native file open / save dialogs. On Windows it's IFileOpenDialog and
+# has no extra deps. On Linux, xdg-desktop-portal (D-Bus) shows the desktop's
+# own dialog — KDE's on Plasma — where NFD's default GTK backend draws a GTK3
+# one everywhere. WDX_NFD_PORTAL=OFF brings GTK back for setups with no portal.
+if(UNIX AND NOT APPLE)
+    option(WDX_NFD_PORTAL "Linux file dialogs via xdg-desktop-portal instead of GTK3" ON)
+    set(NFD_PORTAL ${WDX_NFD_PORTAL} CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(externals/nativefiledialog-extended EXCLUDE_FROM_ALL)
 
 # cubeb — cross-platform audio output (WASAPI / PulseAudio / AudioUnit).
@@ -1837,6 +1851,9 @@ add_library(WhiteoutFlakesExplorerLib STATIC
     # hosts that draw it link this lib already, and the Storage Explorer panel
     # itself needs it for its own async open.
     tools/common/progress_dialog.cpp
+    # Native file dialogs: the Storage Explorer's folder picker and every
+    # viewer dialog share its one-time NFD init and error reporting.
+    tools/common/native_dialogs.cpp
 )
 set_target_properties(WhiteoutFlakesExplorerLib PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

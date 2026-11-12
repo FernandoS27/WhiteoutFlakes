@@ -13,19 +13,27 @@
 #include "app/viewer_app.h"
 #include "io/file_content_provider.h"
 #include "io/storage/game_rules.h" // ScanArchives, for a profile that is not the active one
+#include "io/storage/sc2_asset_roots.h"
 #include "localization.h"
+#include "native_dialogs.h"
+#include "renderer/render_service.h"
 #include "session/game_profiles.h"
 #include "settings_ini.h"
 #include "ui/ui_context.h"
 #include "ui/ui_metrics.h"
 #include "ui/widgets.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <optional>
 
 namespace whiteout::flakes {
+
+namespace fs = std::filesystem;
 
 void SettingsWindow::SeedIoBuffers(io::FileContentProvider& provider, ProductId game) {
     // The provider's getters answer for its ACTIVE slot: the truth for exactly
@@ -51,6 +59,9 @@ void SettingsWindow::SeedIoBuffers(io::FileContentProvider& provider, ProductId 
         mpqList_ = o.mpqListSet ? o.mpqList : io::ScanArchives(game, installPath_);
     }
     newMpq_.clear();
+    // The ini is the only record: the provider keeps opened sources, not the list.
+    fallbackMods_ = LoadIoPathOverrides(game).fallbackMods;
+    fallbackModRejected_.clear();
 }
 
 void SettingsWindow::CommitIoProfile(io::FileContentProvider& provider, ProductId game) {
@@ -62,8 +73,10 @@ void SettingsWindow::CommitIoProfile(io::FileContentProvider& provider, ProductI
     o.ignoreMpq = ignoreMpq_;
     o.listfilePath = listfile_;
     o.tactKeyPath = tactKeys_;
-    if (game == ProductId::Sc2)
+    if (game == ProductId::Sc2) {
         o.hotsInstallPath = (hotsPath_ == provider.HotsPath()) ? std::string{} : hotsPath_;
+        o.fallbackMods = fallbackMods_;
+    }
     if (!GameProfileOf(game).cascOnly) {
         o.mpqListSet = true;
         o.mpqList = mpqList_;
@@ -86,7 +99,12 @@ void SettingsWindow::CommitIoProfile(io::FileContentProvider& provider, ProductI
     // Opened now, on the task thread behind a bar, rather than left to the next
     // read: this commit used to freeze the window for the length of a retail
     // World of Warcraft open, because whichever thread read next paid for it.
-    session.OpenStoragesAsync();
+    // A successful open retries missed assets itself; a failed one does not,
+    // but fallback mods can still fill those misses without any storage.
+    session.OpenStoragesAsync([this](bool ok) {
+        if (!ok)
+            ctx_.app.Service().RetryUnloadedAssets();
+    });
 }
 
 void SettingsWindow::BuildIoTab(io::FileContentProvider& provider, ProductId game) {
@@ -281,6 +299,77 @@ void SettingsWindow::BuildIoCascPage(io::FileContentProvider& provider, ProductI
     ImGui::Separator();
 
     commit |= ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc_);
+
+    if (game == ProductId::Sc2) {
+        ImGui::PushID("fallbackmods");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextUnformatted(i18n::tr("settings.io.fallback_mods_header"));
+        ImGui::SetItemTooltip("%s", i18n::tr("settings.io.fallback_mods_hint"));
+
+        // Same controls as the MPQ list: earlier entries win.
+        i32 swapWith = -1; // [i, i+1]
+        i32 removeAt = -1;
+        for (usize i = 0; i < fallbackMods_.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::BeginDisabled(i == 0);
+            if (ImGui::ArrowButton("up", ImGuiDir_Up))
+                swapWith = static_cast<i32>(i) - 1;
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(i + 1 == fallbackMods_.size());
+            if (ImGui::ArrowButton("down", ImGuiDir_Down))
+                swapWith = static_cast<i32>(i);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("X"))
+                removeAt = static_cast<i32>(i);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(fallbackMods_[i].c_str());
+            std::error_code ec;
+            if (!fs::exists(io::FsPathFromUtf8(fallbackMods_[i]), ec)) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", i18n::tr("settings.io.mod_missing"));
+            }
+            ImGui::PopID();
+        }
+        if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(fallbackMods_.size())) {
+            std::swap(fallbackMods_[swapWith], fallbackMods_[swapWith + 1]);
+            commit = true;
+        }
+        if (removeAt >= 0 && removeAt < static_cast<i32>(fallbackMods_.size())) {
+            fallbackMods_.erase(fallbackMods_.begin() + removeAt);
+            commit = true;
+        }
+
+        const auto add = [&](const std::optional<fs::path>& picked) {
+            if (!picked)
+                return;
+            if (!io::IsSc2DocumentName(*picked)) {
+                fallbackModRejected_ = io::PathToUtf8(*picked);
+                return;
+            }
+            fallbackModRejected_.clear();
+            const std::string path = io::PathToUtf8(*picked);
+            if (std::find(fallbackMods_.begin(), fallbackMods_.end(), path) == fallbackMods_.end()) {
+                fallbackMods_.push_back(path);
+                commit = true;
+            }
+        };
+        if (ImGui::Button(i18n::tr("settings.io.add_mod_folder")))
+            add(tools::PickFolderDialog());
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.add_packed_mod"))) {
+            const nfdu8filteritem_t filter[] = {{"StarCraft II mod, map or campaign", "SC2Mod,SC2Map,SC2Campaign"}};
+            add(tools::OpenFileDialog(filter));
+        }
+        if (!fallbackModRejected_.empty()) {
+            ImGui::TextUnformatted(i18n::tr("settings.io.not_a_mod"));
+            ImGui::SameLine();
+            ImGui::TextUnformatted(fallbackModRejected_.c_str());
+        }
+        ImGui::PopID();
+    }
 
     if (commit)
         CommitIoProfile(provider, game);

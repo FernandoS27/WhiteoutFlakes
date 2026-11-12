@@ -14,7 +14,6 @@
 #include "ui/ui_metrics.h"
 
 #include <imgui.h>
-#include <nfd.hpp>
 
 namespace whiteout::flakes {
 
@@ -26,11 +25,7 @@ ViewerUI::ViewerUI(ViewerApp& app)
       settings_(ctx_),
       animationWindow_(ctx_),
       menuBar_(ctx_, openDialog_, exportDialogs_, exportWindow_, settings_),
-      ribbon_(ctx_, menuBar_, animationWindow_, openDialog_, exportDialogs_, exportWindow_, settings_) {
-    // NFD's init / quit can be reference-counted; once, at first UI
-    // construction, matches its single-process expectations.
-    NFD::Init();
-}
+      ribbon_(ctx_, menuBar_, animationWindow_, openDialog_, exportDialogs_, exportWindow_, settings_) {}
 
 void ViewerUI::BuildFrame() {
     ViewerApp& app = ctx_.app;

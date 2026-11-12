@@ -17,6 +17,7 @@
 #include "io/progress.h"
 #include "io/storage/game_rules.h"
 #include "io/storage/install_locator.h"
+#include "io/storage/sc2_document_source.h"
 #include "io/storage/storage_paths.h"
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/path_utf8.h"
@@ -111,7 +112,14 @@ struct FileContentProvider::Impl {
         // read — and Opening has to be told apart from Dirty, or a status
         // display reports "pending" for the whole of an open in flight.
         std::atomic<StorageState> state{StorageState::Dirty};
+
+        // Searched after `storage` misses; opened on the first such miss.
+        std::vector<fs::path> fallbackMods;                         // storageMu
+        std::vector<std::unique_ptr<Sc2DocumentSource>> fallbackSources; // fallbackMu
+        bool fallbackOpened = false;                                // fallbackMu
     };
+    // Taken after storageMu, never before it.
+    std::mutex fallbackMu;
     // Read on the lock-free path of EnsureStorage, so it cannot be a plain
     // ProductId: SetGame writes it under the exclusive lock while a worker may
     // be reading it to pick a slot.
@@ -306,6 +314,10 @@ struct FileContentProvider::Impl {
                     std::shared_lock sg(storageMu);
                     ReadStorage(req->ref.path, result);
                 }
+                if (!result.ok) {
+                    std::shared_lock sg(storageMu);
+                    ReadFallback(req->ref.path, result);
+                }
             }
 
             // Re-check cancellation between IO and delivery so a Cancel that
@@ -391,6 +403,39 @@ struct FileContentProvider::Impl {
         out.actualExt = std::move(hit.actualExt);
         out.ok = true;
     }
+
+    // The last resort, run only when the storage missed too. Caller holds the
+    // shared lock. One fallback read at a time: they only happen after every
+    // other source has missed, and the first one opens and indexes the list.
+    void ReadFallback(const std::string& path, RequestResult& out) {
+        GameSlot& s = Slot();
+        if (s.fallbackMods.empty())
+            return;
+        std::lock_guard lk(fallbackMu);
+        if (!s.fallbackOpened) {
+            for (const fs::path& doc : s.fallbackMods) {
+                std::string error;
+                if (auto src = Sc2DocumentSource::Open(doc, error)) {
+                    std::fprintf(stderr, "[io] fallback mod: %s\n", src->Root().c_str());
+                    s.fallbackSources.push_back(std::move(src));
+                } else {
+                    std::fprintf(stderr, "[io] fallback mod skipped: %s: %s\n", PathToUtf8(doc).c_str(),
+                                 error.c_str());
+                }
+            }
+            s.fallbackOpened = true;
+        }
+        for (const auto& src : s.fallbackSources) {
+            SourceRead hit;
+            if (!src->Read(path, hit))
+                continue;
+            out.data = std::move(hit.data);
+            out.actualExt = std::move(hit.actualExt);
+            out.ok = true;
+            std::fprintf(stderr, "[assets] fallback: %s <- %s\n", path.c_str(), src->Root().c_str());
+            return;
+        }
+    }
 };
 
 FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
@@ -435,6 +480,23 @@ FileContentProvider& FileContentProvider::operator=(FileContentProvider&&) noexc
 void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
     std::unique_lock sg(impl_->storageMu);
     impl_->resolver.SetBasePath(basePath);
+}
+
+void FileContentProvider::SetAssetRoots(std::vector<std::filesystem::path> roots) {
+    std::unique_lock sg(impl_->storageMu);
+    impl_->resolver.SetAssetRoots(std::move(roots));
+}
+
+void FileContentProvider::SetFallbackMods(ProductId game, std::vector<std::filesystem::path> docs) {
+    std::unique_lock sg(impl_->storageMu);
+    auto& s = impl_->games[static_cast<usize>(game)];
+    if (s.fallbackMods == docs)
+        return;
+    s.fallbackMods = std::move(docs);
+    // No Invalidate: the storage itself is unaffected, only what is tried after it.
+    std::lock_guard lk(impl_->fallbackMu);
+    s.fallbackSources.clear();
+    s.fallbackOpened = false;
 }
 
 void FileContentProvider::SetSystemBasePath(const std::filesystem::path& root) {

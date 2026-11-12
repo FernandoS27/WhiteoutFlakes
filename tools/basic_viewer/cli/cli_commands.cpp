@@ -15,8 +15,6 @@
 #include "app/viewer_app.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
-#include <nfd.hpp>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -351,8 +349,6 @@ i32 RunViewer(renderer::RenderService& renderer, renderer::SceneManager& scene,
     renderer.SwapSoundEmitter(std::make_unique<CubebSoundEmitter>(scene.ActiveContentProvider()));
     ApplySettings(app, renderer, options);
 
-    // Also used by Settings > IO and File > Open, so initialised whatever the mode.
-    NFD::Init();
     if (interactive && options.model.empty()) {
         if (auto picked = PickModelToOpen()) {
             CliOptions withPick = options;

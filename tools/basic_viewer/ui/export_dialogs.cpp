@@ -5,6 +5,7 @@
 #include "export/mdx_save.h"
 #include "export/model_export_service.h"
 #include "localization.h"
+#include "native_dialogs.h"
 #include "export/mdx_export.h"
 #include "string_util.h"
 #include "ui/ui_context.h"
@@ -13,7 +14,6 @@
 #include "whiteout/flakes/util/path_utf8.h"
 
 #include <imgui.h>
-#include <nfd.hpp>
 
 #include <algorithm>
 #include <iterator>
@@ -29,10 +29,7 @@ constexpr const char* kShotTarget = "ui-shot/out";
 
 // The native save dialog; empty when cancelled.
 std::filesystem::path PickSaveTarget(std::span<const nfdu8filteritem_t> filters) {
-    NFD::UniquePathU8 outPath;
-    if (NFD::SaveDialog(outPath, filters.data(), static_cast<nfdfiltersize_t>(filters.size())) != NFD_OKAY)
-        return {};
-    return io::FsPathFromUtf8(outPath.get());
+    return tools::SaveFileDialog(filters).value_or(std::filesystem::path{});
 }
 
 std::string LowerExtension(const std::filesystem::path& path) {

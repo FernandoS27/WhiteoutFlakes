@@ -138,6 +138,82 @@ TEST_CASE("ResolveModel only accepts model extensions") {
     REQUIRE(r.ResolveModel("other.mdx").empty());
 }
 
+// AssetManager lowercases every path it asks for; mods ship mixed case.
+TEST_CASE("FileResolver matches path components ignoring case") {
+    TempTree tree("wdx_test_resolver_case");
+    const fs::path file = tree.Touch("Assets/Textures/Foo_Diff.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/foo_diff.dds") == file);
+}
+
+TEST_CASE("FileResolver substitutes extensions when matching case-insensitively") {
+    TempTree tree("wdx_test_resolver_case_ext");
+    const fs::path file = tree.Touch("Assets/Textures/Foo_Diff.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/foo_diff.tga") == file);
+}
+
+TEST_CASE("FileResolver prefers an exact-case match") {
+    TempTree tree("wdx_test_resolver_case_exact");
+    tree.Touch("probe");
+    if (fs::exists(tree.Root() / "PROBE")) {
+        SUCCEED("case-insensitive filesystem: both spellings are one file");
+        return;
+    }
+    const fs::path exact = tree.Touch("assets/textures/a.dds");
+    tree.Touch("Assets/Textures/A.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/a.dds") == exact);
+}
+
+TEST_CASE("FileResolver still misses a file that exists in no case") {
+    TempTree tree("wdx_test_resolver_case_missing");
+    tree.Touch("Assets/Textures/Other.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/missing.dds").empty());
+}
+
+TEST_CASE("FileResolver tries asset roots after the base path") {
+    TempTree base("wdx_test_resolver_roots_base");
+    TempTree root("wdx_test_resolver_roots_root");
+    const fs::path inBase = base.Touch("x.dds");
+    const fs::path inRoot = root.Touch("assets/textures/x.dds");
+
+    FileResolver r(base.Root());
+    r.SetAssetRoots({root.Root()});
+    // The base path's bare-filename candidate comes before any asset root.
+    REQUIRE(r.ResolveTexture("assets/textures/x.dds") == inBase);
+
+    fs::remove(inBase);
+    REQUIRE(r.ResolveTexture("assets/textures/x.dds") == inRoot);
+}
+
+TEST_CASE("FileResolver re-lists directories when its roots change") {
+    TempTree tree("wdx_test_resolver_case_cache");
+    tree.Touch("Assets/Textures/Other.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/late.dds").empty()); // lists and caches Textures/
+    const fs::path late = tree.Touch("Assets/Textures/Late.dds");
+    // Still the cached listing: only an exact-case name would be seen now.
+    CHECK(r.ResolveTexture("assets/textures/late.dds").empty());
+
+    r.SetBasePath(tree.Root());
+    CHECK(r.ResolveTexture("assets/textures/late.dds") == late);
+}
+
+TEST_CASE("FileResolver's bare-filename fallback ignores case too") {
+    TempTree tree("wdx_test_resolver_case_filename");
+    const fs::path file = tree.Touch("Foo.dds");
+
+    FileResolver r(tree.Root());
+    REQUIRE(r.ResolveTexture("assets/textures/foo.dds") == file);
+}
+
 TEST_CASE("Replaceable tree IDs map to their canonical textures") {
     REQUIRE(std::string(ReplaceableCanonicalPath(31, Tileset::LordaeronSummer)) ==
             "ReplaceableTextures\\LordaeronTree\\LordaeronSummerTree.blp");

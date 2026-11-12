@@ -977,13 +977,20 @@ void RenderService::PumpAssetsViaProvider() {
             // no mod prefix to strip and no extension to swap, because
             // there is no name.
             auto data = provider->ReadFile(ref, &ext);
-            if (!data || data->empty())
+            if (!data || data->empty()) {
+                if (kind == assets::AssetKind::Texture)
+                    std::fprintf(stderr, "[assets] texture not found: fileDataID %u\n",
+                                 static_cast<unsigned>(ref.fileId));
                 return;
+            }
             bytes = std::move(*data);
         } else if (kind == assets::AssetKind::Texture) {
-            if (!readWithModPrefixFallback(ref.path, bytes, ext))
+            if (!readWithModPrefixFallback(ref.path, bytes, ext)) {
+                std::fprintf(stderr, "[assets] texture not found: %s\n", ref.path.c_str());
                 return;
+            }
         } else if (kind == assets::AssetKind::Effect) {
+            // TODO: effect and model misses are as silent as texture misses were; log them too.
             if (!readParticleWithAltExt(ref.path, bytes, ext))
                 return;
         } else if (kind == assets::AssetKind::Model) {
